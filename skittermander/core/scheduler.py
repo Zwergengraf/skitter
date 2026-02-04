@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import asyncio
 from datetime import datetime
+from zoneinfo import ZoneInfo
 from typing import Awaitable, Callable, Optional
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
+from apscheduler.triggers.date import DateTrigger
 
 from ..data.db import SessionLocal
 from ..data.repositories import Repository
@@ -44,17 +46,35 @@ class SchedulerService:
             jobs = await repo.list_scheduled_jobs_all()
         for job in jobs:
             if job.enabled:
-                self._schedule_job(job.id, job.schedule_expr, job.timezone)
+                self._schedule_job(job.id, job.schedule_type, job.schedule_expr, job.timezone)
 
-    def _schedule_job(self, job_id: str, cron: str, timezone: str) -> None:
-        trigger = CronTrigger.from_crontab(cron, timezone=timezone)
+    def _parse_run_date(self, run_at: str, timezone: str) -> datetime:
+        dt = datetime.fromisoformat(run_at)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=ZoneInfo(timezone))
+        return dt
+
+    def _schedule_job(self, job_id: str, schedule_type: str, expr: str, timezone: str) -> None:
+        if schedule_type == "date":
+            run_date = self._parse_run_date(expr, timezone)
+            trigger = DateTrigger(run_date=run_date, timezone=timezone)
+        else:
+            trigger = CronTrigger.from_crontab(expr, timezone=timezone)
         self.scheduler.add_job(self._run_job, trigger, args=[job_id], id=job_id, replace_existing=True)
 
     async def create_job(self, user_id: str, channel_id: str, name: str, prompt: str, cron: str) -> dict:
+        schedule_type = "cron"
+        expr = cron
+        if cron.startswith("DATE:"):
+            schedule_type = "date"
+            expr = cron.replace("DATE:", "", 1).strip()
         try:
-            CronTrigger.from_crontab(cron, timezone=settings.scheduler_timezone)
+            if schedule_type == "date":
+                self._parse_run_date(expr, settings.scheduler_timezone)
+            else:
+                CronTrigger.from_crontab(expr, timezone=settings.scheduler_timezone)
         except Exception as exc:
-            return {"error": f"invalid cron: {exc}"}
+            return {"error": f"invalid schedule: {exc}"}
         async with SessionLocal() as session:
             repo = Repository(session)
             job = await repo.create_scheduled_job(
@@ -62,12 +82,15 @@ class SchedulerService:
                 channel_id=channel_id,
                 name=name,
                 prompt=prompt,
-                cron=cron,
+                cron=expr,
                 timezone=settings.scheduler_timezone,
                 enabled=True,
+                schedule_type=schedule_type,
             )
-        self._schedule_job(job.id, cron, job.timezone)
+        self._schedule_job(job.id, job.schedule_type, job.schedule_expr, job.timezone)
         next_run = self.scheduler.get_job(job.id).next_run_time  # type: ignore[union-attr]
+        if next_run is not None and next_run.tzinfo is not None:
+            next_run = next_run.replace(tzinfo=None)
         async with SessionLocal() as session:
             repo = Repository(session)
             await repo.update_scheduled_job(job.id, next_run_at=next_run)
@@ -75,18 +98,24 @@ class SchedulerService:
 
     async def update_job(self, job_id: str, **fields) -> dict:
         if "schedule_expr" in fields:
+            schedule_type = fields.get("schedule_type", "cron")
             try:
-                CronTrigger.from_crontab(fields["schedule_expr"], timezone=settings.scheduler_timezone)
+                if schedule_type == "date":
+                    self._parse_run_date(fields["schedule_expr"], settings.scheduler_timezone)
+                else:
+                    CronTrigger.from_crontab(fields["schedule_expr"], timezone=settings.scheduler_timezone)
             except Exception as exc:
-                return {"error": f"invalid cron: {exc}"}
+                return {"error": f"invalid schedule: {exc}"}
         async with SessionLocal() as session:
             repo = Repository(session)
             job = await repo.update_scheduled_job(job_id, **fields)
         if job is None:
             return {"error": "job not found"}
         if job.enabled:
-            self._schedule_job(job.id, job.schedule_expr, job.timezone)
+            self._schedule_job(job.id, job.schedule_type, job.schedule_expr, job.timezone)
             next_run = self.scheduler.get_job(job.id).next_run_time  # type: ignore[union-attr]
+            if next_run is not None and next_run.tzinfo is not None:
+                next_run = next_run.replace(tzinfo=None)
         else:
             self.scheduler.remove_job(job.id)
             next_run = None
@@ -164,6 +193,8 @@ class SchedulerService:
                     output=response.text,
                     attachments={"count": len(response.attachments)},
                 )
+                if job.schedule_type == "date":
+                    await repo.update_scheduled_job(job_id, enabled=False)
         except Exception as exc:
             async with SessionLocal() as session:
                 repo = Repository(session)

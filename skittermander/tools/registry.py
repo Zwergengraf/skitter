@@ -166,4 +166,57 @@ def default_registry() -> ToolRegistry:
             requires_approval=False,
         )
     )
+    registry.register(
+        ToolSpec(
+            name="schedule_create",
+            description="Create a scheduled job",
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string"},
+                    "prompt": {"type": "string"},
+                    "cron": {"type": "string"},
+                    "run_at": {"type": "string"},
+                    "channel_id": {"type": "string"},
+                },
+            },
+            requires_approval=False,
+        )
+    )
+    registry.register(
+        ToolSpec(
+            name="schedule_update",
+            description="Update a scheduled job",
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "job_id": {"type": "string"},
+                    "cron": {"type": "string"},
+                    "run_at": {"type": "string"},
+                    "prompt": {"type": "string"},
+                    "enabled": {"type": "boolean"},
+                },
+            },
+            requires_approval=False,
+        )
+    )
+    registry.register(
+        ToolSpec(
+            name="schedule_delete",
+            description="Delete a scheduled job",
+            input_schema={
+                "type": "object",
+                "properties": {"job_id": {"type": "string"}},
+            },
+            requires_approval=False,
+        )
+    )
+    registry.register(
+        ToolSpec(
+            name="schedule_list",
+            description="List scheduled jobs",
+            input_schema={"type": "object", "properties": {}},
+            requires_approval=False,
+        )
+    )
     return registry

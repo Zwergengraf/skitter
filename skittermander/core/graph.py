@@ -330,12 +330,22 @@ def build_graph(approval_service: ToolApprovalService | None = None, scheduler_s
         return json.dumps({"url": url, "content": markdown[:maxChars]})
 
     @tool("schedule_create")
-    async def schedule_create(name: str, prompt: str, cron: str, channel_id: Optional[str] = None) -> str:
-        """Create a scheduled job using a cron expression."""
+    async def schedule_create(
+        name: str,
+        prompt: str,
+        cron: Optional[str] = None,
+        run_at: Optional[str] = None,
+        channel_id: Optional[str] = None,
+    ) -> str:
+        """Create a scheduled job using a cron expression or run_at timestamp (ISO-8601)."""
         if scheduler_service is None:
             return "schedule_create error: scheduler not configured"
-        if not cron or not prompt:
-            return "schedule_create error: cron and prompt are required"
+        if not prompt:
+            return "schedule_create error: prompt is required"
+        if not cron and not run_at:
+            return "schedule_create error: cron or run_at is required"
+        if run_at:
+            cron = f"DATE:{run_at}"
         target_channel = channel_id or _channel_id()
         async with SessionLocal() as session:
             repo = Repository(session)
@@ -344,12 +354,22 @@ def build_graph(approval_service: ToolApprovalService | None = None, scheduler_s
         return json.dumps(result)
 
     @tool("schedule_update")
-    async def schedule_update(job_id: str, cron: Optional[str] = None, prompt: Optional[str] = None, enabled: Optional[bool] = None) -> str:
+    async def schedule_update(
+        job_id: str,
+        cron: Optional[str] = None,
+        run_at: Optional[str] = None,
+        prompt: Optional[str] = None,
+        enabled: Optional[bool] = None,
+    ) -> str:
         """Update a scheduled job."""
         if scheduler_service is None:
             return "schedule_update error: scheduler not configured"
         fields = {}
-        if cron:
+        if run_at:
+            fields["schedule_type"] = "date"
+            fields["schedule_expr"] = run_at
+        elif cron:
+            fields["schedule_type"] = "cron"
             fields["schedule_expr"] = cron
         if prompt:
             fields["prompt"] = prompt

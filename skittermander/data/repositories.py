@@ -199,6 +199,7 @@ class Repository:
         cron: str,
         timezone: str,
         enabled: bool = True,
+        schedule_type: str = "cron",
     ) -> ScheduledJob:
         job = ScheduledJob(
             id=str(uuid.uuid4()),
@@ -208,6 +209,7 @@ class Repository:
             prompt=prompt,
             schedule_expr=cron,
             timezone=timezone,
+            schedule_type=schedule_type,
             enabled=enabled,
         )
         self.session.add(job)
@@ -221,6 +223,8 @@ class Repository:
             return None
         for key, value in fields.items():
             if hasattr(job, key) and value is not None:
+                if isinstance(value, datetime) and value.tzinfo is not None:
+                    value = value.replace(tzinfo=None)
                 setattr(job, key, value)
         job.updated_at = datetime.utcnow()
         await self.session.commit()
@@ -260,6 +264,8 @@ class Repository:
             return None
         for key, value in fields.items():
             if hasattr(run, key) and value is not None:
+                if isinstance(value, datetime) and value.tzinfo is not None:
+                    value = value.replace(tzinfo=None)
                 setattr(run, key, value)
         await self.session.commit()
         return run
