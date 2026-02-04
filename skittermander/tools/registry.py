@@ -1,0 +1,169 @@
+from __future__ import annotations
+
+from dataclasses import dataclass
+from typing import Any, Dict, List
+
+
+@dataclass
+class ToolSpec:
+    name: str
+    description: str
+    input_schema: Dict[str, Any]
+    requires_approval: bool = True
+
+
+class ToolRegistry:
+    def __init__(self) -> None:
+        self._tools: Dict[str, ToolSpec] = {}
+
+    def register(self, tool: ToolSpec) -> None:
+        self._tools[tool.name] = tool
+
+    def list(self) -> List[ToolSpec]:
+        return list(self._tools.values())
+
+    def get(self, name: str) -> ToolSpec | None:
+        return self._tools.get(name)
+
+
+def default_registry() -> ToolRegistry:
+    registry = ToolRegistry()
+    registry.register(
+        ToolSpec(
+            name="filesystem",
+            description="Read/write files in the workspace",
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string"},
+                    "action": {"type": "string"},
+                    "recursive": {"type": "boolean"},
+                },
+            },
+            requires_approval=True,
+        )
+    )
+    registry.register(
+        ToolSpec(
+            name="browser",
+            description="Headless browser for web pages",
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "url": {"type": "string"},
+                    "max_chars": {"type": "number"},
+                    "screenshot": {"type": "boolean"},
+                    "width": {"type": "number"},
+                    "height": {"type": "number"},
+                },
+            },
+            requires_approval=True,
+        )
+    )
+    registry.register(
+        ToolSpec(
+            name="browser_action",
+            description="Stateful browser automation actions",
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "action": {"type": "string"},
+                    "url": {"type": "string"},
+                    "selector": {"type": "string"},
+                    "text": {"type": "string"},
+                    "key": {"type": "string"},
+                    "fields": {"type": "array"},
+                    "submit": {"type": "boolean"},
+                    "submit_selector": {"type": "string"},
+                    "username": {"type": "string"},
+                    "password": {"type": "string"},
+                    "username_selector": {"type": "string"},
+                    "password_selector": {"type": "string"},
+                    "wait_for": {"type": "string"},
+                    "index": {"type": "number"},
+                    "width": {"type": "number"},
+                    "height": {"type": "number"},
+                    "timeout_ms": {"type": "number"},
+                    "wait_until": {"type": "string"},
+                    "full_page": {"type": "boolean"},
+                    "max_chars": {"type": "number"},
+                    "mode": {"type": "string"},
+                    "include_elements": {"type": "boolean"},
+                    "max_elements": {"type": "number"},
+                },
+            },
+            requires_approval=True,
+        )
+    )
+    registry.register(
+        ToolSpec(
+            name="http_fetch",
+            description="HTTP fetch for APIs",
+            input_schema={"type": "object", "properties": {"url": {"type": "string"}}},
+            requires_approval=False,
+        )
+    )
+    registry.register(
+        ToolSpec(
+            name="sub_agent",
+            description="Spawn a sub-agent",
+            input_schema={"type": "object", "properties": {"prompt": {"type": "string"}}},
+            requires_approval=True,
+        )
+    )
+    registry.register(
+        ToolSpec(
+            name="shell",
+            description="Run a shell command in the workspace",
+            input_schema={
+                "type": "object",
+                "properties": {"cmd": {"type": "string"}, "cwd": {"type": "string"}},
+            },
+            requires_approval=True,
+        )
+    )
+    registry.register(
+        ToolSpec(
+            name="memory_search",
+            description="Search stored memory embeddings",
+            input_schema={
+                "type": "object",
+                "properties": {"query": {"type": "string"}, "top_k": {"type": "integer"}},
+            },
+            requires_approval=False,
+        )
+    )
+    registry.register(
+        ToolSpec(
+            name="web_search",
+            description="Search the web using Brave Search API",
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string"},
+                    "count": {"type": "number"},
+                    "country": {"type": "string"},
+                    "search_lang": {"type": "string"},
+                    "ui_lang": {"type": "string"},
+                    "freshness": {"type": "string"},
+                },
+            },
+            requires_approval=False,
+        )
+    )
+    registry.register(
+        ToolSpec(
+            name="web_fetch",
+            description="Fetch and extract readable content from a URL",
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "url": {"type": "string"},
+                    "extractMode": {"type": "string"},
+                    "maxChars": {"type": "number"},
+                },
+            },
+            requires_approval=False,
+        )
+    )
+    return registry

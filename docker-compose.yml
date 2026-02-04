@@ -1,0 +1,29 @@
+version: "3.9"
+services:
+  postgres:
+    image: pgvector/pgvector:pg15
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: skittermander
+    ports:
+      - "5432:5432"
+    volumes:
+      - skitter_pg:/var/lib/postgresql/data
+
+  sandbox:
+    build:
+      context: .
+      dockerfile: skittermander/sandbox/Dockerfile
+    environment:
+      SKITTER_WORKSPACE_ROOT: /workspace
+      SKITTER_BROWSER_DATA_ROOT: /browser-data
+      SKITTER_BROWSER_EXECUTABLE: /usr/bin/brave-browser
+    ports:
+      - "9080:9080"
+    volumes:
+      - ./workspace:/workspace
+      - ./browser-data:/browser-data
+
+volumes:
+  skitter_pg:
