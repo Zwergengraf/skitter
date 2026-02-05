@@ -8,7 +8,7 @@ interface SidebarProps {
 
 export function Sidebar({ active, onSelect }: SidebarProps) {
   return (
-    <aside className="flex h-screen flex-col gap-8 border-r border-border bg-card/80 px-6 py-8 backdrop-blur">
+    <aside className="fixed left-0 top-0 z-20 flex h-screen w-[260px] flex-col gap-8 border-r border-border bg-card/80 px-6 py-8 backdrop-blur">
       <div className="space-y-3">
         <div className="data-chip text-[10px] text-mutedForeground">
           Skittermander Admin

@@ -1,14 +1,11 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   Activity,
   AlertTriangle,
   CheckCircle2,
-  ChevronsUpDown,
   CloudCog,
   FolderKanban,
   RefreshCcw,
-  Rocket,
-  Server,
 } from "lucide-react";
 
 import { Sidebar } from "@/components/Sidebar";
@@ -30,14 +27,12 @@ import { Input } from "@/components/ui/input";
 import { Progress } from "@/components/ui/progress";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Separator } from "@/components/ui/separator";
 import { Switch } from "@/components/ui/switch";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
-import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
-import { formatJsonPreview, formatRelativeTime } from "@/lib/utils";
+import { formatBytes, formatJsonPreview, formatRelativeTime } from "@/lib/utils";
 import { api } from "@/lib/api";
 import { incidents } from "@/lib/mock";
 import type { NavItemId } from "@/components/navigation";
@@ -45,6 +40,8 @@ import type {
   ChannelListItem,
   MemoryEntry,
   OverviewResponse,
+  SandboxStatus,
+  ConfigResponse,
   ScheduledJobItem,
   SessionDetail,
   SessionListItem,
@@ -60,7 +57,6 @@ const views: Record<NavItemId, string> = {
   memory: "Memory",
   users: "Users",
   sandbox: "Sandbox",
-  security: "Approvals",
   settings: "Settings",
   activity: "Activity",
 };
@@ -96,6 +92,14 @@ export default function App() {
   const [usersLoading, setUsersLoading] = useState<boolean>(false);
   const [usersError, setUsersError] = useState<string | null>(null);
   const [userUpdating, setUserUpdating] = useState<Record<string, boolean>>({});
+  const [sandboxStatus, setSandboxStatus] = useState<SandboxStatus | null>(null);
+  const [sandboxLoading, setSandboxLoading] = useState<boolean>(false);
+  const [sandboxError, setSandboxError] = useState<string | null>(null);
+  const [configData, setConfigData] = useState<ConfigResponse | null>(null);
+  const [configDraft, setConfigDraft] = useState<Record<string, unknown>>({});
+  const [configLoading, setConfigLoading] = useState<boolean>(false);
+  const [configSaving, setConfigSaving] = useState<boolean>(false);
+  const [configError, setConfigError] = useState<string | null>(null);
   const [channelsData, setChannelsData] = useState<ChannelListItem[]>([]);
   const [directoryError, setDirectoryError] = useState<string | null>(null);
   const [jobDialogOpen, setJobDialogOpen] = useState(false);
@@ -118,6 +122,7 @@ export default function App() {
     const stored = localStorage.getItem("theme");
     return stored ? stored === "dark" : true;
   });
+  const sessionMessagesEndRef = useRef<HTMLDivElement | null>(null);
 
   const activeLabel = views[active];
 
@@ -156,6 +161,8 @@ export default function App() {
   const overviewToolRuns = overview?.tool_approvals ?? [];
   const overviewHealth = overview?.system_health ?? [];
   const overviewCost = overview?.cost_trajectory ?? [];
+  const sandboxContainers = sandboxStatus?.containers ?? [];
+  const sandboxWorkspaces = sandboxStatus?.workspaces ?? [];
   const sessionTimeline = useMemo(() => {
     if (!sessionDetail) {
       return [];
@@ -198,26 +205,7 @@ export default function App() {
     if (active !== "sessions") {
       return;
     }
-    let isMounted = true;
-    setSessionsLoading(true);
-    setSessionsError(null);
-    api
-      .getSessions(filter)
-      .then((data) => {
-        if (!isMounted) return;
-        setSessionsData(data);
-      })
-      .catch((error: Error) => {
-        if (!isMounted) return;
-        setSessionsError(error.message);
-      })
-      .finally(() => {
-        if (!isMounted) return;
-        setSessionsLoading(false);
-      });
-    return () => {
-      isMounted = false;
-    };
+    refreshSessions();
   }, [active, filter]);
 
   useEffect(() => {
@@ -250,29 +238,23 @@ export default function App() {
   }, [selectedSessionId]);
 
   useEffect(() => {
+    if (!selectedSessionId || !sessionDetail) {
+      return;
+    }
+    const scrollToBottom = () => {
+      sessionMessagesEndRef.current?.scrollIntoView({ block: "end" });
+    };
+    const raf = requestAnimationFrame(() => {
+      requestAnimationFrame(scrollToBottom);
+    });
+    return () => cancelAnimationFrame(raf);
+  }, [selectedSessionId, sessionDetail]);
+
+  useEffect(() => {
     if (active !== "tools") {
       return;
     }
-    let isMounted = true;
-    setToolRunsLoading(true);
-    setToolRunsError(null);
-    api
-      .getToolRuns()
-      .then((data) => {
-        if (!isMounted) return;
-        setToolRunsData(data);
-      })
-      .catch((error: Error) => {
-        if (!isMounted) return;
-        setToolRunsError(error.message);
-      })
-      .finally(() => {
-        if (!isMounted) return;
-        setToolRunsLoading(false);
-      });
-    return () => {
-      isMounted = false;
-    };
+    refreshToolRuns();
   }, [active]);
 
   useEffect(() => {
@@ -287,19 +269,7 @@ export default function App() {
       return;
     }
     setMemoryUserId(userId);
-    setMemoryLoading(true);
-    setMemoryError(null);
-    api
-      .getMemory(userId)
-      .then((data) => {
-        setMemoryData(data);
-      })
-      .catch((error: Error) => {
-        setMemoryError(error.message);
-      })
-      .finally(() => {
-        setMemoryLoading(false);
-      });
+    refreshMemory();
   }, [active, usersData]);
 
   useEffect(() => {
@@ -309,7 +279,7 @@ export default function App() {
     }
     setMemoryDetailLoading(true);
     api
-      .getMemoryFile(selectedMemory.source)
+      .getMemoryFile(selectedMemory.source, memoryUserId)
       .then((data) => {
         setMemoryDetailContent(data.content);
       })
@@ -335,6 +305,33 @@ export default function App() {
       setMemoryError((error as Error).message);
     } finally {
       setMemoryReindexing(false);
+    }
+  };
+
+  const updateConfigValue = (key: string, value: unknown) => {
+    setConfigDraft((prev) => ({ ...prev, [key]: value }));
+  };
+
+  const saveConfig = async () => {
+    if (!configData) {
+      return;
+    }
+    setConfigSaving(true);
+    setConfigError(null);
+    try {
+      const response = await api.updateConfig(configDraft);
+      setConfigData(response);
+      const nextDraft: Record<string, unknown> = {};
+      response.categories.forEach((category) => {
+        category.fields.forEach((field) => {
+          nextDraft[field.key] = field.value ?? "";
+        });
+      });
+      setConfigDraft(nextDraft);
+    } catch (error) {
+      setConfigError((error as Error).message);
+    } finally {
+      setConfigSaving(false);
     }
   };
 
@@ -397,6 +394,144 @@ export default function App() {
       });
   };
 
+  const refreshSandbox = () => {
+    setSandboxLoading(true);
+    setSandboxError(null);
+    api
+      .getSandboxStatus()
+      .then((data) => {
+        setSandboxStatus(data);
+      })
+      .catch((error: Error) => {
+        setSandboxError(error.message);
+      })
+      .finally(() => {
+        setSandboxLoading(false);
+      });
+  };
+
+  const refreshOverview = () => {
+    setOverviewLoading(true);
+    setOverviewError(null);
+    api
+      .getOverview()
+      .then((data) => {
+        setOverview(data);
+      })
+      .catch((error: Error) => {
+        setOverviewError(error.message);
+      })
+      .finally(() => {
+        setOverviewLoading(false);
+      });
+  };
+
+  const refreshToolRuns = () => {
+    setToolRunsLoading(true);
+    setToolRunsError(null);
+    api
+      .getToolRuns()
+      .then((data) => {
+        setToolRunsData(data);
+      })
+      .catch((error: Error) => {
+        setToolRunsError(error.message);
+      })
+      .finally(() => {
+        setToolRunsLoading(false);
+      });
+  };
+
+  const refreshSessions = () => {
+    setSessionsLoading(true);
+    setSessionsError(null);
+    api
+      .getSessions(filter)
+      .then((data) => {
+        setSessionsData(data);
+      })
+      .catch((error: Error) => {
+        setSessionsError(error.message);
+      })
+      .finally(() => {
+        setSessionsLoading(false);
+      });
+  };
+
+  const refreshMemory = () => {
+    if (!memoryUserId) {
+      setMemoryError("No user selected for memory.");
+      return;
+    }
+    setMemoryLoading(true);
+    setMemoryError(null);
+    api
+      .getMemory(memoryUserId)
+      .then((data) => {
+        setMemoryData(data);
+      })
+      .catch((error: Error) => {
+        setMemoryError(error.message);
+      })
+      .finally(() => {
+        setMemoryLoading(false);
+      });
+  };
+
+  const refreshConfig = () => {
+    setConfigLoading(true);
+    setConfigError(null);
+    api
+      .getConfig()
+      .then((data) => {
+        setConfigData(data);
+        const nextDraft: Record<string, unknown> = {};
+        data.categories.forEach((category) => {
+          category.fields.forEach((field) => {
+            nextDraft[field.key] = field.value ?? "";
+          });
+        });
+        setConfigDraft(nextDraft);
+      })
+      .catch((error: Error) => {
+        setConfigError(error.message);
+      })
+      .finally(() => {
+        setConfigLoading(false);
+      });
+  };
+
+  const handleRefreshActive = () => {
+    switch (active) {
+      case "overview":
+        refreshOverview();
+        break;
+      case "sessions":
+        refreshSessions();
+        break;
+      case "tools":
+        refreshToolRuns();
+        break;
+      case "jobs":
+        refreshJobs();
+        break;
+      case "memory":
+        refreshMemory();
+        break;
+      case "users":
+        refreshUsers();
+        break;
+      case "sandbox":
+        refreshSandbox();
+        break;
+      case "settings":
+        refreshConfig();
+        break;
+      default:
+        break;
+    }
+  };
+
   useEffect(() => {
     refreshDirectories();
   }, []);
@@ -413,6 +548,20 @@ export default function App() {
       return;
     }
     refreshUsers();
+  }, [active]);
+
+  useEffect(() => {
+    if (active !== "sandbox") {
+      return;
+    }
+    refreshSandbox();
+  }, [active]);
+
+  useEffect(() => {
+    if (active !== "settings") {
+      return;
+    }
+    refreshConfig();
   }, [active]);
 
   const userLabelFor = (userId: string) => {
@@ -581,22 +730,17 @@ export default function App() {
   return (
     <div className="app-shell">
       <Sidebar active={active} onSelect={setActive} />
-      <div className="flex flex-col gap-8 px-10 py-10">
+      <div className="flex flex-col gap-8 px-10 py-10 pl-[300px]">
         <div className="mx-auto flex w-full max-w-[1200px] flex-col gap-8">
           <Topbar isDark={isDark} onToggleTheme={setIsDark} />
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-3">
               <div className="data-chip text-[10px] text-mutedForeground">{activeLabel}</div>
-              <p className="text-sm text-mutedForeground">Last sync 2 minutes ago</p>
             </div>
             <div className="flex items-center gap-3">
-              <Button variant="outline">
+              <Button variant="outline" onClick={handleRefreshActive}>
                 <RefreshCcw className="mr-2 h-4 w-4" />
                 Refresh data
-              </Button>
-              <Button>
-                <Rocket className="mr-2 h-4 w-4" />
-                Deploy updates
               </Button>
             </div>
           </div>
@@ -1410,63 +1554,145 @@ export default function App() {
           <div className="grid gap-6">
             <Card>
               <CardHeader>
-                <CardTitle>Sandbox & workspace</CardTitle>
-                <CardDescription>Containers, mounts, and live usage.</CardDescription>
+                <SectionHeader
+                  title="Sandbox & workspaces"
+                  subtitle="Per-user storage and live containers."
+                  actionLabel={sandboxLoading ? "Refreshing..." : "Refresh"}
+                  onAction={sandboxLoading ? undefined : refreshSandbox}
+                />
               </CardHeader>
-              <CardContent className="grid gap-6 lg:grid-cols-2">
-                <div className="rounded-2xl border border-border bg-card p-5">
-                  <div className="flex items-center justify-between">
-                    <div>
-                      <p className="text-sm font-semibold">Workspace usage</p>
-                      <p className="text-xs text-mutedForeground">/workspace</p>
+              <CardContent className="space-y-6">
+                {sandboxLoading ? (
+                  <div className="rounded-2xl border border-dashed border-border bg-muted/40 px-4 py-6 text-sm text-mutedForeground">
+                    Loading sandbox status...
+                  </div>
+                ) : sandboxError ? (
+                  <div className="rounded-2xl border border-dashed border-border bg-muted/40 px-4 py-6 text-sm text-mutedForeground">
+                    {sandboxError}
+                  </div>
+                ) : (
+                  <>
+                    <div className="grid gap-4 md:grid-cols-3">
+                      <div className="rounded-2xl border border-border bg-card p-4">
+                        <p className="text-xs uppercase tracking-[0.2em] text-mutedForeground">
+                          Total workspace
+                        </p>
+                        <p className="mt-2 text-2xl font-semibold">
+                          {sandboxStatus?.total_workspace_human ?? "0 B"}
+                        </p>
+                        <p className="text-xs text-mutedForeground">
+                          {sandboxWorkspaces.length} workspaces
+                        </p>
+                      </div>
+                      <div className="rounded-2xl border border-border bg-card p-4">
+                        <p className="text-xs uppercase tracking-[0.2em] text-mutedForeground">
+                          Containers
+                        </p>
+                        <p className="mt-2 text-2xl font-semibold">
+                          {sandboxContainers.length}
+                        </p>
+                        <p className="text-xs text-mutedForeground">
+                          {sandboxContainers.filter((c) => c.status === "running").length} running
+                        </p>
+                      </div>
+                      <div className="rounded-2xl border border-border bg-card p-4">
+                        <p className="text-xs uppercase tracking-[0.2em] text-mutedForeground">
+                          Browser profile
+                        </p>
+                        <p className="mt-2 text-sm font-semibold">Persistent</p>
+                        <p className="text-xs text-mutedForeground">Brave, 1920×1080 default</p>
+                      </div>
                     </div>
-                    <Badge variant="secondary">12.4 GB</Badge>
-                  </div>
-                  <div className="mt-4">
-                    <Progress value={64} />
-                    <p className="mt-2 text-xs text-mutedForeground">64% of 20GB allocated</p>
-                  </div>
-                </div>
-                <div className="rounded-2xl border border-border bg-card p-5">
-                  <div className="flex items-center justify-between">
-                    <div>
-                      <p className="text-sm font-semibold">Browser persistence</p>
-                      <p className="text-xs text-mutedForeground">/browser-data</p>
-                    </div>
-                    <Badge variant="success">Mounted</Badge>
-                  </div>
-                  <div className="mt-4 flex items-center gap-3 text-sm text-mutedForeground">
-                    <Server className="h-4 w-4" />
-                    Brave stable, 1920×1080 default viewport
-                  </div>
-                </div>
-              </CardContent>
-            </Card>
-          </div>
-        )}
 
-        {active === "security" && (
-          <div className="grid gap-6">
-            <Card>
-              <CardHeader>
-                <CardTitle>Human approvals</CardTitle>
-                <CardDescription>Control which tools require explicit consent.</CardDescription>
-              </CardHeader>
-              <CardContent className="grid gap-4">
-                {[
-                  { label: "Filesystem writes", enabled: true },
-                  { label: "Shell execution", enabled: true },
-                  { label: "Browser actions", enabled: true },
-                  { label: "Sub-agent spawn", enabled: false },
-                ].map((item) => (
-                  <div key={item.label} className="flex items-center justify-between rounded-2xl border border-border bg-card px-4 py-4">
-                    <div>
-                      <p className="text-sm font-semibold">{item.label}</p>
-                      <p className="text-xs text-mutedForeground">Requires DM approval button</p>
+                    <div className="grid gap-4 lg:grid-cols-2">
+                      <div className="rounded-2xl border border-border bg-card p-4">
+                        <div className="flex items-center justify-between">
+                          <p className="text-sm font-semibold">Workspaces</p>
+                          <Badge variant="secondary">
+                            {formatBytes(sandboxStatus?.total_workspace_bytes ?? 0)}
+                          </Badge>
+                        </div>
+                        <div className="mt-3">
+                          {sandboxWorkspaces.length ? (
+                            <Table>
+                              <TableHeader>
+                                <TableRow>
+                                  <TableHead>User</TableHead>
+                                  <TableHead>Size</TableHead>
+                                  <TableHead>Updated</TableHead>
+                                </TableRow>
+                              </TableHeader>
+                              <TableBody>
+                                {sandboxWorkspaces.map((workspace) => (
+                                  <TableRow key={workspace.user_id}>
+                                    <TableCell className="font-semibold">
+                                      {renderUser(workspace.user_id)}
+                                    </TableCell>
+                                    <TableCell>{workspace.size_human}</TableCell>
+                                    <TableCell className="text-mutedForeground">
+                                      {formatRelativeTime(workspace.updated_at)}
+                                    </TableCell>
+                                  </TableRow>
+                                ))}
+                              </TableBody>
+                            </Table>
+                          ) : (
+                            <div className="rounded-2xl border border-dashed border-border bg-muted/40 px-4 py-4 text-sm text-mutedForeground">
+                              No workspaces found yet.
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                      <div className="rounded-2xl border border-border bg-card p-4">
+                        <div className="flex items-center justify-between">
+                          <p className="text-sm font-semibold">Sandbox containers</p>
+                          <Badge variant="secondary">{sandboxContainers.length}</Badge>
+                        </div>
+                        <div className="mt-3">
+                          {sandboxContainers.length ? (
+                            <Table>
+                              <TableHeader>
+                                <TableRow>
+                                  <TableHead>Container</TableHead>
+                                  <TableHead>Status</TableHead>
+                                  <TableHead>User</TableHead>
+                                  <TableHead>Last active</TableHead>
+                                </TableRow>
+                              </TableHeader>
+                              <TableBody>
+                                {sandboxContainers.map((container) => (
+                                  <TableRow key={container.id}>
+                                    <TableCell className="text-xs">
+                                      <div className="font-semibold">{container.name}</div>
+                                      <div className="text-mutedForeground">{container.ports?.[0] ?? "—"}</div>
+                                    </TableCell>
+                                    <TableCell>
+                                      <Badge
+                                        variant={container.status === "running" ? "success" : "warning"}
+                                      >
+                                        {container.status}
+                                      </Badge>
+                                    </TableCell>
+                                    <TableCell className="text-xs">
+                                      {container.user_id ? renderUser(container.user_id) : "—"}
+                                    </TableCell>
+                                    <TableCell className="text-xs text-mutedForeground">
+                                      {formatRelativeTime(container.last_activity_at)}
+                                    </TableCell>
+                                  </TableRow>
+                                ))}
+                              </TableBody>
+                            </Table>
+                          ) : (
+                            <div className="rounded-2xl border border-dashed border-border bg-muted/40 px-4 py-4 text-sm text-mutedForeground">
+                              No sandbox containers found.
+                            </div>
+                          )}
+                        </div>
+                      </div>
                     </div>
-                    <Switch defaultChecked={item.enabled} />
-                  </div>
-                ))}
+                  </>
+                )}
               </CardContent>
             </Card>
           </div>
@@ -1476,60 +1702,81 @@ export default function App() {
           <div className="grid gap-6">
             <Card>
               <CardHeader>
-                <CardTitle>Runtime settings</CardTitle>
-                <CardDescription>Defaults pulled from .env and runtime config.</CardDescription>
+                <SectionHeader
+                  title="Configuration"
+                  subtitle="Manage live settings from the YAML config."
+                  actionLabel={configSaving ? "Saving..." : "Save changes"}
+                  onAction={configSaving ? undefined : saveConfig}
+                />
               </CardHeader>
-              <CardContent className="grid gap-6 lg:grid-cols-2">
-                <div className="space-y-4">
-                  <div className="flex items-center justify-between rounded-2xl border border-border bg-card px-4 py-4">
-                    <div>
-                      <p className="text-sm font-semibold">Default timezone</p>
-                      <p className="text-xs text-mutedForeground">Scheduler + cron</p>
-                    </div>
-                    <Badge variant="secondary">America/New_York</Badge>
+              <CardContent className="space-y-6">
+                {configLoading ? (
+                  <div className="rounded-2xl border border-dashed border-border bg-muted/40 px-4 py-6 text-sm text-mutedForeground">
+                    Loading configuration...
                   </div>
-                  <div className="flex items-center justify-between rounded-2xl border border-border bg-card px-4 py-4">
-                    <div>
-                      <p className="text-sm font-semibold">Embeddings model</p>
-                      <p className="text-xs text-mutedForeground">OpenAI-compatible</p>
-                    </div>
-                    <Badge variant="secondary">local-embed</Badge>
+                ) : configError ? (
+                  <div className="rounded-2xl border border-dashed border-border bg-muted/40 px-4 py-6 text-sm text-mutedForeground">
+                    {configError}
                   </div>
-                  <div className="flex items-center justify-between rounded-2xl border border-border bg-card px-4 py-4">
-                    <div>
-                      <p className="text-sm font-semibold">Browser executable</p>
-                      <p className="text-xs text-mutedForeground">Sandbox</p>
-                    </div>
-                    <Badge variant="secondary">/usr/bin/brave-browser</Badge>
+                ) : (
+                  <div className="grid gap-6">
+                    {configData?.categories.map((category) => (
+                      <Card key={category.id}>
+                        <CardHeader>
+                          <CardTitle className="text-lg">{category.label}</CardTitle>
+                        </CardHeader>
+                        <CardContent className="grid gap-4 md:grid-cols-2">
+                          {category.fields.map((field) => (
+                            <div key={field.key} className="flex flex-col gap-2">
+                              <div className="flex items-center justify-between">
+                                <label className="text-xs font-semibold uppercase tracking-[0.2em] text-mutedForeground">
+                                  {field.label}
+                                </label>
+                                {field.type === "boolean" ? (
+                                  <Switch
+                                    checked={Boolean(configDraft[field.key])}
+                                    onCheckedChange={(value) => updateConfigValue(field.key, value)}
+                                  />
+                                ) : null}
+                              </div>
+                              {field.type === "string" ? (
+                                <Input
+                                  type={field.secret ? "password" : "text"}
+                                  placeholder={field.secret ? "••••••••" : undefined}
+                                  value={String(configDraft[field.key] ?? "")}
+                                  onChange={(event) => updateConfigValue(field.key, event.target.value)}
+                                />
+                              ) : null}
+                              {field.type === "number" ? (
+                                <Input
+                                  type="number"
+                                  min={field.minimum ?? undefined}
+                                  max={field.maximum ?? undefined}
+                                  step={field.step ?? 1}
+                                  value={String(configDraft[field.key] ?? "")}
+                                  onChange={(event) => updateConfigValue(field.key, Number(event.target.value))}
+                                />
+                              ) : null}
+                              {field.type === "list" ? (
+                                <Textarea
+                                  rows={3}
+                                  placeholder="item1, item2"
+                                  value={Array.isArray(configDraft[field.key])
+                                    ? (configDraft[field.key] as string[]).join(", ")
+                                    : String(configDraft[field.key] ?? "")}
+                                  onChange={(event) => updateConfigValue(field.key, event.target.value)}
+                                />
+                              ) : null}
+                              {field.description ? (
+                                <p className="text-xs text-mutedForeground">{field.description}</p>
+                              ) : null}
+                            </div>
+                          ))}
+                        </CardContent>
+                      </Card>
+                    ))}
                   </div>
-                </div>
-                <div className="rounded-2xl border border-border bg-card p-5">
-                  <div className="flex items-start justify-between gap-4">
-                    <div>
-                      <p className="text-sm font-semibold">Config snapshot</p>
-                      <p className="text-xs text-mutedForeground">Latest from runtime</p>
-                    </div>
-                    <TooltipProvider>
-                      <Tooltip>
-                        <TooltipTrigger asChild>
-                          <Button size="icon" variant="outline">
-                            <ChevronsUpDown className="h-4 w-4" />
-                          </Button>
-                        </TooltipTrigger>
-                        <TooltipContent>Copy settings JSON</TooltipContent>
-                      </Tooltip>
-                    </TooltipProvider>
-                  </div>
-                  <Separator className="my-4" />
-                  <ScrollArea className="h-40 rounded-2xl border border-border bg-muted/40 p-3 text-xs font-mono text-mutedForeground">
-                    <pre>{`{
-  "SKITTER_TOOL_APPROVAL_REQUIRED": true,
-  "SKITTER_WORKSPACE_ROOT": "./workspace",
-  "SKITTER_BROWSER_EXECUTABLE": "/usr/bin/brave-browser",
-  "SKITTER_SCHEDULER_TIMEZONE": "America/New_York"
-}`}</pre>
-                  </ScrollArea>
-                </div>
+                )}
               </CardContent>
             </Card>
           </div>
@@ -1569,25 +1816,6 @@ export default function App() {
                     >
                       {incident.severity}
                     </Badge>
-                  </div>
-                ))}
-              </CardContent>
-            </Card>
-          </div>
-        )}
-
-        {active === "sandbox" && (
-          <div className="grid gap-6">
-            <Card>
-              <CardHeader>
-                <CardTitle>Usage detail</CardTitle>
-                <CardDescription>Current worker pool utilization.</CardDescription>
-              </CardHeader>
-              <CardContent className="grid gap-4 md:grid-cols-3">
-                {[{ label: "Workers", value: "5/8" }, { label: "Pending", value: "2" }, { label: "Queue latency", value: "1.2s" }].map((item) => (
-                  <div key={item.label} className="rounded-2xl border border-border bg-card p-4">
-                    <p className="text-xs uppercase tracking-[0.2em] text-mutedForeground">{item.label}</p>
-                    <p className="mt-2 text-2xl font-semibold">{item.value}</p>
                   </div>
                 ))}
               </CardContent>
@@ -1642,7 +1870,7 @@ export default function App() {
           </Card>
         )}
 
-        {active !== "overview" && active !== "sessions" && active !== "tools" && active !== "jobs" && active !== "memory" && active !== "sandbox" && active !== "security" && active !== "settings" && active !== "activity" && (
+        {active !== "overview" && active !== "sessions" && active !== "tools" && active !== "jobs" && active !== "memory" && active !== "users" && active !== "sandbox" && active !== "settings" && active !== "activity" && (
           <Card>
             <CardHeader>
               <CardTitle>Coming soon</CardTitle>
@@ -1654,34 +1882,6 @@ export default function App() {
           </Card>
         )}
 
-        {active === "security" && (
-          <Card>
-            <CardHeader>
-              <CardTitle>Escalation playbooks</CardTitle>
-              <CardDescription>Define who is notified when approvals stall.</CardDescription>
-            </CardHeader>
-            <CardContent className="space-y-3">
-              <div className="flex items-center justify-between rounded-2xl border border-border bg-card px-4 py-3">
-                <div>
-                  <p className="text-sm font-semibold">After 5 minutes</p>
-                  <p className="text-xs text-mutedForeground">Ping #ops and DM admin</p>
-                </div>
-                <Button size="sm" variant="outline">
-                  Edit
-                </Button>
-              </div>
-              <div className="flex items-center justify-between rounded-2xl border border-border bg-card px-4 py-3">
-                <div>
-                  <p className="text-sm font-semibold">After 15 minutes</p>
-                  <p className="text-xs text-mutedForeground">Auto-deny risky tools</p>
-                </div>
-                <Button size="sm" variant="outline">
-                  Edit
-                </Button>
-              </div>
-            </CardContent>
-          </Card>
-        )}
 
         {active === "activity" && (
           <Card>
@@ -1706,7 +1906,7 @@ export default function App() {
 
         {selectedSessionId && (
           <Dialog open={!!selectedSessionId} onOpenChange={(open) => !open && closeSessionDetail()}>
-            <DialogContent className="max-w-6xl w-[95vw]">
+            <DialogContent className="max-w-7xl w-[98vw] max-h-[92vh] overflow-hidden">
               <DialogHeader>
                 <DialogTitle>Session detail</DialogTitle>
                 <DialogDescription>
@@ -1722,7 +1922,7 @@ export default function App() {
                   {sessionDetailError}
                 </div>
               ) : sessionDetail ? (
-                <div className="grid gap-6">
+                <div className="grid gap-6 overflow-hidden">
                   <div className="grid gap-4 md:grid-cols-2">
                     <div className="rounded-2xl border border-border bg-card p-4">
                       <p className="text-xs uppercase tracking-[0.2em] text-mutedForeground">Session</p>
@@ -1745,7 +1945,7 @@ export default function App() {
                       <TabsTrigger value="tools">Tool runs</TabsTrigger>
                     </TabsList>
                     <TabsContent value="messages">
-                      <ScrollArea className="h-[520px] rounded-2xl border border-border bg-card p-4">
+                      <ScrollArea className="h-[60vh] md:h-[65vh] rounded-2xl border border-border bg-card p-4">
                         <div className="space-y-4">
                           {sessionTimeline.map((item) => {
                             if (item.type === "message") {
@@ -1801,11 +2001,12 @@ export default function App() {
                               </div>
                             );
                           })}
+                          <div ref={sessionMessagesEndRef} />
                         </div>
                       </ScrollArea>
                     </TabsContent>
                     <TabsContent value="tools">
-                      <ScrollArea className="h-[520px] rounded-2xl border border-border bg-card p-4">
+                      <ScrollArea className="h-[60vh] md:h-[65vh] rounded-2xl border border-border bg-card p-4">
                         <div className="space-y-4">
                           {sessionDetail.tool_runs.length ? (
                             sessionDetail.tool_runs.map((tool) => (

@@ -178,6 +178,7 @@ class SchedulerService:
                 timestamp=datetime.utcnow(),
                 text=job.prompt,
                 origin="scheduler",
+                metadata={"internal_user_id": user.id},
             )
             response = await self.runtime.handle_message(session_id, envelope)
             if self.deliver is not None:

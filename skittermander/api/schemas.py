@@ -210,3 +210,55 @@ class ChannelListItem(BaseModel):
     kind: str
     label: str
     guild_name: str | None = None
+
+
+class SandboxWorkspaceOut(BaseModel):
+    user_id: str
+    path: str
+    size_bytes: int
+    size_human: str
+    updated_at: datetime
+
+
+class SandboxContainerOut(BaseModel):
+    id: str
+    name: str
+    status: str
+    user_id: str | None = None
+    created_at: datetime | None = None
+    base_url: str | None = None
+    ports: list[str] = []
+    last_activity_at: datetime | None = None
+
+
+class SandboxStatusOut(BaseModel):
+    workspaces: list[SandboxWorkspaceOut]
+    containers: list[SandboxContainerOut]
+    total_workspace_bytes: int
+    total_workspace_human: str
+
+
+class ConfigFieldOut(BaseModel):
+    key: str
+    label: str
+    type: str
+    value: Any
+    description: str | None = None
+    secret: bool = False
+    minimum: float | None = None
+    maximum: float | None = None
+    step: float | None = None
+
+
+class ConfigCategoryOut(BaseModel):
+    id: str
+    label: str
+    fields: list[ConfigFieldOut]
+
+
+class ConfigResponse(BaseModel):
+    categories: list[ConfigCategoryOut]
+
+
+class ConfigUpdate(BaseModel):
+    values: dict[str, Any]

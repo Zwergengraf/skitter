@@ -17,6 +17,7 @@ from ..core.sessions import SessionManager
 from ..data.db import SessionLocal
 from ..data.repositories import Repository
 from ..tools.approval_service import ToolApprovalService
+from ..tools.sandbox_manager import sandbox_manager
 from ..core.models import Attachment, MessageEnvelope
 from .base import EventHandler, TransportAdapter
 
@@ -271,6 +272,8 @@ async def _run() -> None:
         await transport.send_message(channel_id, text, attachments)
     scheduler.set_deliver(_deliver)
     await scheduler.start()
+    if sandbox_manager is not None:
+        await sandbox_manager.start()
     runtime.graph = build_graph(approval_service=approval_service, scheduler_service=scheduler)
 
     session_manager = SessionManager(runtime, settings.workspace_root)
@@ -288,12 +291,13 @@ async def _run() -> None:
                     await repo.mark_user_notified(user.id)
                 envelope.metadata["suppress_ack"] = True
                 return
+            envelope.metadata["internal_user_id"] = user.id
 
         await transport.send_typing(envelope.channel_id)
 
         if envelope.command == "new":
             summary_path, new_session_id = await session_manager.start_new_session(
-                transport_user_id=envelope.user_id,
+                user_id=envelope.metadata.get("internal_user_id", envelope.user_id),
                 channel_id=envelope.channel_id,
             )
             if summary_path:
@@ -306,7 +310,7 @@ async def _run() -> None:
             return
 
         if envelope.command == "memory_reindex":
-            stats = await session_manager.reindex_memories(envelope.user_id)
+            stats = await session_manager.reindex_memories(envelope.metadata.get("internal_user_id", envelope.user_id))
             await transport.send_message(
                 envelope.channel_id,
                 f"Memory reindex complete. Indexed: {stats['indexed']}, skipped: {stats['skipped']}, removed: {stats['removed']}.",
@@ -336,7 +340,10 @@ async def _run() -> None:
             await transport.send_message(envelope.channel_id, json.dumps(result))
             return
 
-        session_id = await session_manager.get_or_create_session(envelope.user_id, envelope.channel_id)
+        session_id = await session_manager.get_or_create_session(
+            envelope.metadata.get("internal_user_id", envelope.user_id),
+            envelope.channel_id,
+        )
 
         async with SessionLocal() as session:
             repo = Repository(session)

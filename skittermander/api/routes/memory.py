@@ -1,12 +1,10 @@
 from __future__ import annotations
 
-from pathlib import Path
-
 from fastapi import APIRouter, Depends, Query, HTTPException
 
 from ..deps import get_repo
 from ..schemas import MemoryEntryOut, MemoryForgetRequest
-from ...core.config import settings
+from ...core.workspace import user_workspace_root
 from ...core.sessions import SessionManager
 from ...core.runtime import AgentRuntime
 from ...data.repositories import Repository
@@ -22,14 +20,10 @@ def _extract_tag(tags: list, prefix: str) -> list[str]:
     return values
 
 
-def _memory_root() -> Path:
-    return Path(settings.workspace_root) / "memory"
-
-
-def _safe_memory_path(source: str) -> Path:
+def _safe_memory_path(user_id: str, source: str) -> Path:
     if "/" in source or "\\" in source or source.startswith("."):
         raise HTTPException(status_code=400, detail="Invalid source")
-    path = _memory_root() / source
+    path = user_workspace_root(user_id) / "memory" / source
     if not path.exists() or not path.is_file():
         raise HTTPException(status_code=404, detail="Memory file not found")
     return path
@@ -80,8 +74,8 @@ async def list_memory(
 
 
 @router.get("/file")
-async def get_memory_file(source: str) -> dict:
-    path = _safe_memory_path(source)
+async def get_memory_file(source: str, user_id: str = Query(...)) -> dict:
+    path = _safe_memory_path(user_id, source)
     content = path.read_text(encoding="utf-8")
     return {"source": source, "content": content}
 
@@ -97,8 +91,8 @@ async def reindex_memory(
     runtime: AgentRuntime | None = repo.session.info.get("runtime")
     if runtime is None:
         raise HTTPException(status_code=500, detail="Runtime not available")
-    session_manager = SessionManager(runtime, settings.workspace_root)
-    stats = await session_manager.reindex_memories(user.transport_user_id)
+    session_manager = SessionManager(runtime, str(user_workspace_root(user.id).parent))
+    stats = await session_manager.reindex_memories(user.id)
     return stats
 
 

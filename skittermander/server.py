@@ -15,6 +15,7 @@ from .data.db import SessionLocal
 from .data.repositories import Repository
 from .transports.discord import DiscordTransport
 from .transports.manager import TransportManager
+from .tools.sandbox_manager import sandbox_manager
 
 
 async def main() -> None:
@@ -23,6 +24,8 @@ async def main() -> None:
     approval_service = app.state.approval_service
     scheduler: SchedulerService = app.state.scheduler_service
     session_manager = SessionManager(runtime, settings.workspace_root)
+    if sandbox_manager is not None:
+        await sandbox_manager.start()
 
     discord_enabled = os.environ.get("SKITTER_ENABLE_DISCORD", "true").lower() == "true"
 
@@ -47,10 +50,12 @@ async def main() -> None:
         if transport is None:
             return
 
+        internal_user_id = envelope.user_id
         if envelope.origin == "discord":
             async with SessionLocal() as session:
                 repo = Repository(session)
                 user = await repo.get_or_create_user(envelope.user_id)
+                internal_user_id = user.id
                 if not user.approved:
                     if not (user.meta or {}).get("approval_notified"):
                         await transport.send_message(
@@ -61,10 +66,12 @@ async def main() -> None:
                     envelope.metadata["suppress_ack"] = True
                     return
 
+        envelope.metadata["internal_user_id"] = internal_user_id
+
         await transport.send_typing(envelope.channel_id)
 
         if envelope.origin == "discord" and envelope.command == "new":
-            summary_path, _ = await session_manager.start_new_session(envelope.user_id, envelope.channel_id)
+            summary_path, _ = await session_manager.start_new_session(internal_user_id, envelope.channel_id)
             if summary_path:
                 await transport.send_message(
                     envelope.channel_id, f"Started a new session. Summary saved to `{summary_path.name}`."
@@ -73,7 +80,7 @@ async def main() -> None:
                 await transport.send_message(envelope.channel_id, "Started a new session.")
             return
         if envelope.origin == "discord" and envelope.command == "memory_reindex":
-            stats = await session_manager.reindex_memories(envelope.user_id)
+            stats = await session_manager.reindex_memories(internal_user_id)
             await transport.send_message(
                 envelope.channel_id,
                 f"Memory reindex complete. Indexed: {stats['indexed']}, skipped: {stats['skipped']}, removed: {stats['removed']}.",
@@ -103,11 +110,12 @@ async def main() -> None:
 
         session_id = envelope.channel_id
         if envelope.origin == "discord":
-            session_id = await session_manager.get_or_create_session(envelope.user_id, envelope.channel_id)
+            session_id = await session_manager.get_or_create_session(internal_user_id, envelope.channel_id)
 
         async with SessionLocal() as session:
             repo = Repository(session)
             metadata = dict(envelope.metadata)
+            metadata.update({"internal_user_id": internal_user_id})
             metadata.update({"message_id": envelope.message_id, "origin": envelope.origin})
             await repo.add_message(session_id, role="user", content=envelope.text, metadata=metadata)
 

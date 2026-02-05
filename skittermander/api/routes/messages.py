@@ -23,10 +23,6 @@ async def send_message(
     if session is None:
         raise HTTPException(status_code=404, detail="Session not found")
 
-    metadata = dict(payload.metadata)
-    metadata.update({"message_id": envelope.message_id, "origin": "web"})
-    await repo.add_message(payload.session_id, role="user", content=payload.text, metadata=metadata)
-
     envelope = MessageEnvelope(
         message_id=str(uuid.uuid4()),
         channel_id=payload.session_id,
@@ -36,6 +32,17 @@ async def send_message(
         origin="web",
         metadata=payload.metadata,
     )
+    metadata = dict(payload.metadata)
+    metadata.update(
+        {
+            "message_id": envelope.message_id,
+            "origin": "web",
+            "internal_user_id": session.user_id,
+        }
+    )
+    await repo.add_message(payload.session_id, role="user", content=payload.text, metadata=metadata)
+
+    envelope.metadata.update({"internal_user_id": session.user_id})
 
     runtime = request.app.state.runtime
     response = await runtime.handle_message(payload.session_id, envelope)

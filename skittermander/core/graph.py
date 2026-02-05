@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import math
 from contextvars import ContextVar, Token
-from typing import Optional
+from typing import Optional, Any
 
 import httpx
 from bs4 import BeautifulSoup
@@ -14,6 +14,7 @@ from langchain.tools import tool
 
 from .config import settings
 from .llm import build_llm
+from .prompting import load_base_prompt
 from ..tools.approval_service import ApprovalDecision, ToolApprovalService
 from ..core.scheduler import SchedulerService
 from ..tools.middleware import ToolApprovalPolicy
@@ -122,54 +123,127 @@ def build_graph(approval_service: ToolApprovalService | None = None, scheduler_s
     policy = ToolApprovalPolicy()
     embedder = EmbeddingsClient()
 
-    def _normalize_action(action: str) -> Optional[str]:
-        value = action.strip().lower()
-        if value in {"read", "write", "list", "delete"}:
-            return value
-        if value in {"read_file", "readfile", "open", "get"}:
-            return "read"
-        if value in {"write_file", "writefile", "save", "put"}:
-            return "write"
-        if value in {"ls", "dir"}:
-            return "list"
-        if value in {"rm", "remove", "del", "delete_file"}:
-            return "delete"
+    def _coalesce_path(path: Optional[str], file_path: Optional[str]) -> Optional[str]:
+        if path and path.strip():
+            return path
+        if file_path and file_path.strip():
+            return file_path
         return None
 
-    @tool("filesystem")
-    async def filesystem(
-        action: str, path: str, content: Optional[str] = None, recursive: Optional[bool] = None
+    @tool("read")
+    async def read(
+        path: Optional[str] = None,
+        offset: Optional[int] = None,
+        limit: Optional[int] = None,
+        file_path: Optional[str] = None,
     ) -> str:
-        """Read/write/list files in the sandboxed workspace. Paths should be relative to the workspace root."""
-        if not path:
-            return "filesystem error: path is required"
-        normalized = _normalize_action(action)
-        if normalized is None:
-            return "filesystem error: action must be one of read, write, list, delete"
-        payload = {"action": normalized, "path": path}
-        if content is not None:
-            payload["content"] = content
-        if recursive is not None:
-            payload["recursive"] = bool(recursive)
-        force_approval = normalized == "delete" and bool(recursive)
-        if force_approval:
-            if approval_service is None:
-                return "filesystem error: recursive delete requires approval"
-            decision = await approval_service.request(
-                session_id=_session_id(),
-                channel_id=_channel_id(),
-                tool_name="filesystem",
-                payload=payload,
-                requested_by=_user_id(),
-            )
-        else:
-            decision = await _maybe_approve("filesystem", payload, approval_service, policy)
+        """Read the contents of a file. Supports text files and images (jpg, png, gif, webp). Images are sent as attachments. For text files, output is truncated to 2000 lines or 50KB (whichever is hit first). Use offset/limit for large files. When you need the full file, continue with offset until complete."""
+        target = _coalesce_path(path, file_path)
+        if not target:
+            return "read error: path is required"
+        payload: dict[str, Any] = {"path": target}
+        if offset is not None:
+            payload["offset"] = offset
+        if limit is not None:
+            payload["limit"] = limit
+        decision = await _maybe_approve("read", payload, approval_service, policy)
         if not decision.approved:
-            return "filesystem error: tool execution denied"
+            return "read error: tool execution denied"
         try:
-            result = await client.execute(_session_id(), "filesystem", payload)
+            result = await client.execute(_user_id(), _session_id(), "read", payload)
         except httpx.HTTPStatusError as exc:
-            return f"filesystem error: {exc.response.text}"
+            return f"read error: {exc.response.text}"
+        if decision.tool_run_id and approval_service is not None:
+            await approval_service.complete(decision.tool_run_id, "completed", result)
+        return json.dumps(result)
+
+    @tool("write")
+    async def write(path: Optional[str] = None, content: Optional[str] = None, file_path: Optional[str] = None) -> str:
+        """Write content to a file. Creates the file if it doesn't exist, overwrites if it does. Automatically creates parent directories."""
+        target = _coalesce_path(path, file_path)
+        if not target:
+            return "write error: path is required"
+        if content is None:
+            return "write error: content is required"
+        payload = {"path": target, "content": content}
+        decision = await _maybe_approve("write", payload, approval_service, policy)
+        if not decision.approved:
+            return "write error: tool execution denied"
+        try:
+            result = await client.execute(_user_id(), _session_id(), "write", payload)
+        except httpx.HTTPStatusError as exc:
+            return f"write error: {exc.response.text}"
+        if decision.tool_run_id and approval_service is not None:
+            await approval_service.complete(decision.tool_run_id, "completed", result)
+        return json.dumps(result)
+
+    @tool("edit")
+    async def edit(
+        path: Optional[str] = None,
+        oldText: Optional[str] = None,
+        newText: Optional[str] = None,
+        file_path: Optional[str] = None,
+        old_string: Optional[str] = None,
+        new_string: Optional[str] = None,
+    ) -> str:
+        """Edit a file by replacing exact text. The oldText must match exactly (including whitespace). Use this for precise, surgical edits."""
+        target = _coalesce_path(path, file_path)
+        if not target:
+            return "edit error: path is required"
+        old_value = oldText if oldText is not None else old_string
+        new_value = newText if newText is not None else new_string
+        if old_value is None:
+            return "edit error: oldText is required"
+        if new_value is None:
+            return "edit error: newText is required"
+        payload = {"path": target, "oldText": old_value, "newText": new_value}
+        decision = await _maybe_approve("edit", payload, approval_service, policy)
+        if not decision.approved:
+            return "edit error: tool execution denied"
+        try:
+            result = await client.execute(_user_id(), _session_id(), "edit", payload)
+        except httpx.HTTPStatusError as exc:
+            return f"edit error: {exc.response.text}"
+        if decision.tool_run_id and approval_service is not None:
+            await approval_service.complete(decision.tool_run_id, "completed", result)
+        return json.dumps(result)
+
+    @tool("list")
+    async def list_files(path: Optional[str] = None, file_path: Optional[str] = None) -> str:
+        """List files and folders at a path in the workspace."""
+        target = _coalesce_path(path, file_path)
+        if not target:
+            return "list error: path is required"
+        payload = {"path": target}
+        decision = await _maybe_approve("list", payload, approval_service, policy)
+        if not decision.approved:
+            return "list error: tool execution denied"
+        try:
+            result = await client.execute(_user_id(), _session_id(), "list", payload)
+        except httpx.HTTPStatusError as exc:
+            return f"list error: {exc.response.text}"
+        if decision.tool_run_id and approval_service is not None:
+            await approval_service.complete(decision.tool_run_id, "completed", result)
+        return json.dumps(result)
+
+    @tool("delete")
+    async def delete(
+        path: Optional[str] = None, recursive: Optional[bool] = None, file_path: Optional[str] = None
+    ) -> str:
+        """Delete a file or folder. Use recursive=true to delete non-empty folders."""
+        target = _coalesce_path(path, file_path)
+        if not target:
+            return "delete error: path is required"
+        payload = {"path": target, "recursive": bool(recursive)}
+        if payload["recursive"] and approval_service is None:
+            return "delete error: recursive delete requires approval"
+        decision = await _maybe_approve("delete", payload, approval_service, policy)
+        if not decision.approved:
+            return "delete error: tool execution denied"
+        try:
+            result = await client.execute(_user_id(), _session_id(), "delete", payload)
+        except httpx.HTTPStatusError as exc:
+            return f"delete error: {exc.response.text}"
         if decision.tool_run_id and approval_service is not None:
             await approval_service.complete(decision.tool_run_id, "completed", result)
         return json.dumps(result)
@@ -182,7 +256,7 @@ def build_graph(approval_service: ToolApprovalService | None = None, scheduler_s
         if not decision.approved:
             return "http_fetch error: tool execution denied"
         try:
-            result = await client.execute(_session_id(), "http_fetch", payload)
+            result = await client.execute(_user_id(), _session_id(), "http_fetch", payload)
         except httpx.HTTPStatusError as exc:
             return f"http_fetch error: {exc.response.text}"
         if decision.tool_run_id and approval_service is not None:
@@ -196,14 +270,24 @@ def build_graph(approval_service: ToolApprovalService | None = None, scheduler_s
         screenshot: bool = False,
         width: int = 1920,
         height: int = 1080,
+        timeout_ms: int = 30000,
+        wait_until: str = "networkidle",
     ) -> str:
         """Open a page in a headless browser (if enabled in the sandbox)."""
-        payload = {"url": url, "max_chars": max_chars, "screenshot": screenshot, "width": width, "height": height}
+        payload = {
+            "url": url,
+            "max_chars": max_chars,
+            "screenshot": screenshot,
+            "width": width,
+            "height": height,
+            "timeout_ms": timeout_ms,
+            "wait_until": wait_until,
+        }
         decision = await _maybe_approve("browser", payload, approval_service, policy)
         if not decision.approved:
             return "browser error: tool execution denied"
         try:
-            result = await client.execute(_session_id(), "browser", payload)
+            result = await client.execute(_user_id(), _session_id(), "browser", payload)
         except httpx.HTTPStatusError as exc:
             return f"browser error: {exc.response.text}"
         if decision.tool_run_id and approval_service is not None:
@@ -265,7 +349,7 @@ def build_graph(approval_service: ToolApprovalService | None = None, scheduler_s
             return "browser_action error: tool execution denied"
         try:
             timeout_s = max(60, int(timeout_ms / 1000) + 15)
-            result = await client.execute(_session_id(), "browser_action", payload, timeout=timeout_s)
+            result = await client.execute(_user_id(), _session_id(), "browser_action", payload, timeout=timeout_s)
         except httpx.HTTPStatusError as exc:
             return f"browser_action error: {exc.response.text}"
         except httpx.ReadTimeout:
@@ -275,20 +359,29 @@ def build_graph(approval_service: ToolApprovalService | None = None, scheduler_s
         return json.dumps(result)
 
     @tool("shell")
-    async def shell(cmd: str, cwd: Optional[str] = None) -> str:
-        """Run a shell command in the sandboxed workspace."""
-        payload = {"cmd": cmd}
+    async def shell(cmd: str, cwd: Optional[str] = None, background: bool = False) -> str:
+        """Run a shell command in the sandboxed workspace. Use background=true for long-running tasks."""
+        payload = {"cmd": cmd, "background": bool(background)}
         if cwd:
             payload["cwd"] = cwd
         decision = await _maybe_approve("shell", payload, approval_service, policy)
         if not decision.approved:
             return "shell error: tool execution denied"
         try:
-            result = await client.execute(_session_id(), "shell", payload)
+            result = await client.execute(_user_id(), _session_id(), "shell", payload)
         except httpx.HTTPStatusError as exc:
             return f"shell error: {exc.response.text}"
         if decision.tool_run_id and approval_service is not None:
             await approval_service.complete(decision.tool_run_id, "completed", result)
+        if payload.get("background") and isinstance(result, dict) and "pid" in result:
+            async with SessionLocal() as session:
+                repo = Repository(session)
+                await repo.create_sandbox_task(
+                    user_id=_user_id(),
+                    session_id=_session_id(),
+                    pid=int(result["pid"]),
+                    command=cmd,
+                )
         return json.dumps(result)
 
     @tool("web_search")
@@ -367,7 +460,9 @@ def build_graph(approval_service: ToolApprovalService | None = None, scheduler_s
         target_channel = channel_id or _channel_id()
         async with SessionLocal() as session:
             repo = Repository(session)
-            user = await repo.get_or_create_user(_user_id())
+            user = await repo.get_user_by_id(_user_id())
+            if user is None:
+                return "schedule_create error: user not found"
         result = await scheduler_service.create_job(user.id, target_channel, name or "Scheduled job", prompt, cron)
         return json.dumps(result)
 
@@ -411,7 +506,9 @@ def build_graph(approval_service: ToolApprovalService | None = None, scheduler_s
             return "schedule_list error: scheduler not configured"
         async with SessionLocal() as session:
             repo = Repository(session)
-            user = await repo.get_or_create_user(_user_id())
+            user = await repo.get_user_by_id(_user_id())
+            if user is None:
+                return "schedule_list error: user not found"
         jobs = await scheduler_service.list_jobs(user.id)
         return json.dumps({"jobs": jobs})
 
@@ -438,7 +535,9 @@ def build_graph(approval_service: ToolApprovalService | None = None, scheduler_s
             return f"memory_search error: {exc}"
         async with SessionLocal() as session:
             repo = Repository(session)
-            user = await repo.get_or_create_user(_user_id())
+            user = await repo.get_user_by_id(_user_id())
+            if user is None:
+                return "memory_search error: user not found"
             entries = await repo.list_memory_entries(user.id)
         scored = []
         for entry in entries:
@@ -463,21 +562,15 @@ def build_graph(approval_service: ToolApprovalService | None = None, scheduler_s
         return json.dumps({"query": query, "results": results})
 
     model = build_llm()
-    system_prompt = (
-        "You are Skittermander, a helpful assistant. For web automation, use the browser tools.\n"
-        "Use browser_action for multi-step flows: open -> snapshot(include_elements=true) -> click/type/fill -> wait -> "
-        "snapshot/screenshot. Do not guess selectors; obtain them from snapshot elements or use stable attributes "
-        "(id, data-testid, aria-label). If the page changes, re-snapshot.\n"
-        "Use browser_action screenshot with selector to capture a specific element. Use full_page if needed. "
-        "Screenshots are saved under workspace/screenshots and the tool returns screenshot_path. "
-        "Do not include screenshot file paths or markdown image links in the final response; just say that the screenshot is attached.\n"
-        "For tabs, use browser_action action=tabs to list, action=focus with index to switch, and action=close_tab to close.\n"
-        "Use web_search for fast discovery, web_fetch for lightweight content extraction, and browser only when needed.\n"
-    )
+    system_prompt = load_base_prompt()
     return create_agent(
         model,
         tools=[
-            filesystem,
+            read,
+            write,
+            edit,
+            list_files,
+            delete,
             http_fetch,
             browser,
             browser_action,

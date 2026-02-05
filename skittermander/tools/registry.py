@@ -30,14 +30,77 @@ def default_registry() -> ToolRegistry:
     registry = ToolRegistry()
     registry.register(
         ToolSpec(
-            name="filesystem",
-            description="Read/write files in the workspace",
+            name="read",
+            description="Read the contents of a file. Supports text files and images (jpg, png, gif, webp). Images are sent as attachments. For text files, output is truncated to 2000 lines or 50KB (whichever is hit first). Use offset/limit for large files. When you need the full file, continue with offset until complete.",
             input_schema={
                 "type": "object",
                 "properties": {
                     "path": {"type": "string"},
-                    "action": {"type": "string"},
+                    "offset": {"type": "number"},
+                    "limit": {"type": "number"},
+                    "file_path": {"type": "string"},
+                },
+            },
+            requires_approval=True,
+        )
+    )
+    registry.register(
+        ToolSpec(
+            name="list",
+            description="List files and folders at a path in the workspace.",
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string"},
+                    "file_path": {"type": "string"},
+                },
+            },
+            requires_approval=False,
+        )
+    )
+    registry.register(
+        ToolSpec(
+            name="delete",
+            description="Delete a file or folder. Use recursive=true to delete non-empty folders.",
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string"},
                     "recursive": {"type": "boolean"},
+                    "file_path": {"type": "string"},
+                },
+            },
+            requires_approval=True,
+        )
+    )
+    registry.register(
+        ToolSpec(
+            name="edit",
+            description="Edit a file by replacing exact text. The oldText must match exactly (including whitespace). Use this for precise, surgical edits.",
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string"},
+                    "oldText": {"type": "string"},
+                    "newText": {"type": "string"},
+                    "file_path": {"type": "string"},
+                    "old_string": {"type": "string"},
+                    "new_string": {"type": "string"},
+                },
+            },
+            requires_approval=True,
+        )
+    )
+    registry.register(
+        ToolSpec(
+            name="write",
+            description="Write content to a file. Creates the file if it doesn't exist, overwrites if it does. Automatically creates parent directories.",
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string"},
+                    "content": {"type": "string"},
+                    "file_path": {"type": "string"},
                 },
             },
             requires_approval=True,

@@ -8,6 +8,7 @@ from ..data.db import SessionLocal
 from ..data.repositories import Repository
 from .memory_service import MemoryService
 from .runtime import AgentRuntime
+from .workspace import ensure_user_workspace, user_workspace_root
 
 
 class SessionManager:
@@ -17,47 +18,44 @@ class SessionManager:
         self._channel_session: dict[str, str] = {}
         self.memory_service = memory_service or MemoryService()
 
-    async def get_or_create_session(self, transport_user_id: str, channel_id: str) -> str:
+    async def get_or_create_session(self, user_id: str, channel_id: str) -> str:
         cached = self._channel_session.get(channel_id)
         if cached:
             return cached
+        ensure_user_workspace(user_id)
         async with SessionLocal() as session:
             repo = Repository(session)
-            user = await repo.get_or_create_user(transport_user_id)
-            active = await repo.get_active_session(user.id)
+            active = await repo.get_active_session(user_id)
             if active is None:
-                active = await repo.create_session(user.id)
+                active = await repo.create_session(user_id)
         self._channel_session[channel_id] = active.id
         return active.id
 
     async def start_new_session(
-        self, transport_user_id: str, channel_id: str
+        self, user_id: str, channel_id: str
     ) -> tuple[Optional[Path], str]:
         summary_path: Optional[Path] = None
+        ensure_user_workspace(user_id)
         async with SessionLocal() as session:
             repo = Repository(session)
-            user = await repo.get_or_create_user(transport_user_id)
-            active = await repo.get_active_session(user.id)
+            active = await repo.get_active_session(user_id)
             if active is not None:
                 summary = await self.runtime.summarize_session(active.id)
-                summary_path, _ = self._write_summary(summary, active.id)
+                summary_path, _ = self._write_summary(user_id, summary, active.id)
                 if summary_path is not None:
-                    await self.memory_service.index_file(user.id, active.id, summary_path, force=True)
+                    await self.memory_service.index_file(user_id, active.id, summary_path, force=True)
                 await repo.end_session(active.id, status="ended")
                 self.runtime.clear_history(active.id)
-            new_session = await repo.create_session(user.id)
+            new_session = await repo.create_session(user_id)
         self._channel_session[channel_id] = new_session.id
         return summary_path, new_session.id
 
-    async def reindex_memories(self, transport_user_id: str) -> dict:
-        memory_root = self.workspace_root / "memory"
-        async with SessionLocal() as session:
-            repo = Repository(session)
-            user = await repo.get_or_create_user(transport_user_id)
-        return await self.memory_service.reindex_all(user.id, memory_root)
+    async def reindex_memories(self, user_id: str) -> dict:
+        memory_root = user_workspace_root(user_id) / "memory"
+        return await self.memory_service.reindex_all(user_id, memory_root)
 
-    def _write_summary(self, summary: str, session_id: str) -> tuple[Path, str]:
-        memory_root = self.workspace_root / "memory"
+    def _write_summary(self, user_id: str, summary: str, session_id: str) -> tuple[Path, str]:
+        memory_root = user_workspace_root(user_id) / "memory"
         memory_root.mkdir(parents=True, exist_ok=True)
         filename = f"{datetime.utcnow().date().isoformat()}.md"
         path = memory_root / filename

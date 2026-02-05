@@ -7,7 +7,6 @@ import {
   HardDrive,
   LayoutDashboard,
   Settings,
-  ShieldCheck,
   Users,
 } from "lucide-react";
 
@@ -19,7 +18,6 @@ export const navItems = [
   { id: "memory", label: "Memory", icon: Database },
   { id: "users", label: "Users", icon: Users },
   { id: "sandbox", label: "Sandbox", icon: HardDrive },
-  { id: "security", label: "Approvals", icon: ShieldCheck },
   { id: "settings", label: "Settings", icon: Settings },
   { id: "activity", label: "Activity", icon: Activity },
 ] as const;

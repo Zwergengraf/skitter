@@ -25,6 +25,7 @@ from .graph import (
 )
 from .models import AgentResponse, Attachment, MessageEnvelope, StreamEvent
 from .llm import build_llm
+from .prompting import build_context_block
 from ..tools.approval_service import ToolApprovalService
 from ..core.embeddings import EmbeddingsClient
 from ..data.db import SessionLocal
@@ -66,7 +67,8 @@ class AgentRuntime:
         )
         token_session = set_current_session_id(session_id)
         token_channel = set_current_channel_id(envelope.channel_id)
-        token_user = set_current_user_id(envelope.user_id)
+        internal_user_id = envelope.metadata.get("internal_user_id", envelope.user_id)
+        token_user = set_current_user_id(internal_user_id)
         token_origin = set_current_origin(envelope.origin)
         try:
             await self._ensure_history(session_id)
@@ -100,7 +102,7 @@ class AgentRuntime:
                 created_at=datetime.utcnow(),
             )
         )
-        attachments = self._extract_attachments(messages, envelope.message_id)
+        attachments = self._extract_attachments(internal_user_id, messages, envelope.message_id)
         cleaned = self._strip_attachment_paths(response) if attachments else response
         return AgentResponse(text=cleaned, attachments=attachments)
 
@@ -164,7 +166,9 @@ class AgentRuntime:
             return
         async with SessionLocal() as session:
             repo = Repository(session)
-            user = await repo.get_or_create_user(current_user_id())
+            user = await repo.get_user_by_id(current_user_id())
+            if user is None:
+                return
             entries = await repo.list_memory_entries(user.id)
         if not entries:
             return
@@ -201,8 +205,11 @@ class AgentRuntime:
         ]
         history.append(SystemMessage(content=memory_block, additional_kwargs={"memory_injected": True}))
 
-    def _extract_attachments(self, messages: list[BaseMessage], message_id: str) -> list[Attachment]:
+    def _extract_attachments(
+        self, user_id: str, messages: list[BaseMessage], message_id: str
+    ) -> list[Attachment]:
         attachments: list[Attachment] = []
+        image_exts = {".png", ".jpg", ".jpeg", ".gif", ".webp"}
         start_index = 0
         if message_id:
             for idx in range(len(messages) - 1, -1, -1):
@@ -227,8 +234,21 @@ class AgentRuntime:
                     paths.append(data["screenshot_path"])
                 if "screenshot_paths" in data and isinstance(data["screenshot_paths"], list):
                     paths.extend([str(p) for p in data["screenshot_paths"]])
+                file_path = data.get("file_path")
+                if isinstance(file_path, str):
+                    content_type = str(data.get("content_type", "")).lower()
+                    ext = Path(file_path).suffix.lower()
+                    if content_type.startswith("image/") or ext in image_exts:
+                        paths.append(file_path)
+                if "file_paths" in data and isinstance(data["file_paths"], list):
+                    for item in data["file_paths"]:
+                        if not isinstance(item, str):
+                            continue
+                        ext = Path(item).suffix.lower()
+                        if ext in image_exts:
+                            paths.append(item)
             for raw_path in paths:
-                resolved = self._resolve_workspace_path(raw_path)
+                resolved = self._resolve_workspace_path(user_id, raw_path)
                 if not resolved or not resolved.exists():
                     continue
                 try:
@@ -245,11 +265,13 @@ class AgentRuntime:
                 )
         return attachments
 
-    def _resolve_workspace_path(self, raw_path: str) -> Path | None:
+    def _resolve_workspace_path(self, user_id: str, raw_path: str) -> Path | None:
         if not raw_path:
             return None
         path = Path(raw_path)
-        workspace = Path(settings.workspace_root)
+        from .workspace import user_workspace_root
+
+        workspace = user_workspace_root(user_id)
         if raw_path.startswith("/workspace/"):
             return workspace / Path(raw_path).relative_to("/workspace")
         if path.is_absolute():

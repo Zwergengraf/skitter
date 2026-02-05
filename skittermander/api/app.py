@@ -10,7 +10,8 @@ from ..core.scheduler import SchedulerService
 from ..core.config import settings
 from ..observability.logging import configure_logging
 from ..tools.approval_service import ToolApprovalService
-from .routes import artifacts, channels, events, memory, messages, overview, schedules, sessions, skills, tools, users
+from ..tools.sandbox_manager import sandbox_manager
+from .routes import artifacts, channels, events, memory, messages, overview, schedules, sessions, skills, tools, users, sandbox, config
 
 
 def create_app() -> FastAPI:
@@ -35,6 +36,11 @@ def create_app() -> FastAPI:
 
     app.state.runtime.ready = True
 
+    @app.on_event("startup")
+    async def _start_sandbox_manager() -> None:
+        if sandbox_manager is not None:
+            await sandbox_manager.start()
+
     app.include_router(sessions.router)
     app.include_router(messages.router)
     app.include_router(events.router)
@@ -46,6 +52,8 @@ def create_app() -> FastAPI:
     app.include_router(schedules.router)
     app.include_router(users.router)
     app.include_router(channels.router)
+    app.include_router(sandbox.router)
+    app.include_router(config.router)
 
     @app.get("/health")
     async def health():

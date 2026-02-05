@@ -214,3 +214,6 @@ workspace/
 browser-data/
 .env
 *.egg-info/
+
+# Local config
+config.yaml

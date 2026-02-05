@@ -53,13 +53,14 @@
       radial-gradient(circle at top, var(--bg-glow-1), transparent 55%),
       radial-gradient(circle at 20% 20%, var(--bg-glow-2), transparent 40%),
       linear-gradient(135deg, var(--bg-glow-3), transparent 70%);
+    background-attachment: fixed;
     min-height: 100vh;
   }
 }
 
 @layer components {
   .app-shell {
-    @apply grid min-h-screen grid-cols-[260px_1fr] gap-0;
+    @apply min-h-screen;
   }
 
   .panel-card {

@@ -1,0 +1,62 @@
+database:
+  url: postgresql+asyncpg://postgres:postgres@localhost:5432/skittermander
+prompt:
+  path: system_prompt.md
+  context_title: Workspace Context
+  context_files:
+  - AGENTS.md
+  - TOOLS.md
+  - IDENTITY.md
+  - USER.md
+  - BOOTSTRAP.md
+openai:
+  api_base: https://api.openai.com/v1
+  api_key: ""
+  model: gpt-4o-mini
+embeddings:
+  api_base: http://127.0.0.1:1234/v1
+  api_key: ""
+  model: text-embedding-embeddinggemma-300m
+  max_chunk_chars: 1000
+  min_similarity: 0.3
+brave:
+  api_key: ""
+  api_base: https://api.search.brave.com/res/v1/web/search
+browser:
+  executable: /usr/bin/brave-browser
+scheduler:
+  timezone: UTC
+discord:
+  token: ""
+workspace:
+  root: workspace
+  skeleton_root: workspace-skeleton
+  host_root: ''
+  skills_root: skills
+sandbox:
+  base_url: http://localhost:9080
+  api_key: ''
+  image: skittermander-sandbox
+  network: ''
+  port: 9080
+  idle_seconds: 900
+  idle_check_seconds: 60
+  container_prefix: skitter-sandbox
+  connect_retries: 5
+  connect_backoff: 0.5
+cors:
+  origins:
+  - http://localhost:5173
+tools:
+  approval_required: false
+  approval_tools:
+  - read
+  - write
+  - edit
+  - list
+  - delete
+  - browser
+  - sub_agent
+  - shell
+sub_agents:
+  max_concurrent: 4

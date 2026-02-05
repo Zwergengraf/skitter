@@ -1,8 +1,5 @@
-import { Bell, Moon, Search, Sun } from "lucide-react";
+import { Moon, Sun } from "lucide-react";
 
-import { Avatar, AvatarFallback } from "@/components/ui/avatar";
-import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
 
 interface TopbarProps {
@@ -25,16 +22,6 @@ export function Topbar({ isDark, onToggleTheme }: TopbarProps) {
           <span>{isDark ? "Dark" : "Light"} mode</span>
           <Switch checked={isDark} onCheckedChange={onToggleTheme} />
         </div>
-        <div className="relative">
-          <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-mutedForeground" />
-          <Input className="w-[220px] pl-9" placeholder="Search sessions" />
-        </div>
-        <Button variant="outline" size="icon">
-          <Bell className="h-4 w-4" />
-        </Button>
-        <Avatar>
-          <AvatarFallback>GM</AvatarFallback>
-        </Avatar>
       </div>
     </div>
   );

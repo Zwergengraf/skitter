@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import JSON, String, Text
+from sqlalchemy import JSON, Integer, String, Text
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
@@ -125,3 +125,16 @@ class ScheduledRun(Base):
     output: Mapped[str | None] = mapped_column(Text, nullable=True)
     attachments: Mapped[dict] = mapped_column(JSON, default=dict)
     created_at: Mapped[datetime] = mapped_column(default=datetime.utcnow)
+
+
+class SandboxTask(Base):
+    __tablename__ = "sandbox_tasks"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    user_id: Mapped[str] = mapped_column(String, index=True)
+    session_id: Mapped[str] = mapped_column(String, index=True)
+    pid: Mapped[int] = mapped_column(Integer)
+    command: Mapped[str] = mapped_column(Text)
+    status: Mapped[str] = mapped_column(String, default="running")
+    created_at: Mapped[datetime] = mapped_column(default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(default=datetime.utcnow)

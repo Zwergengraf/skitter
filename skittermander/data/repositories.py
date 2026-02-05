@@ -14,6 +14,7 @@ from .models import (
     Message,
     ScheduledJob,
     ScheduledRun,
+    SandboxTask,
     Session,
     Skill,
     ToolRun,
@@ -424,3 +425,41 @@ class Repository:
                 setattr(run, key, value)
         await self.session.commit()
         return run
+
+    async def create_sandbox_task(
+        self,
+        user_id: str,
+        session_id: str,
+        pid: int,
+        command: str,
+        status: str = "running",
+    ) -> SandboxTask:
+        task = SandboxTask(
+            id=str(uuid.uuid4()),
+            user_id=user_id,
+            session_id=session_id,
+            pid=pid,
+            command=command,
+            status=status,
+        )
+        self.session.add(task)
+        await self.session.commit()
+        return task
+
+    async def list_active_sandbox_tasks(self, user_id: str) -> List[SandboxTask]:
+        result = await self.session.execute(
+            select(SandboxTask).where(SandboxTask.user_id == user_id, SandboxTask.status == "running")
+        )
+        return list(result.scalars().all())
+
+    async def update_sandbox_task(self, task_id: str, **fields) -> Optional[SandboxTask]:
+        result = await self.session.execute(select(SandboxTask).where(SandboxTask.id == task_id))
+        task = result.scalar_one_or_none()
+        if task is None:
+            return None
+        for key, value in fields.items():
+            if hasattr(task, key) and value is not None:
+                setattr(task, key, value)
+        task.updated_at = datetime.utcnow()
+        await self.session.commit()
+        return task

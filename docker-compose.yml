@@ -11,10 +11,35 @@ services:
     volumes:
       - skitter_pg:/var/lib/postgresql/data
 
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    environment:
+      SKITTER_DB_URL: postgresql+asyncpg://postgres:postgres@postgres:5432/skittermander
+      SKITTER_WORKSPACE_ROOT: /workspace
+      SKITTER_HOST_WORKSPACE_ROOT: ${PWD}/workspace
+      SKITTER_SANDBOX_IMAGE: skittermander-sandbox
+      SKITTER_SANDBOX_NETWORK: skittermander_default
+      SKITTER_SANDBOX_PORT: 9080
+    depends_on:
+      - postgres
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./:/app
+      - ./workspace:/workspace
+      - ./browser-data:/browser-data
+      - /var/run/docker.sock:/var/run/docker.sock
+    command: ["python", "-m", "skittermander.server"]
+
   sandbox:
     build:
       context: .
       dockerfile: skittermander/sandbox/Dockerfile
+    image: skittermander-sandbox
+    profiles:
+      - sandbox
     environment:
       SKITTER_WORKSPACE_ROOT: /workspace
       SKITTER_BROWSER_DATA_ROOT: /browser-data

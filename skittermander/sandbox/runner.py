@@ -6,6 +6,7 @@ from pathlib import Path
 import shutil
 import base64
 from typing import Any, Dict
+from contextlib import asynccontextmanager
 
 import httpx
 from fastapi import FastAPI, HTTPException
@@ -18,6 +19,10 @@ class ExecuteRequest(BaseModel):
     session_id: str
     tool: str
     payload: Dict[str, Any]
+
+
+class TaskStatusRequest(BaseModel):
+    pids: list[int]
 
 
 _playwright = None
@@ -45,6 +50,25 @@ def _save_screenshot(workspace_root: Path, session_id: str, png: bytes) -> str:
     path = shots_root / filename
     path.write_bytes(png)
     return str(Path("screenshots") / _safe_session(session_id) / filename)
+
+
+def _clear_browser_locks(data_dir: Path) -> None:
+    # Clear Chromium profile locks that can remain after a crash/restart.
+    for name in ("SingletonLock", "SingletonCookie", "SingletonSocket"):
+        try:
+            lock_path = data_dir / name
+            if lock_path.exists():
+                lock_path.unlink()
+        except OSError:
+            continue
+
+
+def _clear_all_browser_locks(browser_data_root: Path) -> None:
+    if not browser_data_root.exists():
+        return
+    for child in browser_data_root.iterdir():
+        if child.is_dir():
+            _clear_browser_locks(child)
 
 
 async def _get_context(
@@ -77,13 +101,18 @@ async def _get_page(session_id: str, context: BrowserContext) -> Page:
 
 
 def create_app() -> FastAPI:
-    app = FastAPI(title="Skittermander Sandbox")
-
     workspace_root = Path(os.environ.get("SKITTER_WORKSPACE_ROOT", "/tmp/skitter-workspace"))
     workspace_root.mkdir(parents=True, exist_ok=True)
     browser_data_root = Path(os.environ.get("SKITTER_BROWSER_DATA_ROOT", "/browser-data"))
     browser_data_root.mkdir(parents=True, exist_ok=True)
     browser_executable = os.environ.get("SKITTER_BROWSER_EXECUTABLE") or None
+
+    @asynccontextmanager
+    async def lifespan(app: FastAPI):
+        _clear_all_browser_locks(browser_data_root)
+        yield
+
+    app = FastAPI(title="Skittermander Sandbox", lifespan=lifespan)
 
     def safe_path(path: str) -> Path:
         raw = Path(path)
@@ -101,21 +130,109 @@ def create_app() -> FastAPI:
             raise HTTPException(status_code=400, detail="Invalid path")
         return candidate
 
+    def _payload_path(payload: Dict[str, Any]) -> str:
+        return payload.get("path") or payload.get("file_path") or ""
+
+    def _workspace_response_path(target: Path) -> str:
+        try:
+            rel = target.relative_to(workspace_root)
+        except ValueError:
+            rel = target.name
+        return str(Path("/workspace") / rel)
+
+    def _read_text_file(
+        target: Path, offset: int | None, limit: int | None, max_lines: int = 2000, max_bytes: int = 50 * 1024
+    ) -> dict[str, Any]:
+        start_line = max(1, offset or 1)
+        remaining_lines = max_lines
+        if limit is not None:
+            remaining_lines = max(1, min(max_lines, int(limit)))
+        collected: list[str] = []
+        bytes_count = 0
+        read_lines = 0
+        truncated = False
+        with target.open("r", encoding="utf-8", errors="replace") as handle:
+            for idx, line in enumerate(handle, start=1):
+                if idx < start_line:
+                    continue
+                if read_lines >= remaining_lines:
+                    truncated = True
+                    break
+                encoded = line.encode("utf-8")
+                if bytes_count + len(encoded) > max_bytes:
+                    truncated = True
+                    break
+                collected.append(line)
+                bytes_count += len(encoded)
+                read_lines += 1
+        content = "".join(collected)
+        next_offset = start_line + read_lines if truncated else None
+        return {
+            "status": "ok",
+            "content": content,
+            "truncated": truncated,
+            "next_offset": next_offset,
+        }
+
+    def _coerce_int(value: Any) -> int | None:
+        if value is None:
+            return None
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return None
+
     @app.post("/execute")
     async def execute(req: ExecuteRequest):
-        if req.tool == "filesystem":
+        if req.tool in {"read", "write", "edit", "list", "delete"}:
             action = req.payload.get("action")
-            path = req.payload.get("path", "")
+            if req.tool in {"read", "write", "edit", "list", "delete"}:
+                action = req.tool
+            path = _payload_path(req.payload)
+            if not path:
+                raise HTTPException(status_code=400, detail="path is required")
             target = safe_path(path)
             if action == "read":
                 if not target.exists():
                     raise HTTPException(status_code=404, detail="File not found")
-                return {"status": "ok", "content": target.read_text(encoding="utf-8")}
+                if target.is_dir():
+                    raise HTTPException(status_code=400, detail="Path is a directory")
+                ext = target.suffix.lower()
+                if ext in {".jpg", ".jpeg", ".png", ".gif", ".webp"}:
+                    content_type = "image/jpeg" if ext in {".jpg", ".jpeg"} else f"image/{ext.lstrip('.')}"
+                    return {
+                        "status": "ok",
+                        "file_path": _workspace_response_path(target),
+                        "content_type": content_type,
+                    }
+                offset = _coerce_int(req.payload.get("offset"))
+                limit = _coerce_int(req.payload.get("limit"))
+                return _read_text_file(target, offset=offset, limit=limit)
             if action == "write":
-                content = req.payload.get("content", "")
+                content = req.payload.get("content")
+                if content is None:
+                    raise HTTPException(status_code=400, detail="content is required")
                 target.parent.mkdir(parents=True, exist_ok=True)
-                target.write_text(content, encoding="utf-8")
+                target.write_text(str(content), encoding="utf-8")
                 return {"status": "ok"}
+            if action == "edit":
+                old_text = req.payload.get("oldText") or req.payload.get("old_string")
+                new_text = req.payload.get("newText") or req.payload.get("new_string")
+                if old_text is None:
+                    raise HTTPException(status_code=400, detail="oldText is required")
+                if new_text is None:
+                    raise HTTPException(status_code=400, detail="newText is required")
+                if not target.exists():
+                    raise HTTPException(status_code=404, detail="File not found")
+                if target.is_dir():
+                    raise HTTPException(status_code=400, detail="Path is a directory")
+                content = target.read_text(encoding="utf-8", errors="replace")
+                count = content.count(old_text)
+                if count == 0:
+                    raise HTTPException(status_code=400, detail="oldText not found")
+                updated = content.replace(old_text, new_text)
+                target.write_text(updated, encoding="utf-8")
+                return {"status": "ok", "replacements": count}
             if action == "list":
                 if not target.exists():
                     raise HTTPException(status_code=404, detail="Path not found")
@@ -145,6 +262,8 @@ def create_app() -> FastAPI:
             cmd = req.payload.get("cmd")
             args = req.payload.get("args")
             cwd = req.payload.get("cwd", "")
+            background = bool(req.payload.get("background", False))
+            log_path = req.payload.get("log_path")
             if not cmd and not args:
                 raise HTTPException(status_code=400, detail="cmd or args is required")
             working_dir = safe_path(cwd) if cwd else workspace_root
@@ -155,6 +274,30 @@ def create_app() -> FastAPI:
                 argv = ["/bin/sh", "-lc", str(cmd)]
 
             try:
+                if background:
+                    stdout_target = asyncio.subprocess.DEVNULL
+                    stderr_target = asyncio.subprocess.DEVNULL
+                    log_target_path = None
+                    log_file = None
+                    if log_path:
+                        log_target_path = safe_path(log_path)
+                        log_target_path.parent.mkdir(parents=True, exist_ok=True)
+                        log_file = open(log_target_path, "ab")
+                        stdout_target = log_file
+                        stderr_target = log_file
+                    proc = await asyncio.create_subprocess_exec(
+                        *argv,
+                        cwd=str(working_dir),
+                        stdout=stdout_target,
+                        stderr=stderr_target,
+                    )
+                    if log_file is not None:
+                        log_file.close()
+                    return {
+                        "status": "running",
+                        "pid": proc.pid,
+                        "log_path": str(log_target_path) if log_target_path else None,
+                    }
                 proc = await asyncio.create_subprocess_exec(
                     *argv,
                     cwd=str(working_dir),
@@ -188,12 +331,17 @@ def create_app() -> FastAPI:
             take_screenshot = bool(req.payload.get("screenshot", False))
             width = int(req.payload.get("width", 1920))
             height = int(req.payload.get("height", 1080))
+            timeout_ms = int(req.payload.get("timeout_ms", 30000))
+            wait_until = req.payload.get("wait_until", "networkidle")
+            data_dir = browser_data_root / _safe_session(req.session_id)
+            data_dir.mkdir(parents=True, exist_ok=True)
+            _clear_browser_locks(data_dir)
             async with async_playwright() as p:
                 browser = await p.chromium.launch(executable_path=browser_executable, args=["--disable-dev-shm-usage"])
                 context = await browser.new_context(viewport={"width": width, "height": height})
                 page = await context.new_page()
                 try:
-                    await page.goto(url, wait_until="networkidle", timeout=30000)
+                    await page.goto(url, wait_until=wait_until, timeout=timeout_ms)
                     title = await page.title()
                     html = await page.content()
                     html = html[:max_chars]
@@ -203,6 +351,8 @@ def create_app() -> FastAPI:
                             workspace_root, req.session_id, await page.screenshot(full_page=True)
                         )
                     return {"status": "ok", "title": title, "html": html, "screenshot_path": screenshot_path}
+                except PlaywrightTimeoutError:
+                    return {"status": "timeout", "detail": f"Timeout navigating to {url}"}
                 finally:
                     await browser.close()
 
@@ -232,7 +382,10 @@ def create_app() -> FastAPI:
                 if action in {"open", "navigate"}:
                     if not url:
                         raise HTTPException(status_code=400, detail="url is required")
-                    await page.goto(url, wait_until=wait_until, timeout=timeout_ms)
+                    try:
+                        await page.goto(url, wait_until=wait_until, timeout=timeout_ms)
+                    except PlaywrightTimeoutError as exc:
+                        raise HTTPException(status_code=400, detail=f"Timeout navigating to {url}") from exc
                     return {"status": "ok", "url": page.url}
 
                 if action == "tabs":
@@ -446,6 +599,21 @@ def create_app() -> FastAPI:
             return {"status": "pending", "detail": "Sub-agent tool is handled by the main runtime"}
 
         raise HTTPException(status_code=400, detail="Unknown tool")
+
+    @app.get("/health")
+    async def health() -> dict:
+        return {"status": "ok"}
+
+    @app.post("/tasks/status")
+    async def tasks_status(req: TaskStatusRequest):
+        running = []
+        for pid in req.pids:
+            try:
+                os.kill(int(pid), 0)
+                running.append(int(pid))
+            except OSError:
+                continue
+        return {"status": "ok", "running": running}
 
     return app
 
