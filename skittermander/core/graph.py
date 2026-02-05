@@ -87,9 +87,27 @@ async def _maybe_approve(
     policy: ToolApprovalPolicy,
 ) -> ApprovalDecision:
     if not policy.requires_approval(tool_name):
-        return ApprovalDecision(tool_run_id="", approved=True)
+        async with SessionLocal() as session:
+            repo = Repository(session)
+            tool_run = await repo.create_tool_run(
+                session_id=_session_id(),
+                tool_name=tool_name,
+                status="approved",
+                input_payload=payload,
+                approved_by="auto",
+            )
+        return ApprovalDecision(tool_run_id=tool_run.id, approved=True)
     if approval_service is None:
-        return ApprovalDecision(tool_run_id="", approved=False)
+        async with SessionLocal() as session:
+            repo = Repository(session)
+            tool_run = await repo.create_tool_run(
+                session_id=_session_id(),
+                tool_name=tool_name,
+                status="denied",
+                input_payload=payload,
+                approved_by="system",
+            )
+        return ApprovalDecision(tool_run_id=tool_run.id, approved=False)
     return await approval_service.request(
         session_id=_session_id(),
         channel_id=_channel_id(),

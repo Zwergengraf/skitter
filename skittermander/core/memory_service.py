@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import Iterable, List
+import re
 
 import hashlib
 import json
@@ -52,21 +53,39 @@ class MemoryService:
                 await repo.add_memory(user_id=user_id, summary=chunk, embedding=embedding, tags=tags)
         return len(chunks)
 
-    async def index_file(self, user_id: str, session_id: str, path: Path, force: bool = False) -> bool:
-        memory_root = path.parent
-        index = self._load_index(memory_root)
-        digest = self._hash_file(path)
-        if not force and index.get(path.name) == digest:
-            return False
+    def _split_sessions(self, text: str) -> List[tuple[str, str]]:
+        pattern = re.compile(r"^# Session Summary \(([^)]+)\)", re.MULTILINE)
+        matches = list(pattern.finditer(text))
+        if not matches:
+            return []
+        sections: List[tuple[str, str]] = []
+        for idx, match in enumerate(matches):
+            session_id = match.group(1).strip()
+            start = match.end()
+            end = matches[idx + 1].start() if idx + 1 < len(matches) else len(text)
+            section_text = text[start:end].strip()
+            if section_text.startswith("---"):
+                section_text = section_text.lstrip("-").strip()
+            sections.append((session_id, section_text))
+        return sections
 
+    async def index_file(self, user_id: str, session_id: str | None, path: Path, force: bool = False) -> bool:
+        memory_root = path.parent
         async with SessionLocal() as session:
             repo = Repository(session)
             await repo.delete_memory_by_tag(user_id, f"file:{path.name}")
 
         text = path.read_text(encoding="utf-8")
-        indexed = await self.index_text(user_id, session_id, path.name, text)
+        sections = self._split_sessions(text)
+        indexed = 0
+        if sections:
+            for section_session_id, section_text in sections:
+                indexed += await self.index_text(user_id, section_session_id, path.name, section_text)
+        elif session_id:
+            indexed = await self.index_text(user_id, session_id, path.name, text)
         if indexed > 0:
-            index[path.name] = digest
+            index = self._load_index(memory_root)
+            index[path.name] = self._hash_file(path)
             self._save_index(memory_root, index)
         return indexed > 0
 
@@ -80,11 +99,7 @@ class MemoryService:
         removed = 0
 
         for name, path in current_files.items():
-            digest = self._hash_file(path)
-            if index.get(name) == digest:
-                skipped += 1
-                continue
-            changed = await self.index_file(user_id, session_id=name, path=path, force=True)
+            changed = await self.index_file(user_id, session_id=None, path=path, force=True)
             if changed:
                 indexed += 1
 

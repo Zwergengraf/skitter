@@ -16,6 +16,7 @@ class User(Base):
     id: Mapped[str] = mapped_column(String, primary_key=True)
     transport_user_id: Mapped[str] = mapped_column(String, index=True)
     meta: Mapped[dict] = mapped_column(JSON, default=dict)
+    approved: Mapped[bool] = mapped_column(default=False)
 
 
 class Session(Base):
@@ -69,6 +70,19 @@ class Skill(Base):
     path: Mapped[str] = mapped_column(String)
     description: Mapped[str] = mapped_column(Text)
     meta: Mapped[dict] = mapped_column(JSON, default=dict)
+
+
+class Channel(Base):
+    __tablename__ = "channels"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    transport_channel_id: Mapped[str] = mapped_column(String, index=True)
+    name: Mapped[str] = mapped_column(String)
+    kind: Mapped[str] = mapped_column(String)
+    guild_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    guild_name: Mapped[str | None] = mapped_column(String, nullable=True)
+    meta: Mapped[dict] = mapped_column(JSON, default=dict)
+    updated_at: Mapped[datetime] = mapped_column(default=datetime.utcnow)
 
 
 class Artifact(Base):

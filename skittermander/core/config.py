@@ -35,6 +35,7 @@ class Settings(BaseSettings):
     max_sub_agents: int = Field(default=4)
     tool_approval_required: bool = Field(default=True)
     tool_approval_tools: str = Field(default="filesystem,browser,browser_action,sub_agent,shell")
+    cors_origins: str = Field(default="http://localhost:5173")
 
 
 settings = Settings()

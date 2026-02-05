@@ -47,6 +47,20 @@ async def main() -> None:
         if transport is None:
             return
 
+        if envelope.origin == "discord":
+            async with SessionLocal() as session:
+                repo = Repository(session)
+                user = await repo.get_or_create_user(envelope.user_id)
+                if not user.approved:
+                    if not (user.meta or {}).get("approval_notified"):
+                        await transport.send_message(
+                            envelope.channel_id,
+                            "Your account is not yet approved. An admin has to approve it first.",
+                        )
+                        await repo.mark_user_notified(user.id)
+                    envelope.metadata["suppress_ack"] = True
+                    return
+
         await transport.send_typing(envelope.channel_id)
 
         if envelope.origin == "discord" and envelope.command == "new":

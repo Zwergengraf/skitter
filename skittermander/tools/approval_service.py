@@ -43,6 +43,7 @@ class ToolApprovalService:
                 tool_name=tool_name,
                 status="pending",
                 input_payload=payload,
+                approved_by=None,
             )
 
         future: asyncio.Future[bool] = asyncio.get_event_loop().create_future()

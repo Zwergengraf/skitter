@@ -1,0 +1,82 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --background: 36 33% 97%;
+    --foreground: 222 22% 18%;
+    --card: 0 0% 100%;
+    --card-foreground: 222 22% 18%;
+    --muted: 32 21% 92%;
+    --muted-foreground: 215 13% 45%;
+    --primary: 187 72% 36%;
+    --primary-foreground: 0 0% 100%;
+    --accent: 24 95% 58%;
+    --accent-foreground: 0 0% 100%;
+    --border: 210 20% 86%;
+    --ring: 187 72% 36%;
+    --warning: 36 92% 54%;
+    --success: 154 57% 34%;
+    --bg-glow-1: rgba(17, 94, 89, 0.08);
+    --bg-glow-2: rgba(249, 115, 22, 0.1);
+    --bg-glow-3: rgba(255, 255, 255, 0.9);
+  }
+
+  .dark {
+    --background: 222 26% 11%;
+    --foreground: 210 40% 96%;
+    --card: 222 26% 14%;
+    --card-foreground: 210 40% 96%;
+    --muted: 223 19% 22%;
+    --muted-foreground: 215 20% 70%;
+    --primary: 187 78% 45%;
+    --primary-foreground: 222 24% 12%;
+    --accent: 24 95% 60%;
+    --accent-foreground: 222 24% 12%;
+    --border: 223 16% 28%;
+    --ring: 187 78% 45%;
+    --warning: 36 92% 60%;
+    --success: 154 57% 46%;
+    --bg-glow-1: rgba(14, 116, 144, 0.35);
+    --bg-glow-2: rgba(249, 115, 22, 0.2);
+    --bg-glow-3: rgba(16, 24, 39, 0.9);
+  }
+
+  * {
+    @apply border-border;
+  }
+
+  body {
+    @apply bg-background text-foreground font-body antialiased;
+    background-image:
+      radial-gradient(circle at top, var(--bg-glow-1), transparent 55%),
+      radial-gradient(circle at 20% 20%, var(--bg-glow-2), transparent 40%),
+      linear-gradient(135deg, var(--bg-glow-3), transparent 70%);
+    min-height: 100vh;
+  }
+}
+
+@layer components {
+  .app-shell {
+    @apply grid min-h-screen grid-cols-[260px_1fr] gap-0;
+  }
+
+  .panel-card {
+    @apply rounded-2xl border bg-card p-6 shadow-soft;
+  }
+
+  .data-chip {
+    @apply inline-flex items-center gap-2 rounded-full border px-3 py-1 text-xs font-medium uppercase tracking-[0.2em];
+  }
+
+  .glow-line {
+    @apply relative overflow-hidden rounded-full;
+  }
+
+  .glow-line::after {
+    content: "";
+    @apply absolute inset-0 bg-gradient-to-r from-transparent via-[rgba(14,116,144,0.35)] to-transparent;
+    animation: bar 6s linear infinite;
+  }
+}

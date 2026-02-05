@@ -1,8 +1,12 @@
 CREATE TABLE IF NOT EXISTS users (
     id TEXT PRIMARY KEY,
     transport_user_id TEXT NOT NULL,
-    meta JSONB NOT NULL DEFAULT '{}'::jsonb
+    meta JSONB NOT NULL DEFAULT '{}'::jsonb,
+    approved BOOLEAN NOT NULL DEFAULT FALSE
 );
+
+ALTER TABLE users
+    ADD COLUMN IF NOT EXISTS approved BOOLEAN NOT NULL DEFAULT FALSE;
 
 CREATE TABLE IF NOT EXISTS sessions (
     id TEXT PRIMARY KEY,
@@ -45,6 +49,17 @@ CREATE TABLE IF NOT EXISTS skills (
     path TEXT NOT NULL,
     description TEXT NOT NULL,
     meta JSONB NOT NULL DEFAULT '{}'::jsonb
+);
+
+CREATE TABLE IF NOT EXISTS channels (
+    id TEXT PRIMARY KEY,
+    transport_channel_id TEXT NOT NULL,
+    name TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    guild_id TEXT,
+    guild_name TEXT,
+    meta JSONB NOT NULL DEFAULT '{}'::jsonb,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
 CREATE TABLE IF NOT EXISTS artifacts (

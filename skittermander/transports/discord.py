@@ -74,6 +74,7 @@ class DiscordTransport(TransportAdapter):
     def __init__(self, token: Optional[str] = None) -> None:
         intents = discord.Intents.default()
         intents.message_content = True
+        intents.guilds = True
         self.client = discord.Client(intents=intents)
         self.tree = app_commands.CommandTree(self.client)
         self._handler: EventHandler | None = None
@@ -83,6 +84,7 @@ class DiscordTransport(TransportAdapter):
         @self.client.event
         async def on_ready() -> None:
             await self.tree.sync()
+            await self._sync_channels()
 
         @self.client.event
         async def on_message(message: discord.Message) -> None:
@@ -92,6 +94,7 @@ class DiscordTransport(TransportAdapter):
                 return
             if self._handler is None:
                 return
+            await self._record_user_channel(message)
             envelope = MessageEnvelope(
                 message_id=str(message.id),
                 channel_id=str(message.channel.id),
@@ -156,7 +159,7 @@ class DiscordTransport(TransportAdapter):
         metadata: dict | None = None,
     ) -> None:
         channel = await self.client.fetch_channel(int(channel_id))
-        if not isinstance(channel, discord.DMChannel):
+        if not isinstance(channel, (discord.DMChannel, discord.TextChannel, discord.Thread)):
             return
         files = []
         if attachments:
@@ -172,7 +175,7 @@ class DiscordTransport(TransportAdapter):
 
     async def send_typing(self, channel_id: str) -> None:
         channel = await self.client.fetch_channel(int(channel_id))
-        if not isinstance(channel, discord.DMChannel):
+        if not isinstance(channel, (discord.DMChannel, discord.TextChannel, discord.Thread)):
             return
         await channel.typing()
 
@@ -193,6 +196,7 @@ class DiscordTransport(TransportAdapter):
             await interaction.response.send_message("Handler is not configured.")
             return
         await interaction.response.defer(thinking=True)
+        await self._record_interaction(interaction)
         envelope = MessageEnvelope(
             message_id=str(interaction.id),
             channel_id=str(interaction.channel_id),
@@ -205,8 +209,52 @@ class DiscordTransport(TransportAdapter):
             metadata=extra or {},
         )
         await self._handler(envelope)
+        if envelope.metadata.get("suppress_ack"):
+            return
         if interaction.response.is_done():
             await interaction.followup.send("Command received.")
+
+    async def _record_user_channel(self, message: discord.Message) -> None:
+        display_name = getattr(message.author, "display_name", None) or message.author.name
+        username = message.author.name
+        channel_name = f"@{display_name}"
+        avatar_url = message.author.display_avatar.url if message.author.display_avatar else None
+        async with SessionLocal() as session:
+            repo = Repository(session)
+            await repo.upsert_user_profile(str(message.author.id), display_name, username, avatar_url)
+            await repo.upsert_channel(
+                transport_channel_id=str(message.channel.id),
+                name=channel_name,
+                kind="dm",
+            )
+
+    async def _record_interaction(self, interaction: discord.Interaction) -> None:
+        display_name = getattr(interaction.user, "display_name", None) or interaction.user.name
+        username = interaction.user.name
+        channel_name = f"@{display_name}"
+        avatar_url = interaction.user.display_avatar.url if interaction.user.display_avatar else None
+        async with SessionLocal() as session:
+            repo = Repository(session)
+            await repo.upsert_user_profile(str(interaction.user.id), display_name, username, avatar_url)
+            if interaction.channel_id is not None:
+                await repo.upsert_channel(
+                    transport_channel_id=str(interaction.channel_id),
+                    name=channel_name,
+                    kind="dm",
+                )
+
+    async def _sync_channels(self) -> None:
+        async with SessionLocal() as session:
+            repo = Repository(session)
+            for guild in self.client.guilds:
+                for channel in guild.text_channels:
+                    await repo.upsert_channel(
+                        transport_channel_id=str(channel.id),
+                        name=channel.name,
+                        kind="text",
+                        guild_id=str(guild.id),
+                        guild_name=guild.name,
+                    )
 
 
 async def _run() -> None:
@@ -228,6 +276,19 @@ async def _run() -> None:
     session_manager = SessionManager(runtime, settings.workspace_root)
 
     async def handler(envelope: MessageEnvelope) -> None:
+        async with SessionLocal() as session:
+            repo = Repository(session)
+            user = await repo.get_or_create_user(envelope.user_id)
+            if not user.approved:
+                if not (user.meta or {}).get("approval_notified"):
+                    await transport.send_message(
+                        envelope.channel_id,
+                        "Your account is not yet approved. An admin has to approve it first.",
+                    )
+                    await repo.mark_user_notified(user.id)
+                envelope.metadata["suppress_ack"] = True
+                return
+
         await transport.send_typing(envelope.channel_id)
 
         if envelope.command == "new":
