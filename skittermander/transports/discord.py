@@ -174,6 +174,29 @@ class DiscordTransport(TransportAdapter):
         else:
             await channel.send(content)
 
+    async def send_user_message(
+        self,
+        user_id: str,
+        content: str,
+        attachments: Iterable[Attachment] | None = None,
+        metadata: dict | None = None,
+    ) -> None:
+        user = await self.client.fetch_user(int(user_id))
+        if user is None:
+            return
+        channel = await user.create_dm()
+        files = []
+        if attachments:
+            for attachment in attachments:
+                if attachment.bytes_data:
+                    files.append(discord.File(io.BytesIO(attachment.bytes_data), filename=attachment.filename))
+                elif attachment.path:
+                    files.append(discord.File(attachment.path))
+        if files:
+            await channel.send(content or "Screenshot:", files=files)
+        else:
+            await channel.send(content)
+
     async def send_typing(self, channel_id: str) -> None:
         channel = await self.client.fetch_channel(int(channel_id))
         if not isinstance(channel, (discord.DMChannel, discord.TextChannel, discord.Thread)):

@@ -22,7 +22,6 @@ Before answering anything about prior work, decisions, dates, people, preference
 Citations: include Source: <path#line> when it helps the user verify memory snippets.
 
 # Workspace
-Your working directory is: workspace
 Treat this directory as the single global workspace for file operations unless explicitly instructed otherwise.
 
 # Project Context

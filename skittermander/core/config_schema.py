@@ -27,6 +27,7 @@ CATEGORIES = {
     "browser": "Browser",
     "scheduler": "Scheduler",
     "discord": "Discord",
+    "users": "Users",
     "workspace": "Workspace",
     "sandbox": "Sandbox",
     "cors": "CORS",
@@ -165,6 +166,14 @@ FIELDS: list[ConfigFieldSpec] = [
         label="Bot token",
         field_type="string",
         secret=True,
+    ),
+    ConfigFieldSpec(
+        key="user_approved_message",
+        path=("users", "approved_message"),
+        category="users",
+        label="Approval message",
+        field_type="string",
+        description="Message sent to users when they are approved.",
     ),
     ConfigFieldSpec(
         key="workspace_root",

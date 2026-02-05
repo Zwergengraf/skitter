@@ -38,6 +38,7 @@ async def main() -> None:
         transport_by_origin["discord"] = discord_transport
         approval_service.set_notifier(discord_transport.send_approval_request)
         discord_transport.set_approval_service(approval_service)
+        app.state.user_notifier = discord_transport.send_user_message
         async def _deliver(channel_id: str, text: str, attachments: list) -> None:
             await discord_transport.send_message(channel_id, text, attachments)
         scheduler.set_deliver(_deliver)

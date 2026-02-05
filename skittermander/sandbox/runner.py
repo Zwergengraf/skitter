@@ -185,14 +185,11 @@ def create_app() -> FastAPI:
     @app.post("/execute")
     async def execute(req: ExecuteRequest):
         if req.tool in {"read", "write", "edit", "list", "delete"}:
-            action = req.payload.get("action")
-            if req.tool in {"read", "write", "edit", "list", "delete"}:
-                action = req.tool
             path = _payload_path(req.payload)
             if not path:
                 raise HTTPException(status_code=400, detail="path is required")
             target = safe_path(path)
-            if action == "read":
+            if req.tool == "read":
                 if not target.exists():
                     raise HTTPException(status_code=404, detail="File not found")
                 if target.is_dir():
@@ -208,14 +205,14 @@ def create_app() -> FastAPI:
                 offset = _coerce_int(req.payload.get("offset"))
                 limit = _coerce_int(req.payload.get("limit"))
                 return _read_text_file(target, offset=offset, limit=limit)
-            if action == "write":
+            if req.tool == "write":
                 content = req.payload.get("content")
                 if content is None:
                     raise HTTPException(status_code=400, detail="content is required")
                 target.parent.mkdir(parents=True, exist_ok=True)
                 target.write_text(str(content), encoding="utf-8")
                 return {"status": "ok"}
-            if action == "edit":
+            if req.tool == "edit":
                 old_text = req.payload.get("oldText") or req.payload.get("old_string")
                 new_text = req.payload.get("newText") or req.payload.get("new_string")
                 if old_text is None:
@@ -233,11 +230,11 @@ def create_app() -> FastAPI:
                 updated = content.replace(old_text, new_text)
                 target.write_text(updated, encoding="utf-8")
                 return {"status": "ok", "replacements": count}
-            if action == "list":
+            if req.tool == "list":
                 if not target.exists():
                     raise HTTPException(status_code=404, detail="Path not found")
                 return {"status": "ok", "entries": [p.name for p in target.iterdir()]}
-            if action == "delete":
+            if req.tool == "delete":
                 if not target.exists():
                     return {"status": "ok", "deleted": False}
                 if target.is_dir():
@@ -248,7 +245,7 @@ def create_app() -> FastAPI:
                 else:
                     target.unlink()
                 return {"status": "ok", "deleted": True}
-            raise HTTPException(status_code=400, detail="Unknown filesystem action")
+            raise HTTPException(status_code=400, detail="Unknown filesystem tool")
 
         if req.tool == "http_fetch":
             url = req.payload.get("url")

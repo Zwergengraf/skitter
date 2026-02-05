@@ -2,13 +2,11 @@ database:
   url: postgresql+asyncpg://postgres:postgres@localhost:5432/skittermander
 prompt:
   path: system_prompt.md
-  context_title: Workspace Context
   context_files:
   - AGENTS.md
   - TOOLS.md
   - IDENTITY.md
   - USER.md
-  - BOOTSTRAP.md
 openai:
   api_base: https://api.openai.com/v1
   api_key: ""
@@ -28,6 +26,8 @@ scheduler:
   timezone: UTC
 discord:
   token: ""
+users:
+  approved_message: Hey! I just came online. Who am I? Who are you?
 workspace:
   root: workspace
   skeleton_root: workspace-skeleton

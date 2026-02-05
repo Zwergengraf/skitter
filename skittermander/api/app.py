@@ -30,6 +30,7 @@ def create_app() -> FastAPI:
     app.state.approval_service = ToolApprovalService(app.state.event_bus)
     app.state.runtime = AgentRuntime(app.state.event_bus, approval_service=app.state.approval_service)
     app.state.scheduler_service = SchedulerService(app.state.runtime)
+    app.state.user_notifier = None
     app.state.runtime.graph = build_graph(
         approval_service=app.state.approval_service, scheduler_service=app.state.scheduler_service
     )

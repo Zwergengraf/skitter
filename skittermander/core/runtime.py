@@ -25,7 +25,7 @@ from .graph import (
 )
 from .models import AgentResponse, Attachment, MessageEnvelope, StreamEvent
 from .llm import build_llm
-from .prompting import build_context_block
+from .prompting import build_system_prompt
 from ..tools.approval_service import ToolApprovalService
 from ..core.embeddings import EmbeddingsClient
 from ..data.db import SessionLocal
@@ -73,6 +73,7 @@ class AgentRuntime:
         try:
             await self._ensure_history(session_id)
             history = self._history[session_id]
+            self._ensure_system_prompt(history, internal_user_id)
             if content:
                 last = history[-1] if history else None
                 last_id = getattr(last, "additional_kwargs", {}).get("message_id") if last else None
@@ -204,6 +205,19 @@ class AgentRuntime:
             if not (isinstance(msg, SystemMessage) and msg.additional_kwargs.get("memory_injected"))
         ]
         history.append(SystemMessage(content=memory_block, additional_kwargs={"memory_injected": True}))
+
+    def _ensure_system_prompt(self, history: list[BaseMessage], user_id: str) -> None:
+        prompt = build_system_prompt(user_id)
+        history[:] = [
+            msg
+            for msg in history
+            if not (isinstance(msg, SystemMessage) and msg.additional_kwargs.get("system_prompt"))
+        ]
+        if not prompt:
+            return
+        print("Using system prompt:"
+              f"\n{'-'*40}\n{prompt}\n{'-'*40}")
+        history.insert(0, SystemMessage(content=prompt, additional_kwargs={"system_prompt": True}))
 
     def _extract_attachments(
         self, user_id: str, messages: list[BaseMessage], message_id: str

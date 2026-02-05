@@ -32,6 +32,7 @@ class Settings(BaseSettings):
     scheduler_timezone: str = Field(default="UTC")
 
     discord_token: str = Field(default="")
+    user_approved_message: str = Field(default="Hey! I just came online. Who am I? Who are you?")
 
     workspace_root: str = Field(default="workspace")
     workspace_skeleton_root: str = Field(default="workspace-skeleton")
@@ -55,7 +56,6 @@ class Settings(BaseSettings):
     cors_origins: str = Field(default="http://localhost:5173")
     config_path: str = Field(default="config.yaml")
     prompt_path: str = Field(default="system_prompt.md")
-    prompt_context_title: str = Field(default="Workspace Context")
     prompt_context_files: str = Field(
         default="AGENTS.md,TOOLS.md,IDENTITY.md,USER.md,BOOTSTRAP.md"
     )

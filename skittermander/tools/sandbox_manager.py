@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -36,6 +37,7 @@ class SandboxManager:
         self._last_activity: Dict[str, datetime] = {}
         self._monitor_task: Optional[asyncio.Task] = None
         self._logger = logging.getLogger(__name__)
+        self._locks: Dict[str, asyncio.Lock] = {}
 
     def _init_client(self) -> None:
         try:
@@ -89,7 +91,14 @@ class SandboxManager:
         if user_id in self._cache:
             info = self._cache[user_id]
             return info
-        return await asyncio.to_thread(self._ensure_sync, user_id)
+        lock = self._locks.get(user_id)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._locks[user_id] = lock
+        async with lock:
+            if user_id in self._cache:
+                return self._cache[user_id]
+            return await asyncio.to_thread(self._ensure_sync, user_id)
 
     async def stop(self, user_id: str) -> None:
         await asyncio.to_thread(self._stop_sync, user_id)
@@ -111,69 +120,68 @@ class SandboxManager:
 
         name = self._container_name(user_id)
         container = None
-        try:
-            container = self._client.containers.get(name)
-            container.reload()
-            if container.status != "running":
+        for attempt in range(3):
+            try:
+                container = self._client.containers.get(name)
+                container.reload()
+                if container.status != "running":
+                    try:
+                        container.start()
+                    except docker.errors.APIError:
+                        container.remove(force=True)
+                        container = None
+                if container is not None and not self._inside_docker:
+                    ports = container.attrs.get("NetworkSettings", {}).get("Ports", {})
+                    mapping = ports.get(f"{settings.sandbox_port}/tcp")
+                    if not mapping:
+                        container.remove(force=True)
+                        container = None
+            except docker.errors.NotFound:
+                container = None
+
+            if container is None:
                 try:
-                    container.start()
-                except docker.errors.APIError:
-                    container.remove(force=True)
-                    container = None
-            if container is not None and not self._inside_docker:
-                ports = container.attrs.get("NetworkSettings", {}).get("Ports", {})
-                mapping = ports.get(f"{settings.sandbox_port}/tcp")
-                if not mapping:
-                    container.remove(force=True)
-                    container = None
-        except docker.errors.NotFound:
-            container = self._client.containers.run(
-                settings.sandbox_image,
-                name=name,
-                detach=True,
-                labels={"skitter_user_id": user_id, "skitter_role": "sandbox"},
-                environment={
-                    "SKITTER_WORKSPACE_ROOT": "/workspace",
-                    "SKITTER_BROWSER_DATA_ROOT": "/browser-data",
-                    "SKITTER_BROWSER_EXECUTABLE": settings.browser_executable or "",
-                },
-                volumes={
-                    str(host_workspace): {"bind": "/workspace", "mode": "rw"},
-                    str(browser_root): {"bind": "/browser-data", "mode": "rw"},
-                },
-                network=settings.sandbox_network if self._inside_docker else None,
-                ports=None
-                if settings.sandbox_network and self._inside_docker
-                else {f"{settings.sandbox_port}/tcp": None},
-            )
-        except docker.errors.APIError as exc:
+                    container = self._client.containers.run(
+                        settings.sandbox_image,
+                        name=name,
+                        detach=True,
+                        labels={"skitter_user_id": user_id, "skitter_role": "sandbox"},
+                        environment={
+                            "SKITTER_WORKSPACE_ROOT": "/workspace",
+                            "SKITTER_BROWSER_DATA_ROOT": "/browser-data",
+                            "SKITTER_BROWSER_EXECUTABLE": settings.browser_executable or "",
+                        },
+                        volumes={
+                            str(host_workspace): {"bind": "/workspace", "mode": "rw"},
+                            str(browser_root): {"bind": "/browser-data", "mode": "rw"},
+                        },
+                        network=settings.sandbox_network if self._inside_docker else None,
+                        ports=None
+                        if settings.sandbox_network and self._inside_docker
+                        else {f"{settings.sandbox_port}/tcp": None},
+                    )
+                except docker.errors.APIError as exc:
+                    status_code = getattr(exc, "status_code", None)
+                    if status_code == 409:
+                        time.sleep(0.3 * (attempt + 1))
+                        try:
+                            container = self._client.containers.get(name)
+                            container.reload()
+                        except docker.errors.NotFound:
+                            container = None
+                    else:
+                        if container is not None:
+                            try:
+                                container.remove(force=True)
+                            except docker.errors.APIError:
+                                pass
+                        raise exc
+
             if container is not None:
-                try:
-                    container.remove(force=True)
-                except docker.errors.APIError:
-                    pass
-            raise exc
+                break
 
         if container is None:
-            container = self._client.containers.run(
-                settings.sandbox_image,
-                name=name,
-                detach=True,
-                labels={"skitter_user_id": user_id, "skitter_role": "sandbox"},
-                environment={
-                    "SKITTER_WORKSPACE_ROOT": "/workspace",
-                    "SKITTER_BROWSER_DATA_ROOT": "/browser-data",
-                    "SKITTER_BROWSER_EXECUTABLE": settings.browser_executable or "",
-                },
-                volumes={
-                    str(host_workspace): {"bind": "/workspace", "mode": "rw"},
-                    str(browser_root): {"bind": "/browser-data", "mode": "rw"},
-                },
-                network=settings.sandbox_network if self._inside_docker else None,
-                ports=None
-                if settings.sandbox_network and self._inside_docker
-                else {f"{settings.sandbox_port}/tcp": None},
-            )
+            raise RuntimeError(f"Failed to ensure sandbox container for {user_id}")
 
         container.reload()
         base_url = self._base_url_for_container(container, user_id)

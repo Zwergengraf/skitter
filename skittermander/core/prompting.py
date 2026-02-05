@@ -48,7 +48,24 @@ def build_context_block(user_id: str) -> str | None:
             continue
         if not content:
             continue
-        sections.append(f"## {filename}\n{content}")
+        sections.append(f"###{filename}\n{content}")
     if not sections:
         return None
-    return f"\n\n" + "\n\n".join(sections)
+    return "\n\n".join(sections)
+
+
+def build_system_prompt(user_id: str) -> str:
+    bootstrap_file = user_workspace_root(user_id) / "BOOTSTRAP.md"
+    if bootstrap_file.exists():
+        try:
+            content = bootstrap_file.read_text(encoding="utf-8").strip()
+        except OSError:
+            content = None
+        if content:
+            return content
+    
+    base = load_base_prompt().strip()
+    context = build_context_block(user_id)
+    if context:
+        return f"{base}\n\n{context}".strip()
+    return base

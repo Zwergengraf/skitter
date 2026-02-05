@@ -14,7 +14,6 @@ from langchain.tools import tool
 
 from .config import settings
 from .llm import build_llm
-from .prompting import load_base_prompt
 from ..tools.approval_service import ApprovalDecision, ToolApprovalService
 from ..core.scheduler import SchedulerService
 from ..tools.middleware import ToolApprovalPolicy
@@ -562,7 +561,6 @@ def build_graph(approval_service: ToolApprovalService | None = None, scheduler_s
         return json.dumps({"query": query, "results": results})
 
     model = build_llm()
-    system_prompt = load_base_prompt()
     return create_agent(
         model,
         tools=[
@@ -583,5 +581,5 @@ def build_graph(approval_service: ToolApprovalService | None = None, scheduler_s
             schedule_delete,
             schedule_list,
         ],
-        system_prompt=system_prompt,
+        system_prompt=None,
     )
