@@ -279,16 +279,6 @@ class AgentRuntime:
                     block["mime_type"] = content_type
                 blocks.append(block)
                 continue
-            if content_type == "text/plain" or ext in {".txt", ".log"}:
-                block = {"type": "text-plain", "url": url, "mime_type": "text/plain"}
-                if filename:
-                    block["title"] = filename
-                blocks.append(block)
-                continue
-            block = {"type": "file", "url": url}
-            if content_type:
-                block["mime_type"] = content_type
-            blocks.append(block)
         return blocks
 
     def _extract_attachments(

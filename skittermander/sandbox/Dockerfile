@@ -1,7 +1,9 @@
 FROM ubuntu:latest
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    curl gnupg ca-certificates python3 python3-pip nodejs npm && \
+    curl gnupg ca-certificates zip jq \
+    python3 python3-pip \
+    nodejs npm && \
     curl -fsSLo /usr/share/keyrings/brave-browser-archive-keyring.gpg \
       https://brave-browser-apt-release.s3.brave.com/brave-browser-archive-keyring.gpg && \
     echo "deb [signed-by=/usr/share/keyrings/brave-browser-archive-keyring.gpg] https://brave-browser-apt-release.s3.brave.com/ stable main" \
