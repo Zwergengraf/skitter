@@ -31,16 +31,21 @@ _pages: dict[str, Page] = {}
 _locks: dict[str, asyncio.Lock] = {}
 
 
-def _get_lock(session_id: str) -> asyncio.Lock:
-    lock = _locks.get(session_id)
+def _get_lock(profile_id: str) -> asyncio.Lock:
+    lock = _locks.get(profile_id)
     if lock is None:
         lock = asyncio.Lock()
-        _locks[session_id] = lock
+        _locks[profile_id] = lock
     return lock
 
 
 def _safe_session(session_id: str) -> str:
     return "".join(ch if ch.isalnum() or ch in ("-", "_") else "_" for ch in session_id)
+
+
+def _browser_profile_key(session_id: str) -> str:
+    # Use a stable profile per sandbox container (per user).
+    return "default"
 
 
 def _save_screenshot(workspace_root: Path, session_id: str, png: bytes) -> str:
@@ -74,14 +79,14 @@ def _clear_all_browser_locks(browser_data_root: Path) -> None:
 
 
 async def _get_context(
-    session_id: str, browser_data_root: Path, width: int, height: int, executable: str | None
+    profile_id: str, browser_data_root: Path, width: int, height: int, executable: str | None
 ) -> BrowserContext:
     global _playwright
     if _playwright is None:
         _playwright = await async_playwright().start()
-    if session_id in _contexts:
-        return _contexts[session_id]
-    data_dir = browser_data_root / _safe_session(session_id)
+    if profile_id in _contexts:
+        return _contexts[profile_id]
+    data_dir = browser_data_root / _safe_session(profile_id)
     data_dir.mkdir(parents=True, exist_ok=True)
     context = await _playwright.chromium.launch_persistent_context(
         user_data_dir=str(data_dir),
@@ -89,16 +94,16 @@ async def _get_context(
         executable_path=executable,
         args=["--disable-dev-shm-usage"],
     )
-    _contexts[session_id] = context
+    _contexts[profile_id] = context
     return context
 
 
-async def _get_page(session_id: str, context: BrowserContext) -> Page:
-    if session_id in _pages:
-        return _pages[session_id]
+async def _get_page(profile_id: str, context: BrowserContext) -> Page:
+    if profile_id in _pages:
+        return _pages[profile_id]
     pages = context.pages
     page = pages[0] if pages else await context.new_page()
-    _pages[session_id] = page
+    _pages[profile_id] = page
     return page
 
 
@@ -332,12 +337,9 @@ def create_app() -> FastAPI:
             height = int(req.payload.get("height", 1080))
             timeout_ms = int(req.payload.get("timeout_ms", 30000))
             wait_until = req.payload.get("wait_until", "networkidle")
-            data_dir = browser_data_root / _safe_session(req.session_id)
-            data_dir.mkdir(parents=True, exist_ok=True)
-            _clear_browser_locks(data_dir)
-            async with async_playwright() as p:
-                browser = await p.chromium.launch(executable_path=browser_executable, args=["--disable-dev-shm-usage"])
-                context = await browser.new_context(viewport={"width": width, "height": height})
+            profile_id = _browser_profile_key(req.session_id)
+            async with _get_lock(profile_id):
+                context = await _get_context(profile_id, browser_data_root, width, height, browser_executable)
                 page = await context.new_page()
                 try:
                     await page.goto(url, wait_until=wait_until, timeout=timeout_ms)
@@ -353,11 +355,12 @@ def create_app() -> FastAPI:
                 except PlaywrightTimeoutError:
                     return {"status": "timeout", "detail": f"Timeout navigating to {url}"}
                 finally:
-                    await browser.close()
+                    await page.close()
 
         if req.tool == "browser_action":
             action = req.payload.get("action")
             session_id = req.session_id
+            profile_id = _browser_profile_key(session_id)
             if not action:
                 raise HTTPException(status_code=400, detail="action is required")
 
@@ -373,9 +376,9 @@ def create_app() -> FastAPI:
             include_elements = bool(req.payload.get("include_elements", False))
             max_elements = int(req.payload.get("max_elements", 50))
 
-            async with _get_lock(session_id):
-                context = await _get_context(session_id, browser_data_root, width, height, browser_executable)
-                page = await _get_page(session_id, context)
+            async with _get_lock(profile_id):
+                context = await _get_context(profile_id, browser_data_root, width, height, browser_executable)
+                page = await _get_page(profile_id, context)
                 await page.set_viewport_size({"width": width, "height": height})
 
                 if action in {"open", "navigate"}:
@@ -599,8 +602,8 @@ def create_app() -> FastAPI:
                     return {"status": "ok", "screenshot_path": screenshot_path}
 
                 if action == "close":
-                    ctx = _contexts.pop(session_id, None)
-                    _pages.pop(session_id, None)
+                    ctx = _contexts.pop(profile_id, None)
+                    _pages.pop(profile_id, None)
                     if ctx is not None:
                         await ctx.close()
                     return {"status": "ok"}
@@ -608,8 +611,8 @@ def create_app() -> FastAPI:
                 if action == "status":
                     return {
                         "status": "ok",
-                        "active": session_id in _contexts,
-                        "url": page.url if session_id in _pages else None,
+                        "active": profile_id in _contexts,
+                        "url": page.url if profile_id in _pages else None,
                     }
 
                 raise HTTPException(status_code=400, detail="Unknown browser_action")
