@@ -93,7 +93,7 @@ class AgentRuntime:
                         history.append(
                             HumanMessage(content=content, additional_kwargs={"message_id": envelope.message_id})
                         )
-            if not is_command:
+            if not is_command and envelope.origin != "heartbeat":
                 await self._inject_memory(session_id, history, content)
             result = await self.graph.ainvoke({"messages": history})
             messages = result.get("messages", history)
@@ -123,6 +123,18 @@ class AgentRuntime:
 
     def clear_history(self, session_id: str) -> None:
         self._history.pop(session_id, None)
+
+    def drop_messages_since(self, session_id: str, message_id: str) -> None:
+        if not message_id:
+            return
+        history = self._history.get(session_id)
+        if not history:
+            return
+        for idx in range(len(history) - 1, -1, -1):
+            msg = history[idx]
+            if isinstance(msg, HumanMessage) and msg.additional_kwargs.get("message_id") == message_id:
+                del history[idx:]
+                break
 
     async def summarize_session(self, session_id: str) -> str:
         await self._ensure_history(session_id)

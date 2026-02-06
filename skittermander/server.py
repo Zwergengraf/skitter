@@ -3,12 +3,14 @@ from __future__ import annotations
 import asyncio
 import os
 import json
+from datetime import datetime
 
 import uvicorn
 
 from .api.app import create_app
 from .core.runtime import AgentRuntime
 from .core.scheduler import SchedulerService
+from .core.heartbeat import HeartbeatService
 from .core.config import settings
 from .core.sessions import SessionManager
 from .data.db import SessionLocal
@@ -39,6 +41,7 @@ async def main() -> None:
     runtime: AgentRuntime = app.state.runtime
     approval_service = app.state.approval_service
     scheduler: SchedulerService = app.state.scheduler_service
+    heartbeat_service = HeartbeatService(runtime)
     session_manager = SessionManager(runtime, settings.workspace_root)
     if sandbox_manager is not None:
         await sandbox_manager.start()
@@ -58,7 +61,9 @@ async def main() -> None:
         async def _deliver(channel_id: str, text: str, attachments: list) -> None:
             await discord_transport.send_message(channel_id, text, attachments)
         scheduler.set_deliver(_deliver)
+        heartbeat_service.set_deliver(_deliver)
         await scheduler.start()
+        await heartbeat_service.start()
 
     manager = TransportManager(transports)
 
@@ -73,6 +78,14 @@ async def main() -> None:
                 repo = Repository(session)
                 user = await repo.get_or_create_user(envelope.user_id)
                 internal_user_id = user.id
+                await repo.set_user_meta(
+                    user.id,
+                    {
+                        "last_channel_id": envelope.channel_id,
+                        "last_origin": envelope.origin,
+                        "last_seen_at": datetime.utcnow().isoformat(),
+                    },
+                )
                 if not user.approved:
                     if not (user.meta or {}).get("approval_notified"):
                         await transport.send_message(

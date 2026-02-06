@@ -69,6 +69,17 @@ class Repository:
         await self.session.commit()
         return user
 
+    async def set_user_meta(self, user_id: str, updates: dict) -> Optional[User]:
+        result = await self.session.execute(select(User).where(User.id == user_id))
+        user = result.scalar_one_or_none()
+        if user is None:
+            return None
+        meta = dict(user.meta or {})
+        meta.update(updates)
+        user.meta = meta
+        await self.session.commit()
+        return user
+
     async def mark_user_notified(self, user_id: str) -> None:
         result = await self.session.execute(select(User).where(User.id == user_id))
         user = result.scalar_one_or_none()
@@ -234,6 +245,10 @@ class Repository:
 
     async def list_users(self, limit: int = 200) -> List[User]:
         result = await self.session.execute(select(User).order_by(User.transport_user_id.asc()).limit(limit))
+        return list(result.scalars().all())
+
+    async def list_approved_users(self) -> List[User]:
+        result = await self.session.execute(select(User).where(User.approved == True))  # noqa: E712
         return list(result.scalars().all())
 
     async def create_tool_run(

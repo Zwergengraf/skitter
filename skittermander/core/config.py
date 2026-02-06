@@ -34,6 +34,17 @@ class Settings(BaseSettings):
     discord_token: str = Field(default="")
     user_approved_message: str = Field(default="Hey! I just came online. Who am I? Who are you?")
 
+    heartbeat_enabled: bool = Field(default=True)
+    heartbeat_interval_minutes: int = Field(default=30)
+    heartbeat_prompt: str = Field(
+        default=(
+            "Read HEARTBEAT.md if it exists (workspace context). Follow it strictly. "
+            "Do not infer or repeat old tasks from prior chats. If nothing needs attention, reply HEARTBEAT_OK."
+        )
+    )
+    heartbeat_quiet_hours_start: str = Field(default="23:00")
+    heartbeat_quiet_hours_end: str = Field(default="08:00")
+
     workspace_root: str = Field(default="workspace")
     workspace_skeleton_root: str = Field(default="workspace-skeleton")
     host_workspace_root: str = Field(default="")

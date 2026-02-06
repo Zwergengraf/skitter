@@ -314,7 +314,8 @@ def create_app() -> FastAPI:
             if args:
                 argv = [str(arg) for arg in args]
             else:
-                argv = ["/bin/sh", "-lc", str(cmd)]
+                shell_path = "/bin/bash" if Path("/bin/bash").exists() else "/bin/sh"
+                argv = [shell_path, "-lc", str(cmd)]
 
             try:
                 env = os.environ.copy()
