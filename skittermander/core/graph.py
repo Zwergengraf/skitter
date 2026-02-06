@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 import math
+import base64
+from pathlib import Path
 from contextvars import ContextVar, Token
 from typing import Optional, Any
 
@@ -21,6 +23,7 @@ from ..tools.sandbox_client import ToolRunnerClient
 from ..data.db import SessionLocal
 from ..data.repositories import Repository
 from .embeddings import EmbeddingsClient
+from .workspace import user_workspace_root
 
 
 _CURRENT_SESSION_ID: ContextVar[str] = ContextVar("skitter_session_id", default="default")
@@ -129,6 +132,26 @@ def build_graph(approval_service: ToolApprovalService | None = None, scheduler_s
             return file_path
         return None
 
+    def _resolve_workspace_path(user_id: str, raw_path: str) -> Path | None:
+        if not raw_path:
+            return None
+        workspace = user_workspace_root(user_id)
+        path = Path(raw_path)
+        if raw_path.startswith("/workspace/"):
+            resolved = workspace / Path(raw_path).relative_to("/workspace")
+        elif path.is_absolute():
+            resolved = path
+        else:
+            resolved = workspace / path
+        try:
+            resolved = resolved.resolve()
+            workspace_resolved = workspace.resolve()
+        except OSError:
+            return None
+        if workspace_resolved not in resolved.parents and resolved != workspace_resolved:
+            return None
+        return resolved
+
     @tool("read")
     async def read(
         path: Optional[str] = None,
@@ -154,6 +177,21 @@ def build_graph(approval_service: ToolApprovalService | None = None, scheduler_s
             return f"read error: {exc.response.text}"
         if decision.tool_run_id and approval_service is not None:
             await approval_service.complete(decision.tool_run_id, "completed", result)
+        if isinstance(result, dict):
+            content_type = str(result.get("content_type") or "").lower()
+            file_path = str(result.get("file_path") or "")
+            if content_type.startswith("image/") and file_path:
+                resolved = _resolve_workspace_path(_user_id(), file_path)
+                if resolved and resolved.exists():
+                    try:
+                        data = resolved.read_bytes()
+                    except OSError:
+                        return json.dumps(result)
+                    b64 = base64.b64encode(data).decode("ascii")
+                    return [
+                        {"type": "text", "text": f"Read image: {file_path} ({content_type})"},
+                        {"type": "image", "base64": b64, "mime_type": content_type},
+                    ]
         return json.dumps(result)
 
     @tool("write")
@@ -243,6 +281,25 @@ def build_graph(approval_service: ToolApprovalService | None = None, scheduler_s
             result = await client.execute(_user_id(), _session_id(), "delete", payload)
         except httpx.HTTPStatusError as exc:
             return f"delete error: {exc.response.text}"
+        if decision.tool_run_id and approval_service is not None:
+            await approval_service.complete(decision.tool_run_id, "completed", result)
+        return json.dumps(result)
+
+    @tool("download")
+    async def download(url: str, path: Optional[str] = None) -> str:
+        """Download a file from a URL into the workspace. Optionally specify a target path."""
+        if not url:
+            return "download error: url is required"
+        payload: dict[str, Any] = {"url": url}
+        if path:
+            payload["path"] = path
+        decision = await _maybe_approve("download", payload, approval_service, policy)
+        if not decision.approved:
+            return "download error: tool execution denied"
+        try:
+            result = await client.execute(_user_id(), _session_id(), "download", payload)
+        except httpx.HTTPStatusError as exc:
+            return f"download error: {exc.response.text}"
         if decision.tool_run_id and approval_service is not None:
             await approval_service.complete(decision.tool_run_id, "completed", result)
         return json.dumps(result)
@@ -569,6 +626,7 @@ def build_graph(approval_service: ToolApprovalService | None = None, scheduler_s
             edit,
             list_files,
             delete,
+            download,
             http_fetch,
             browser,
             browser_action,

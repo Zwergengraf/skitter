@@ -372,6 +372,19 @@ async def _run() -> None:
             repo = Repository(session)
             metadata = dict(envelope.metadata)
             metadata.update({"message_id": envelope.message_id, "origin": envelope.origin})
+            if envelope.attachments:
+                attachments_meta = [
+                    {
+                        "filename": attachment.filename,
+                        "url": attachment.url,
+                        "content_type": attachment.content_type or "",
+                    }
+                    for attachment in envelope.attachments
+                    if attachment.url
+                ]
+                if attachments_meta:
+                    metadata["attachments"] = attachments_meta
+                    envelope.metadata["attachments"] = attachments_meta
             await repo.add_message(session_id, role="user", content=envelope.text, metadata=metadata)
 
         response = await runtime.handle_message(session_id, envelope)

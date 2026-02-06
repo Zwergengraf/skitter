@@ -7,6 +7,7 @@ import shutil
 import base64
 from typing import Any, Dict
 from contextlib import asynccontextmanager
+from urllib.parse import urlparse
 
 import httpx
 from fastapi import FastAPI, HTTPException
@@ -261,6 +262,38 @@ def create_app() -> FastAPI:
             async with httpx.AsyncClient(timeout=30) as client:
                 resp = await client.get(url)
                 return {"status": "ok", "status_code": resp.status_code, "body": resp.text[:10000]}
+
+        if req.tool == "download":
+            url = req.payload.get("url")
+            if not url:
+                raise HTTPException(status_code=400, detail="url is required")
+            parsed = urlparse(url)
+            if parsed.scheme not in {"http", "https"}:
+                raise HTTPException(status_code=400, detail="url must start with http or https")
+            path = req.payload.get("path")
+            if path:
+                target = safe_path(str(path))
+            else:
+                filename = Path(parsed.path).name or "download.bin"
+                date_dir = datetime.utcnow().strftime("%Y-%m-%d")
+                target = safe_path(str(Path("downloads") / date_dir / filename))
+            target.parent.mkdir(parents=True, exist_ok=True)
+            size = 0
+            content_type = ""
+            async with httpx.AsyncClient(timeout=60) as client:
+                async with client.stream("GET", url) as resp:
+                    resp.raise_for_status()
+                    content_type = resp.headers.get("Content-Type", "") or ""
+                    with target.open("wb") as handle:
+                        async for chunk in resp.aiter_bytes():
+                            handle.write(chunk)
+                            size += len(chunk)
+            return {
+                "status": "ok",
+                "path": _workspace_response_path(target),
+                "content_type": content_type,
+                "size": size,
+            }
 
         if req.tool == "shell":
             cmd = req.payload.get("cmd")

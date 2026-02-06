@@ -45,16 +45,19 @@ class AgentRuntime:
         self._history: dict[str, list[BaseMessage]] = defaultdict(list)
 
     async def handle_message(self, session_id: str, envelope: MessageEnvelope) -> AgentResponse:
-        if not envelope.text and not envelope.command:
+        if not envelope.text and not envelope.command and not envelope.attachments:
             return AgentResponse(text="")
         if not settings.openai_api_key:
             return AgentResponse(text="LLM is not configured. Set SKITTER_OPENAI_API_KEY to enable responses.")
 
         content = envelope.text
         is_command = False
+        attachments_meta: list[dict] = []
         if envelope.command:
             is_command = True
             content = f"/{envelope.command} {envelope.metadata}".strip()
+        elif envelope.attachments:
+            attachments_meta = self._serialize_attachments(envelope.attachments)
 
         run_id = str(uuid.uuid4())
         await self.event_bus.publish(
@@ -74,11 +77,22 @@ class AgentRuntime:
             await self._ensure_history(session_id)
             history = self._history[session_id]
             self._ensure_system_prompt(history, internal_user_id)
-            if content:
+            if content or attachments_meta:
                 last = history[-1] if history else None
                 last_id = getattr(last, "additional_kwargs", {}).get("message_id") if last else None
                 if last_id != envelope.message_id:
-                    history.append(HumanMessage(content=content, additional_kwargs={"message_id": envelope.message_id}))
+                    if attachments_meta:
+                        blocks = self._build_content_blocks(content, attachments_meta)
+                        history.append(
+                            HumanMessage(
+                                content_blocks=blocks,
+                                additional_kwargs={"message_id": envelope.message_id},
+                            )
+                        )
+                    else:
+                        history.append(
+                            HumanMessage(content=content, additional_kwargs={"message_id": envelope.message_id})
+                        )
             if not is_command:
                 await self._inject_memory(session_id, history, content)
             result = await self.graph.ainvoke({"messages": history})
@@ -150,7 +164,12 @@ class AgentRuntime:
             content = record.content
             meta = record.meta or {}
             if role == "user":
-                history.append(HumanMessage(content=content, additional_kwargs=meta))
+                attachments_meta = meta.get("attachments")
+                if isinstance(attachments_meta, list) and attachments_meta:
+                    blocks = self._build_content_blocks(content, attachments_meta)
+                    history.append(HumanMessage(content_blocks=blocks, additional_kwargs=meta))
+                else:
+                    history.append(HumanMessage(content=content, additional_kwargs=meta))
             elif role == "assistant":
                 history.append(AIMessage(content=content, additional_kwargs=meta))
             elif role == "system":
@@ -215,9 +234,60 @@ class AgentRuntime:
         ]
         if not prompt:
             return
-        print("Using system prompt:"
-              f"\n{'-'*40}\n{prompt}\n{'-'*40}")
+        #print("Using system prompt:"
+        #      f"\n{'-'*40}\n{prompt}\n{'-'*40}")
         history.insert(0, SystemMessage(content=prompt, additional_kwargs={"system_prompt": True}))
+
+    def _serialize_attachments(self, attachments: list[Attachment]) -> list[dict]:
+        serialized: list[dict] = []
+        for attachment in attachments:
+            if not attachment.url:
+                continue
+            serialized.append(
+                {
+                    "filename": attachment.filename,
+                    "url": attachment.url,
+                    "content_type": attachment.content_type or "",
+                }
+            )
+        return serialized
+
+    def _build_content_blocks(self, content: str, attachments: list[dict]) -> list[dict]:
+        blocks: list[dict] = []
+        if content:
+            blocks.append({"type": "text", "text": content})
+        else:
+            blocks.append({"type": "text", "text": "User uploaded files."})
+
+        for attachment in attachments:
+            url = str(attachment.get("url") or "")
+            if not url:
+                continue
+            filename = str(attachment.get("filename") or "")
+            content_type = str(attachment.get("content_type") or "").lower()
+            ext = Path(filename).suffix.lower()
+            if content_type.startswith("image/") or ext in {".png", ".jpg", ".jpeg", ".gif", ".webp"}:
+                block: dict[str, object] = {"type": "image", "url": url}
+                if content_type:
+                    block["mime_type"] = content_type
+                blocks.append(block)
+                continue
+            if content_type == "text/plain" or ext in {".txt", ".log"}:
+                block = {"type": "text-plain", "url": url, "mime_type": "text/plain"}
+                if filename:
+                    block["title"] = filename
+                blocks.append(block)
+                continue
+            block = {"type": "file", "url": url}
+            if content_type:
+                block["mime_type"] = content_type
+            # Add metadata block (text) with the filename, so the agent can download the file if needed
+            if filename:
+                meta_block = {"type": "text", "text": f"Filename: {filename}"}
+                print(f"Adding file block with metadata: {meta_block}, {block}")
+                blocks.append(meta_block)
+            blocks.append(block)
+        return blocks
 
     def _extract_attachments(
         self, user_id: str, messages: list[BaseMessage], message_id: str

@@ -18,6 +18,22 @@ from .transports.manager import TransportManager
 from .tools.sandbox_manager import sandbox_manager
 
 
+def _serialize_attachments(attachments: list) -> list[dict]:
+    serialized = []
+    for attachment in attachments:
+        url = getattr(attachment, "url", None)
+        if not url:
+            continue
+        serialized.append(
+            {
+                "filename": getattr(attachment, "filename", ""),
+                "url": url,
+                "content_type": getattr(attachment, "content_type", "") or "",
+            }
+        )
+    return serialized
+
+
 async def main() -> None:
     app = create_app()
     runtime: AgentRuntime = app.state.runtime
@@ -118,6 +134,11 @@ async def main() -> None:
             metadata = dict(envelope.metadata)
             metadata.update({"internal_user_id": internal_user_id})
             metadata.update({"message_id": envelope.message_id, "origin": envelope.origin})
+            if envelope.attachments:
+                attachments_meta = _serialize_attachments(envelope.attachments)
+                if attachments_meta:
+                    metadata["attachments"] = attachments_meta
+                    envelope.metadata["attachments"] = attachments_meta
             await repo.add_message(session_id, role="user", content=envelope.text, metadata=metadata)
 
         response = await runtime.handle_message(session_id, envelope)

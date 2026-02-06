@@ -55,6 +55,7 @@ tools:
   - edit
   - list
   - delete
+  - download
   - browser
   - sub_agent
   - shell

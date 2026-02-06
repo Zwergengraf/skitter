@@ -75,6 +75,21 @@ def default_registry() -> ToolRegistry:
     )
     registry.register(
         ToolSpec(
+            name="download",
+            description="Download a file from a URL into the workspace. Optionally specify a target path.",
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "url": {"type": "string"},
+                    "path": {"type": "string"},
+                },
+                "required": ["url"],
+            },
+            requires_approval=True,
+        )
+    )
+    registry.register(
+        ToolSpec(
             name="edit",
             description="Edit a file by replacing exact text. The oldText must match exactly (including whitespace). Use this for precise, surgical edits.",
             input_schema={
