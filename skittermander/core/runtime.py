@@ -266,6 +266,13 @@ class AgentRuntime:
             filename = str(attachment.get("filename") or "")
             content_type = str(attachment.get("content_type") or "").lower()
             ext = Path(filename).suffix.lower()
+            label_parts = []
+            if filename:
+                label_parts.append(f"Filename: {filename}")
+            if content_type:
+                label_parts.append(f"Type: {content_type}")
+            label = " ".join(label_parts) if label_parts else "Attachment"
+            blocks.append({"type": "text", "text": f"{label}. URL: {url}"})
             if content_type.startswith("image/") or ext in {".png", ".jpg", ".jpeg", ".gif", ".webp"}:
                 block: dict[str, object] = {"type": "image", "url": url}
                 if content_type:
@@ -281,11 +288,6 @@ class AgentRuntime:
             block = {"type": "file", "url": url}
             if content_type:
                 block["mime_type"] = content_type
-            # Add metadata block (text) with the filename, so the agent can download the file if needed
-            if filename:
-                meta_block = {"type": "text", "text": f"Filename: {filename}"}
-                print(f"Adding file block with metadata: {meta_block}, {block}")
-                blocks.append(meta_block)
             blocks.append(block)
         return blocks
 
