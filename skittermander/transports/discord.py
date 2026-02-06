@@ -151,6 +151,27 @@ class DiscordTransport(TransportAdapter):
 
     async def stop(self) -> None:
         await self.client.close()
+    
+    async def _send_split_message(self, channel: discord.abc.Messageable, content: str, files: list[discord.File]) -> None:
+        # Content must be 2000 or less characters, split into chunks and send multiple messages if needed. The files should only be sent with the first message.
+        if len(content) <= 2000:
+            await channel.send(content, files=files)
+            return
+        chunks = [content[i : i + 1990] for i in range(0, len(content), 1990)]
+        for i, chunk in enumerate(chunks):
+            if i == 0:
+                await channel.send(chunk, files=files)
+            else:
+                await channel.send(chunk)
+    
+    async def _send_split_message(self, channel: discord.abc.Messageable, content: str) -> None:
+        # Content must be 2000 or less characters, split into chunks and send multiple messages if needed.
+        if len(content) <= 2000:
+            await channel.send(content)
+            return
+        chunks = [content[i : i + 1990] for i in range(0, len(content), 1990)]
+        for chunk in chunks:
+            await channel.send(chunk)
 
     async def send_message(
         self,
@@ -170,9 +191,9 @@ class DiscordTransport(TransportAdapter):
                 elif attachment.path:
                     files.append(discord.File(attachment.path))
         if files:
-            await channel.send(content or "Screenshot:", files=files)
+            await self._send_split_message(channel, content or "Screenshot:", files=files)
         else:
-            await channel.send(content)
+            await self._send_split_message(channel, content)
 
     async def send_user_message(
         self,
@@ -193,9 +214,9 @@ class DiscordTransport(TransportAdapter):
                 elif attachment.path:
                     files.append(discord.File(attachment.path))
         if files:
-            await channel.send(content or "Screenshot:", files=files)
+            await self._send_split_message(channel, content or "Screenshot:", files=files)
         else:
-            await channel.send(content)
+            await self._send_split_message(channel, content)
 
     async def send_typing(self, channel_id: str) -> None:
         channel = await self.client.fetch_channel(int(channel_id))

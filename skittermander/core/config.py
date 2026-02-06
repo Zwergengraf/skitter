@@ -38,6 +38,7 @@ class Settings(BaseSettings):
     workspace_skeleton_root: str = Field(default="workspace-skeleton")
     host_workspace_root: str = Field(default="")
     skills_root: str = Field(default="skills")
+    host_skills_root: str = Field(default="")
 
     sandbox_base_url: str = Field(default="http://localhost:9080")
     sandbox_api_key: str = Field(default="")

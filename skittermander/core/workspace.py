@@ -41,4 +41,5 @@ def ensure_user_workspace(user_id: str) -> Path:
             root.mkdir(parents=True, exist_ok=True)
     (root / "memory").mkdir(parents=True, exist_ok=True)
     (root / "screenshots").mkdir(parents=True, exist_ok=True)
+    (root / "skills").mkdir(parents=True, exist_ok=True)
     return root

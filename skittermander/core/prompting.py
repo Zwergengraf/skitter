@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from .config import settings
+from .skills import SkillRegistry
 from .workspace import user_workspace_root
 
 
@@ -54,7 +55,31 @@ def build_context_block(user_id: str) -> str | None:
     return "\n\n".join(sections)
 
 
+def build_skills_index(user_id: str) -> str | None:
+    registry = SkillRegistry()
+    skills = registry.list_skills(user_id)
+    if not skills:
+        return None
+    lines = [
+        "## Skills",
+        "If a skill seems relevant, read its SKILL.md from the path below before using it. "
+        "Follow the instructions and execute scripts if needed.",
+    ]
+    lines.append("<available_skills>")
+    for skill in skills:
+        lines.append(f"  <skill>")
+        lines.append(f"    <name>{skill.name}</name>")
+        lines.append(f"    <description>{skill.description}</description>")
+        lines.append(f"    <location>{skill.container_path}/SKILL.md</location>")
+        lines.append(f"  </skill>")
+    lines.append("</available_skills>")
+    return "\n".join(lines)
+
+
 def build_system_prompt(user_id: str) -> str:
+    # Important: Only include the BOOTSTRAP.md content if it's present.
+    # This allows for one-time setup instructions without affecting the prompt on subsequent runs.
+    # The BOOTSTRAP.md can be used to set up the agent's identity, initial goals, or any other necessary context that should only be provided once.
     bootstrap_file = user_workspace_root(user_id) / "BOOTSTRAP.md"
     if bootstrap_file.exists():
         try:
@@ -63,9 +88,13 @@ def build_system_prompt(user_id: str) -> str:
             content = None
         if content:
             return content
-    
+
     base = load_base_prompt().strip()
+    parts = [base]
+    skills_index = build_skills_index(user_id)
+    if skills_index:
+        parts.append(skills_index)
     context = build_context_block(user_id)
     if context:
-        return f"{base}\n\n{context}".strip()
-    return base
+        parts.append(context)
+    return "\n\n".join(part for part in parts if part).strip()

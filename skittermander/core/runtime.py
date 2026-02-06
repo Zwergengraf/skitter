@@ -234,8 +234,8 @@ class AgentRuntime:
         ]
         if not prompt:
             return
-        #print("Using system prompt:"
-        #      f"\n{'-'*40}\n{prompt}\n{'-'*40}")
+        print("Using system prompt:"
+              f"\n{'-'*40}\n{prompt}\n{'-'*40}")
         history.insert(0, SystemMessage(content=prompt, additional_kwargs={"system_prompt": True}))
 
     def _serialize_attachments(self, attachments: list[Attachment]) -> list[dict]:

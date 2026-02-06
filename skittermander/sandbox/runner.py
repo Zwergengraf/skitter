@@ -127,7 +127,11 @@ def create_app() -> FastAPI:
         if raw.is_absolute():
             try:
                 candidate = raw.resolve()
-                if workspace_root in candidate.parents or candidate == workspace_root:
+                try:
+                    root_resolved = workspace_root.resolve()
+                except OSError:
+                    root_resolved = workspace_root
+                if root_resolved in candidate.parents or candidate == root_resolved:
                     return candidate
             except OSError:
                 pass

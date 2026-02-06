@@ -204,6 +204,13 @@ FIELDS: list[ConfigFieldSpec] = [
         field_type="string",
     ),
     ConfigFieldSpec(
+        key="host_skills_root",
+        path=("workspace", "host_skills_root"),
+        category="workspace",
+        label="Host skills root",
+        field_type="string",
+    ),
+    ConfigFieldSpec(
         key="sandbox_base_url",
         path=("sandbox", "base_url"),
         category="sandbox",

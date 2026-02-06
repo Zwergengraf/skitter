@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Optional
 
+import yaml
 
 @dataclass
 class SkillMetadata:
@@ -54,16 +55,18 @@ class SkillLoader:
         parts = text.split("---", 2)
         if len(parts) < 3:
             return None
-        frontmatter = parts[1].strip().splitlines()
-        data: Dict[str, str] = {}
-        for line in frontmatter:
-            if ":" not in line:
-                continue
-            key, value = line.split(":", 1)
-            data[key.strip()] = value.strip().strip('"')
-        if "name" not in data or "description" not in data:
+        frontmatter_text = parts[1].strip()
+        try:
+            data = yaml.safe_load(frontmatter_text) or {}
+        except Exception:
             return None
-        return data
+        if not isinstance(data, dict):
+            return None
+        name = data.get("name")
+        description = data.get("description")
+        if not name or not description:
+            return None
+        return {"name": str(name).strip(), "description": str(description).strip()}
 
     def _read_body(self, path: Path) -> str:
         text = path.read_text(encoding="utf-8")
