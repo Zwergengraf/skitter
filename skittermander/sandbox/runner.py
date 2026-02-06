@@ -53,6 +53,7 @@ def _save_screenshot(workspace_root: Path, session_id: str, png: bytes) -> str:
 
 
 def _clear_browser_locks(data_dir: Path) -> None:
+    print(f"Clearing browser locks in {data_dir}")
     # Clear Chromium profile locks that can remain after a crash/restart.
     for name in ("SingletonLock", "SingletonCookie", "SingletonSocket"):
         try:
@@ -64,6 +65,7 @@ def _clear_browser_locks(data_dir: Path) -> None:
 
 
 def _clear_all_browser_locks(browser_data_root: Path) -> None:
+    print(f"Clearing all browser locks in {browser_data_root}")
     if not browser_data_root.exists():
         return
     for child in browser_data_root.iterdir():
@@ -419,8 +421,28 @@ def create_app() -> FastAPI:
                 if action == "click":
                     if not selector:
                         raise HTTPException(status_code=400, detail="selector is required")
-                    await page.locator(selector).first.click(timeout=timeout_ms)
-                    return {"status": "ok"}
+                    locator = page.locator(selector).first
+                    try:
+                        await locator.wait_for(state="visible", timeout=timeout_ms)
+                    except PlaywrightTimeoutError:
+                        # Continue; element might still be clickable even if visibility check timed out.
+                        pass
+                    try:
+                        await locator.scroll_into_view_if_needed(timeout=timeout_ms)
+                    except PlaywrightTimeoutError:
+                        pass
+                    try:
+                        await locator.click(timeout=timeout_ms)
+                        return {"status": "ok"}
+                    except PlaywrightTimeoutError:
+                        # Try a forced click in case overlays or animations block normal actionability.
+                        try:
+                            await locator.click(timeout=timeout_ms, force=True)
+                            return {"status": "ok", "forced": True}
+                        except PlaywrightTimeoutError as exc:
+                            raise HTTPException(
+                                status_code=400, detail=f"Timeout clicking selector: {selector}"
+                            ) from exc
 
                 if action in {"type", "fill"}:
                     if not selector:
