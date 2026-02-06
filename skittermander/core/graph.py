@@ -24,6 +24,7 @@ from ..data.db import SessionLocal
 from ..data.repositories import Repository
 from .embeddings import EmbeddingsClient
 from .workspace import user_workspace_root
+from .secrets import SecretsManager
 
 
 _CURRENT_SESSION_ID: ContextVar[str] = ContextVar("skitter_session_id", default="default")
@@ -151,6 +152,24 @@ def build_graph(approval_service: ToolApprovalService | None = None, scheduler_s
         if workspace_resolved not in resolved.parents and resolved != workspace_resolved:
             return None
         return resolved
+
+    def _normalize_secret_refs(secret_refs: Any) -> list[str]:
+        if not secret_refs:
+            return []
+        if isinstance(secret_refs, str):
+            return [item.strip() for item in secret_refs.split(",") if item.strip()]
+        if isinstance(secret_refs, list):
+            return [str(item).strip() for item in secret_refs if str(item).strip()]
+        return []
+
+    def _secret_env_key(name: str) -> str:
+        key = "".join(ch if ch.isalnum() else "_" for ch in name.strip()).upper()
+        if not key:
+            key = "SECRET"
+        if key[0].isdigit():
+            key = f"_{key}"
+        #return f"SKITTER_SECRET_{key}" # Disabled so Skills get the ENVs they expect without needing to know about the SKITTER_ prefix
+        return f"{key}"
 
     @tool("read")
     async def read(
@@ -415,16 +434,65 @@ def build_graph(approval_service: ToolApprovalService | None = None, scheduler_s
         return json.dumps(result)
 
     @tool("shell")
-    async def shell(cmd: str, cwd: Optional[str] = None, background: bool = False) -> str:
-        """Run a shell command in the sandboxed workspace. Use background=true for long-running tasks."""
+    async def shell(
+        cmd: str,
+        cwd: Optional[str] = None,
+        background: bool = False,
+        secret_refs: Optional[list[str]] = None,
+    ) -> str:
+        """Run a shell command in the sandboxed workspace. Use background=true for long-running tasks. Use secret_refs to inject per-user secrets as env vars."""
         payload = {"cmd": cmd, "background": bool(background)}
         if cwd:
             payload["cwd"] = cwd
-        decision = await _maybe_approve("shell", payload, approval_service, policy)
-        if not decision.approved:
-            return "shell error: tool execution denied"
+        secrets = _normalize_secret_refs(secret_refs)
+        if secrets:
+            if background:
+                return "shell error: secret_refs cannot be used with background commands"
+            if approval_service is None:
+                return "shell error: secret execution requires approval"
+            manager = SecretsManager()
+            try:
+                manager.ensure_ready()
+            except RuntimeError as exc:
+                return f"shell error: {exc}"
+            env: dict[str, str] = {}
+            redact: list[str] = []
+            missing: list[str] = []
+            async with SessionLocal() as session:
+                repo = Repository(session)
+                for name in secrets:
+                    secret = await repo.get_secret(_user_id(), name)
+                    if secret is None:
+                        missing.append(name)
+                        continue
+                    try:
+                        value = manager.decrypt(secret.value_encrypted)
+                    except RuntimeError:
+                        return f"shell error: failed to decrypt secret {name}"
+                    env[_secret_env_key(name)] = value
+                    if value:
+                        redact.append(value)
+                    await repo.touch_secret(secret)
+            if missing:
+                return f"shell error: missing secrets: {', '.join(missing)}"
+            approval_payload = {**payload, "secret_refs": secrets}
+            decision = await approval_service.request(
+                session_id=_session_id(),
+                channel_id=_channel_id(),
+                tool_name="shell",
+                payload=approval_payload,
+                requested_by=_user_id(),
+            )
+            if not decision.approved:
+                return "shell error: tool execution denied"
+            exec_payload = {**payload, "env": env, "redact": redact}
+        else:
+            decision = await _maybe_approve("shell", payload, approval_service, policy)
+            if not decision.approved:
+                return "shell error: tool execution denied"
+            exec_payload = payload
         try:
-            result = await client.execute(_user_id(), _session_id(), "shell", payload)
+            result = await client.execute(_user_id(), _session_id(), "shell", exec_payload)
         except httpx.HTTPStatusError as exc:
             return f"shell error: {exc.response.text}"
         if decision.tool_run_id and approval_service is not None:

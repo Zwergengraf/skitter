@@ -17,6 +17,7 @@ from .models import (
     SandboxTask,
     Session,
     Skill,
+    Secret,
     ToolRun,
     User,
 )
@@ -425,6 +426,47 @@ class Repository:
                 setattr(run, key, value)
         await self.session.commit()
         return run
+
+    async def list_secrets(self, user_id: str) -> List[Secret]:
+        result = await self.session.execute(select(Secret).where(Secret.user_id == user_id))
+        return list(result.scalars().all())
+
+    async def get_secret(self, user_id: str, name: str) -> Optional[Secret]:
+        result = await self.session.execute(
+            select(Secret).where(Secret.user_id == user_id, Secret.name == name)
+        )
+        return result.scalar_one_or_none()
+
+    async def upsert_secret(self, user_id: str, name: str, value_encrypted: str) -> Secret:
+        secret = await self.get_secret(user_id, name)
+        if secret is None:
+            secret = Secret(
+                id=str(uuid.uuid4()),
+                user_id=user_id,
+                name=name,
+                value_encrypted=value_encrypted,
+                created_at=datetime.utcnow(),
+                updated_at=datetime.utcnow(),
+            )
+            self.session.add(secret)
+        else:
+            secret.value_encrypted = value_encrypted
+            secret.updated_at = datetime.utcnow()
+        await self.session.commit()
+        return secret
+
+    async def delete_secret(self, user_id: str, name: str) -> bool:
+        secret = await self.get_secret(user_id, name)
+        if secret is None:
+            return False
+        await self.session.delete(secret)
+        await self.session.commit()
+        return True
+
+    async def touch_secret(self, secret: Secret) -> Secret:
+        secret.last_used_at = datetime.utcnow()
+        await self.session.commit()
+        return secret
 
     async def create_sandbox_task(
         self,

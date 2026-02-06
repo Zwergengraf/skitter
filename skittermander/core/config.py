@@ -61,6 +61,9 @@ class Settings(BaseSettings):
         default="AGENTS.md,TOOLS.md,IDENTITY.md,USER.md,BOOTSTRAP.md"
     )
 
+    # Env-only: do not add to config schema or UI.
+    secrets_master_key: str = Field(default="", exclude=True)
+
 
 def _config_path() -> Path:
     return Path(settings.config_path)

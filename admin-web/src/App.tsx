@@ -43,6 +43,7 @@ import type {
   SandboxStatus,
   ConfigResponse,
   ScheduledJobItem,
+  SecretItem,
   SessionDetail,
   SessionListItem,
   ToolRunListItem,
@@ -55,6 +56,7 @@ const views: Record<NavItemId, string> = {
   tools: "Tool Runs",
   jobs: "Scheduled Jobs",
   memory: "Memory",
+  secrets: "Secrets",
   users: "Users",
   sandbox: "Sandbox",
   settings: "Settings",
@@ -76,6 +78,14 @@ export default function App() {
   const [memoryData, setMemoryData] = useState<MemoryEntry[]>([]);
   const [memoryError, setMemoryError] = useState<string | null>(null);
   const [memoryLoading, setMemoryLoading] = useState<boolean>(false);
+  const [secretsData, setSecretsData] = useState<SecretItem[]>([]);
+  const [secretsError, setSecretsError] = useState<string | null>(null);
+  const [secretsLoading, setSecretsLoading] = useState<boolean>(false);
+  const [secretUserId, setSecretUserId] = useState<string>("");
+  const [secretUserLabel, setSecretUserLabel] = useState<string>("");
+  const [secretName, setSecretName] = useState<string>("");
+  const [secretValue, setSecretValue] = useState<string>("");
+  const [secretSaving, setSecretSaving] = useState<boolean>(false);
   const [selectedMemory, setSelectedMemory] = useState<MemoryEntry | null>(null);
   const [memoryDetailContent, setMemoryDetailContent] = useState<string>("");
   const [memoryDetailLoading, setMemoryDetailLoading] = useState<boolean>(false);
@@ -273,6 +283,24 @@ export default function App() {
   }, [active, usersData]);
 
   useEffect(() => {
+    if (active !== "secrets") {
+      return;
+    }
+    const userId = secretUserId || usersData[0]?.id;
+    if (!userId) {
+      setSecretsData([]);
+      setSecretsError("No users found yet.");
+      setSecretsLoading(false);
+      return;
+    }
+    if (userId !== secretUserId) {
+      setSecretUserId(userId);
+      setSecretUserLabel(userLabelFor(userId));
+    }
+    refreshSecrets(userId);
+  }, [active, usersData, secretUserId]);
+
+  useEffect(() => {
     if (!selectedMemory?.source) {
       setMemoryDetailContent("");
       return;
@@ -305,6 +333,46 @@ export default function App() {
       setMemoryError((error as Error).message);
     } finally {
       setMemoryReindexing(false);
+    }
+  };
+
+  const handleSecretSave = async () => {
+    if (!secretUserId) {
+      setSecretsError("No user selected for secrets.");
+      return;
+    }
+    if (!secretName.trim() || !secretValue) {
+      setSecretsError("Secret name and value are required.");
+      return;
+    }
+    setSecretSaving(true);
+    setSecretsError(null);
+    try {
+      await api.upsertSecret({
+        user_id: secretUserId,
+        name: secretName.trim(),
+        value: secretValue,
+      });
+      setSecretName("");
+      setSecretValue("");
+      refreshSecrets(secretUserId);
+    } catch (error) {
+      setSecretsError((error as Error).message);
+    } finally {
+      setSecretSaving(false);
+    }
+  };
+
+  const handleSecretDelete = async (name: string) => {
+    if (!secretUserId) {
+      setSecretsError("No user selected for secrets.");
+      return;
+    }
+    try {
+      await api.deleteSecret(secretUserId, name);
+      refreshSecrets(secretUserId);
+    } catch (error) {
+      setSecretsError((error as Error).message);
     }
   };
 
@@ -478,6 +546,27 @@ export default function App() {
       });
   };
 
+  const refreshSecrets = (targetUserId?: string) => {
+    const resolvedUserId = targetUserId || secretUserId;
+    if (!resolvedUserId) {
+      setSecretsError("No user selected for secrets.");
+      return;
+    }
+    setSecretsLoading(true);
+    setSecretsError(null);
+    api
+      .getSecrets(resolvedUserId)
+      .then((data) => {
+        setSecretsData(data);
+      })
+      .catch((error: Error) => {
+        setSecretsError(error.message);
+      })
+      .finally(() => {
+        setSecretsLoading(false);
+      });
+  };
+
   const refreshConfig = () => {
     setConfigLoading(true);
     setConfigError(null);
@@ -517,6 +606,9 @@ export default function App() {
         break;
       case "memory":
         refreshMemory();
+        break;
+      case "secrets":
+        refreshSecrets();
         break;
       case "users":
         refreshUsers();
@@ -1479,6 +1571,133 @@ export default function App() {
           </div>
         )}
 
+        {active === "secrets" && (
+          <div className="grid gap-6">
+            <Card>
+              <CardHeader>
+                <SectionHeader
+                  title="Secrets"
+                  subtitle="Per-user keys and tokens for skills. Values are write-only."
+                  actionLabel={secretsLoading ? "Refreshing..." : "Refresh"}
+                  onAction={secretsLoading ? undefined : () => refreshSecrets()}
+                />
+              </CardHeader>
+              <CardContent className="space-y-6">
+                <div className="grid gap-4 md:grid-cols-2">
+                  <div className="grid gap-2">
+                    <label className="text-xs font-semibold uppercase tracking-[0.2em] text-mutedForeground">
+                      User
+                    </label>
+                    <Input
+                      list="skitter-secret-users"
+                      value={secretUserLabel}
+                      onChange={(event) => {
+                        const value = event.target.value;
+                        setSecretUserLabel(value);
+                        setSecretUserId(value ? resolveUserId(value, secretUserId) : "");
+                      }}
+                      placeholder="Select a user"
+                    />
+                    <datalist id="skitter-secret-users">
+                      {usersData.map((user) => (
+                        <option
+                          key={user.id}
+                          value={`@${user.display_name ?? user.username ?? user.transport_user_id}`}
+                          label={user.transport_user_id}
+                        />
+                      ))}
+                    </datalist>
+                    <p className="text-xs text-mutedForeground">
+                      {secretUserId
+                        ? `Selected: ${userLabelFor(secretUserId)} (${secretUserId})`
+                        : "Type to search by name or paste a user id."}
+                    </p>
+                  </div>
+                  <div className="grid gap-2">
+                    <label className="text-xs font-semibold uppercase tracking-[0.2em] text-mutedForeground">
+                      Secret name
+                    </label>
+                    <Input
+                      value={secretName}
+                      onChange={(event) => setSecretName(event.target.value)}
+                      placeholder="EXAMPLE_API_KEY"
+                    />
+                    <p className="text-xs text-mutedForeground">
+                      Use this name inside skills.
+                    </p>
+                  </div>
+                </div>
+                <div className="grid gap-2">
+                  <label className="text-xs font-semibold uppercase tracking-[0.2em] text-mutedForeground">
+                    Secret value
+                  </label>
+                  <Input
+                    type="password"
+                    value={secretValue}
+                    onChange={(event) => setSecretValue(event.target.value)}
+                    placeholder="••••••••"
+                  />
+                  <div className="flex items-center justify-between">
+                    <p className="text-xs text-mutedForeground">
+                      Values are stored encrypted and never shown again.
+                    </p>
+                    <Button onClick={handleSecretSave} disabled={secretSaving}>
+                      {secretSaving ? "Saving..." : "Save secret"}
+                    </Button>
+                  </div>
+                </div>
+                {secretsError ? (
+                  <div className="rounded-2xl border border-dashed border-border bg-muted/40 px-4 py-6 text-sm text-mutedForeground">
+                    {secretsError}
+                  </div>
+                ) : null}
+                {secretsLoading ? (
+                  <div className="rounded-2xl border border-dashed border-border bg-muted/40 px-4 py-6 text-sm text-mutedForeground">
+                    Loading secrets...
+                  </div>
+                ) : secretsData.length ? (
+                  <Table>
+                    <TableHeader>
+                      <TableRow>
+                        <TableHead>Name</TableHead>
+                        <TableHead>Updated</TableHead>
+                        <TableHead>Last used</TableHead>
+                        <TableHead></TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {secretsData.map((secret) => (
+                        <TableRow key={secret.name}>
+                          <TableCell className="font-semibold">{secret.name}</TableCell>
+                          <TableCell className="text-mutedForeground">
+                            {formatRelativeTime(secret.updated_at)}
+                          </TableCell>
+                          <TableCell className="text-mutedForeground">
+                            {secret.last_used_at ? formatRelativeTime(secret.last_used_at) : "—"}
+                          </TableCell>
+                          <TableCell>
+                            <Button
+                              size="sm"
+                              variant="destructive"
+                              onClick={() => handleSecretDelete(secret.name)}
+                            >
+                              Delete
+                            </Button>
+                          </TableCell>
+                        </TableRow>
+                      ))}
+                    </TableBody>
+                  </Table>
+                ) : (
+                  <div className="rounded-2xl border border-dashed border-border bg-muted/40 px-4 py-6 text-sm text-mutedForeground">
+                    No secrets yet.
+                  </div>
+                )}
+              </CardContent>
+            </Card>
+          </div>
+        )}
+
         {active === "users" && (
           <div className="grid gap-6">
             <Card>
@@ -1870,7 +2089,7 @@ export default function App() {
           </Card>
         )}
 
-        {active !== "overview" && active !== "sessions" && active !== "tools" && active !== "jobs" && active !== "memory" && active !== "users" && active !== "sandbox" && active !== "settings" && active !== "activity" && (
+        {active !== "overview" && active !== "sessions" && active !== "tools" && active !== "jobs" && active !== "memory" && active !== "secrets" && active !== "users" && active !== "sandbox" && active !== "settings" && active !== "activity" && (
           <Card>
             <CardHeader>
               <CardTitle>Coming soon</CardTitle>

@@ -305,6 +305,8 @@ def create_app() -> FastAPI:
             cwd = req.payload.get("cwd", "")
             background = bool(req.payload.get("background", False))
             log_path = req.payload.get("log_path")
+            env_payload = req.payload.get("env") or {}
+            redact_values = req.payload.get("redact") or []
             if not cmd and not args:
                 raise HTTPException(status_code=400, detail="cmd or args is required")
             working_dir = safe_path(cwd) if cwd else workspace_root
@@ -315,6 +317,10 @@ def create_app() -> FastAPI:
                 argv = ["/bin/sh", "-lc", str(cmd)]
 
             try:
+                env = os.environ.copy()
+                if isinstance(env_payload, dict):
+                    for key, value in env_payload.items():
+                        env[str(key)] = str(value)
                 if background:
                     stdout_target = asyncio.subprocess.DEVNULL
                     stderr_target = asyncio.subprocess.DEVNULL
@@ -329,6 +335,7 @@ def create_app() -> FastAPI:
                     proc = await asyncio.create_subprocess_exec(
                         *argv,
                         cwd=str(working_dir),
+                        env=env,
                         stdout=stdout_target,
                         stderr=stderr_target,
                     )
@@ -342,6 +349,7 @@ def create_app() -> FastAPI:
                 proc = await asyncio.create_subprocess_exec(
                     *argv,
                     cwd=str(working_dir),
+                    env=env,
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.PIPE,
                 )
@@ -353,9 +361,18 @@ def create_app() -> FastAPI:
             except FileNotFoundError as exc:
                 raise HTTPException(status_code=400, detail=f"Command not found: {exc}") from exc
 
+            def _redact(text: str) -> str:
+                if not redact_values:
+                    return text
+                result = text
+                for value in redact_values:
+                    if value:
+                        result = result.replace(str(value), "[REDACTED]")
+                return result
+
             def _trim(data: bytes) -> str:
                 text = data.decode("utf-8", errors="replace")
-                return text[:10000]
+                return _redact(text[:10000])
 
             return {
                 "status": "ok" if proc.returncode == 0 else "error",

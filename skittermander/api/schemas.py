@@ -88,6 +88,19 @@ class SkillOut(BaseModel):
     path: str
 
 
+class SecretCreate(BaseModel):
+    user_id: str
+    name: str
+    value: str
+
+
+class SecretOut(BaseModel):
+    name: str
+    created_at: datetime
+    updated_at: datetime
+    last_used_at: datetime | None = None
+
+
 class MemoryForgetRequest(BaseModel):
     user_id: str
 

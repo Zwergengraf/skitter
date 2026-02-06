@@ -62,8 +62,16 @@ def build_skills_index(user_id: str) -> str | None:
         return None
     lines = [
         "## Skills",
-        "If a skill seems relevant, read its SKILL.md from the path below before using it. "
-        "Follow the instructions and execute scripts if needed.",
+        """Before replying: scan <available_skills> <description> entries.
+- If exactly one skill clearly applies: read its SKILL.md at <location> with `read`, then follow it.
+- If multiple could apply: choose the most specific one, then read/follow it.
+- If none clearly apply: do not read any SKILL.md.
+Constraints: never read more than one skill up front; only read after selecting.
+The following skills provide specialized instructions for specific tasks.
+Use the read tool to load a skill's file when the task matches its description.
+When a skill file references a relative path, resolve it against the skill directory (parent of SKILL.md / dirname of the path) and use that absolute path in tool commands.
+If a skill requires secret environment variables (API keys, credentials, etc), list them in `secret_refs` when using the shell tool to run skill commands, so they are injected into the environment when executing those commands.
+"""
     ]
     lines.append("<available_skills>")
     for skill in skills:

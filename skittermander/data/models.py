@@ -72,6 +72,18 @@ class Skill(Base):
     meta: Mapped[dict] = mapped_column(JSON, default=dict)
 
 
+class Secret(Base):
+    __tablename__ = "secrets"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    user_id: Mapped[str] = mapped_column(String, index=True)
+    name: Mapped[str] = mapped_column(String, index=True)
+    value_encrypted: Mapped[str] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(default=datetime.utcnow)
+    last_used_at: Mapped[datetime | None] = mapped_column(nullable=True)
+
+
 class Channel(Base):
     __tablename__ = "channels"
 

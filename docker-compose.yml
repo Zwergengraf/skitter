@@ -22,6 +22,7 @@ services:
       SKITTER_SANDBOX_IMAGE: skittermander-sandbox
       SKITTER_SANDBOX_NETWORK: skittermander_default
       SKITTER_SANDBOX_PORT: 9080
+      SKITTER_SECRETS_MASTER_KEY: ""
     depends_on:
       - postgres
     ports:

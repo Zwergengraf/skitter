@@ -51,6 +51,27 @@ CREATE TABLE IF NOT EXISTS skills (
     meta JSONB NOT NULL DEFAULT '{}'::jsonb
 );
 
+CREATE TABLE IF NOT EXISTS secrets (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL,
+    name TEXT NOT NULL,
+    value_encrypted TEXT NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    last_used_at TIMESTAMPTZ
+);
+
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1
+        FROM pg_constraint
+        WHERE conname = 'secrets_user_id_name_key'
+    ) THEN
+        ALTER TABLE secrets ADD CONSTRAINT secrets_user_id_name_key UNIQUE (user_id, name);
+    END IF;
+END $$;
+
 CREATE TABLE IF NOT EXISTS channels (
     id TEXT PRIMARY KEY,
     transport_channel_id TEXT NOT NULL,

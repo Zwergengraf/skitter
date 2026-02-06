@@ -45,13 +45,6 @@ FIELDS: list[ConfigFieldSpec] = [
         field_type="string",
     ),
     ConfigFieldSpec(
-        key="prompt_context_title",
-        path=("prompt", "context_title"),
-        category="prompt",
-        label="Context title",
-        field_type="string",
-    ),
-    ConfigFieldSpec(
         key="prompt_context_files",
         path=("prompt", "context_files"),
         category="prompt",
