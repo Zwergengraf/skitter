@@ -37,7 +37,7 @@ class MemoryService:
         self.embedder = embedder or EmbeddingsClient()
         self._logger = logging.getLogger(__name__)
 
-    async def index_text(self, user_id: str, session_id: str, source: str, text: str) -> int:
+    async def index_text(self, user_id: str, session_id: str | None, source: str, text: str) -> int:
         chunks = chunk_text(text)
         if not chunks:
             return 0
@@ -46,7 +46,9 @@ class MemoryService:
         except Exception as exc:  # pragma: no cover - network errors
             self._logger.exception("Embedding failed for %s: %s", source, exc)
             return 0
-        tags = [f"file:{source}", f"session:{session_id}"]
+        tags = [f"file:{source}"]
+        if session_id:
+            tags.append(f"session:{session_id}")
         async with SessionLocal() as session:
             repo = Repository(session)
             for chunk, embedding in zip(chunks, embeddings):
@@ -69,19 +71,30 @@ class MemoryService:
             sections.append((session_id, section_text))
         return sections
 
+    def _is_hidden_or_internal(self, path: Path) -> bool:
+        return path.name.startswith(".") or path.name == ".index.json"
+
+    def _is_indexable_file(self, path: Path) -> bool:
+        if self._is_hidden_or_internal(path):
+            return False
+        return path.suffix.lower() in {".md", ".txt"}
+
     async def index_file(self, user_id: str, session_id: str | None, path: Path, force: bool = False) -> bool:
         memory_root = path.parent
         async with SessionLocal() as session:
             repo = Repository(session)
             await repo.delete_memory_by_tag(user_id, f"file:{path.name}")
 
-        text = path.read_text(encoding="utf-8")
+        try:
+            text = path.read_text(encoding="utf-8", errors="ignore")
+        except OSError:
+            return False
         sections = self._split_sessions(text)
         indexed = 0
         if sections:
             for section_session_id, section_text in sections:
                 indexed += await self.index_text(user_id, section_session_id, path.name, section_text)
-        elif session_id:
+        else:
             indexed = await self.index_text(user_id, session_id, path.name, text)
         if indexed > 0:
             index = self._load_index(memory_root)
@@ -92,7 +105,11 @@ class MemoryService:
     async def reindex_all(self, user_id: str, memory_root: Path) -> dict:
         memory_root.mkdir(parents=True, exist_ok=True)
         index = self._load_index(memory_root)
-        current_files = {p.name: p for p in memory_root.glob("*.md")}
+        current_files = {
+            p.name: p
+            for p in memory_root.iterdir()
+            if p.is_file() and self._is_indexable_file(p)
+        }
 
         indexed = 0
         skipped = 0
@@ -102,6 +119,8 @@ class MemoryService:
             changed = await self.index_file(user_id, session_id=None, path=path, force=True)
             if changed:
                 indexed += 1
+            else:
+                skipped += 1
 
         removed_files = [name for name in index.keys() if name not in current_files]
         if removed_files:
