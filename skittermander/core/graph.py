@@ -655,7 +655,7 @@ def build_graph(
 
     @tool("memory_search")
     async def memory_search(query: str, top_k: int = 5) -> str:
-        """Search session memories by semantic similarity."""
+        """Search memories (content of the folder `memory`) by semantic similarity."""
         if not query.strip():
             return "memory_search error: query is required"
         try:
