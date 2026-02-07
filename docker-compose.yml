@@ -1,4 +1,3 @@
-version: "3.9"
 services:
   postgres:
     image: pgvector/pgvector:pg15
@@ -41,15 +40,6 @@ services:
     image: skittermander-sandbox
     profiles:
       - sandbox
-    environment:
-      SKITTER_WORKSPACE_ROOT: /workspace
-      SKITTER_BROWSER_DATA_ROOT: /browser-data
-      SKITTER_BROWSER_EXECUTABLE: /usr/bin/brave-browser
-    ports:
-      - "9080:9080"
-    volumes:
-      - ./workspace:/workspace
-      - ./browser-data:/browser-data
 
 volumes:
   skitter_pg:

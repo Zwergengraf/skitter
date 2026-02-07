@@ -297,12 +297,16 @@ def build_graph(
         return json.dumps(result)
 
     @tool("list")
-    async def list_files(path: Optional[str] = None, file_path: Optional[str] = None) -> str:
-        """List files and folders at a path in the workspace."""
+    async def list_files(
+        path: Optional[str] = None,
+        file_path: Optional[str] = None,
+        show_hidden_files: Optional[bool] = None,
+    ) -> str:
+        """List files and folders at a path in the workspace. Hidden files are excluded by default; set show_hidden_files=true to include them."""
         target = _coalesce_path(path, file_path)
         if not target:
             return await _fail_untracked_call("list", {"path": path, "file_path": file_path}, "list error: path is required")
-        payload = {"path": target}
+        payload = {"path": target, "show_hidden_files": bool(show_hidden_files)}
         decision = await _maybe_approve("list", payload, approval_service, policy)
         if not decision.approved:
             return _denied_message("list")

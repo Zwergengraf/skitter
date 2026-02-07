@@ -30,6 +30,8 @@ COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
 RUN npm install -g @openai/codex
 ENV CODEX_HOME=/workspace/.codex
 
+RUN mkdir -p /tmp/tmux-sockets
+
 WORKDIR /app
 
 COPY skittermander/sandbox/runner.py /app/runner.py

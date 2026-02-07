@@ -245,7 +245,14 @@ def create_app() -> FastAPI:
             if req.tool == "list":
                 if not target.exists():
                     raise HTTPException(status_code=404, detail="Path not found")
-                return {"status": "ok", "entries": [p.name for p in target.iterdir()]}
+                show_hidden = bool(req.payload.get("show_hidden_files", False))
+                entries = []
+                for p in target.iterdir():
+                    if not show_hidden and p.name.startswith("."):
+                        continue
+                    entries.append(p.name)
+                entries.sort()
+                return {"status": "ok", "entries": entries}
             if req.tool == "delete":
                 if not target.exists():
                     return {"status": "ok", "deleted": False}

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import shutil
 import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta
@@ -115,7 +116,14 @@ class SandboxManager:
         ensure_user_workspace(user_id)
         host_workspace = host_user_workspace_root(user_id)
         host_workspace.mkdir(parents=True, exist_ok=True)
-        browser_root = host_workspace / "browser"
+        legacy_browser_root = host_workspace / "browser"
+        browser_root = host_workspace / ".browser"
+        if not browser_root.exists() and legacy_browser_root.exists() and legacy_browser_root.is_dir():
+            try:
+                legacy_browser_root.rename(browser_root)
+            except OSError:
+                # Fallback for cross-device or lock issues.
+                shutil.copytree(legacy_browser_root, browser_root, dirs_exist_ok=True)
         browser_root.mkdir(parents=True, exist_ok=True)
 
         name = self._container_name(user_id)
