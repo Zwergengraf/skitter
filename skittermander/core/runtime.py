@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import mimetypes
+import re
 import uuid
 from collections import defaultdict
 from datetime import datetime
@@ -30,6 +32,8 @@ from ..tools.approval_service import ToolApprovalService
 from ..core.embeddings import EmbeddingsClient
 from ..data.db import SessionLocal
 from ..data.repositories import Repository
+
+_MEDIA_DIRECTIVE_RE = re.compile(r"^\s*MEDIA\s*:\s*(.+?)\s*$", re.IGNORECASE)
 
 
 class AgentRuntime:
@@ -117,7 +121,7 @@ class AgentRuntime:
             messages = result.get("messages", history)
             self._history[session_id] = list(messages)
 
-            response = ""
+            response: object = ""
             for msg in reversed(messages):
                 if isinstance(msg, AIMessage):
                     response = msg.content
@@ -139,8 +143,18 @@ class AgentRuntime:
                 created_at=datetime.utcnow(),
             )
         )
+        response_text = self._message_content_to_text(response)
         attachments = self._extract_attachments(internal_user_id, messages, envelope.message_id)
-        cleaned = self._strip_attachment_paths(response) if attachments else response
+        response_text, media_attachments = self._extract_media_directive_attachments(internal_user_id, response_text)
+        if media_attachments:
+            seen_paths = {a.path for a in attachments if a.path}
+            for attachment in media_attachments:
+                if attachment.path and attachment.path in seen_paths:
+                    continue
+                attachments.append(attachment)
+                if attachment.path:
+                    seen_paths.add(attachment.path)
+        cleaned = self._strip_attachment_paths(response_text) if attachments else response_text
         return AgentResponse(text=cleaned, attachments=attachments)
 
     def clear_history(self, session_id: str) -> None:
@@ -737,6 +751,71 @@ class AgentRuntime:
                     )
                 )
         return attachments
+
+    def _extract_media_directive_attachments(self, user_id: str, text: str) -> tuple[str, list[Attachment]]:
+        if not text:
+            return text, []
+        attachments: list[Attachment] = []
+        seen: set[str] = set()
+        kept_lines: list[str] = []
+        for line in text.splitlines():
+            match = _MEDIA_DIRECTIVE_RE.match(line)
+            if not match:
+                kept_lines.append(line)
+                continue
+            raw_path = self._normalize_media_path(match.group(1))
+            if not raw_path:
+                continue
+            resolved = self._resolve_user_workspace_file(user_id, raw_path)
+            if not resolved or not resolved.exists() or not resolved.is_file():
+                continue
+            path_key = str(resolved)
+            if path_key in seen:
+                continue
+            seen.add(path_key)
+            mime_type, _ = mimetypes.guess_type(resolved.name)
+            attachments.append(
+                Attachment(
+                    filename=resolved.name,
+                    content_type=mime_type or "application/octet-stream",
+                    path=path_key,
+                )
+            )
+        cleaned = "\n".join(kept_lines).strip()
+        return cleaned, attachments
+
+    def _normalize_media_path(self, raw_path: str) -> str:
+        value = str(raw_path or "").strip().strip("`").strip()
+        if (value.startswith('"') and value.endswith('"')) or (value.startswith("'") and value.endswith("'")):
+            value = value[1:-1].strip()
+        return value
+
+    def _resolve_user_workspace_file(self, user_id: str, raw_path: str) -> Path | None:
+        if not raw_path:
+            return None
+        candidate_path = raw_path.strip()
+        if candidate_path.startswith("sandbox:/workspace/"):
+            candidate_path = "/workspace/" + candidate_path.removeprefix("sandbox:/workspace/")
+
+        from .workspace import user_workspace_root
+
+        workspace = user_workspace_root(user_id).resolve()
+        as_path = Path(candidate_path)
+        if candidate_path.startswith("/workspace/"):
+            candidate = workspace / Path(candidate_path).relative_to("/workspace")
+        elif as_path.is_absolute():
+            candidate = as_path
+        else:
+            candidate = workspace / as_path
+        try:
+            resolved = candidate.resolve(strict=False)
+        except OSError:
+            return None
+        try:
+            resolved.relative_to(workspace)
+        except ValueError:
+            return None
+        return resolved
 
     def _resolve_workspace_path(self, user_id: str, raw_path: str) -> Path | None:
         if not raw_path:

@@ -103,6 +103,10 @@ Reactions are lightweight social signals. Humans use them constantly — they sa
 
 Skills provide your tools. When you need one, check its `SKILL.md`. Keep local notes (camera names, SSH details, voice preferences) in `TOOLS.md`.
 
+# Attachments
+Tools and Skills can produce artifacts (images, sound files, text files, ...). If they are relevant, send them to the user.
+You can embed them with the special MEDIA token. E.g. to embed an image file `images/generated.png`, send this line: MEDIA:images/generated.png
+
 **📝 Formatting:**
 
 - **Discord:** No markdown tables! Use bullet lists instead
