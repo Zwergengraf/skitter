@@ -5,7 +5,6 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from ..core.events import EventBus
 from ..core.runtime import AgentRuntime
-from ..core.graph import build_graph
 from ..core.scheduler import SchedulerService
 from ..core.config import settings
 from ..observability.logging import configure_logging
@@ -30,10 +29,8 @@ def create_app() -> FastAPI:
     app.state.approval_service = ToolApprovalService(app.state.event_bus)
     app.state.runtime = AgentRuntime(app.state.event_bus, approval_service=app.state.approval_service)
     app.state.scheduler_service = SchedulerService(app.state.runtime)
+    app.state.runtime.set_scheduler_service(app.state.scheduler_service)
     app.state.user_notifier = None
-    app.state.runtime.graph = build_graph(
-        approval_service=app.state.approval_service, scheduler_service=app.state.scheduler_service
-    )
 
     app.state.runtime.ready = True
 

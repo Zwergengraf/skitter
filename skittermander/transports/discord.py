@@ -12,7 +12,6 @@ from discord import app_commands
 from ..core.config import settings
 from ..core.events import EventBus
 from ..core.runtime import AgentRuntime
-from ..core.graph import build_graph
 from ..core.sessions import SessionManager
 from ..data.db import SessionLocal
 from ..data.repositories import Repository
@@ -320,13 +319,13 @@ async def _run() -> None:
     transport.set_approval_service(approval_service)
     approval_service.set_notifier(transport.send_approval_request)
     scheduler = SchedulerService(runtime)
+    runtime.set_scheduler_service(scheduler)
     async def _deliver(channel_id: str, text: str, attachments: list) -> None:
         await transport.send_message(channel_id, text, attachments)
     scheduler.set_deliver(_deliver)
     await scheduler.start()
     if sandbox_manager is not None:
         await sandbox_manager.start()
-    runtime.graph = build_graph(approval_service=approval_service, scheduler_service=scheduler)
 
     session_manager = SessionManager(runtime, settings.workspace_root)
 

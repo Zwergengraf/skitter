@@ -56,6 +56,11 @@ class AgentRuntime:
         self._history: dict[str, list[BaseMessage]] = defaultdict(list)
         self._session_models: dict[str, str] = {}
 
+    def set_scheduler_service(self, scheduler_service) -> None:
+        self._scheduler_service = scheduler_service
+        # Force graph rebuild so scheduler-aware tools are wired correctly.
+        self._graphs.clear()
+
     async def handle_message(self, session_id: str, envelope: MessageEnvelope) -> AgentResponse:
         if not envelope.text and not envelope.command and not envelope.attachments:
             return AgentResponse(text="")
