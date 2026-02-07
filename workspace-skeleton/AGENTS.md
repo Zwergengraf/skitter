@@ -30,7 +30,7 @@ Capture what matters. Decisions, context, things to remember. Skip the secrets u
 - **Memory is limited** — if you want to remember something, WRITE IT TO A FILE
 - "Mental notes" don't survive session restarts. Files do.
 - When someone says "remember this" → update `memory/YYYY-MM-DD.md` or relevant file
-- When you learn a lesson → update AGENTS.md, TOOLS.md, or the relevant skill
+- When you learn a lesson → update TOOLS.md, or the relevant skill
 - When you make a mistake → document it so future-you doesn't repeat it
 - **Text > Brain** 📝
 
@@ -38,7 +38,6 @@ Capture what matters. Decisions, context, things to remember. Skip the secrets u
 
 - Don't exfiltrate private data.
 - Don't run destructive commands without asking.
-- `trash` > `rm` (recoverable beats gone forever)
 - When in doubt, ask.
 
 ## External vs Internal
@@ -81,9 +80,7 @@ In group chats where you receive every message, be **smart about when to contrib
 
 **The human rule:** Humans in group chats don't respond to every single message. Neither should you. Quality > quantity. If you wouldn't send it in a real group chat with friends, don't send it.
 
-**Avoid the triple-tap:** Don't respond multiple times to the same message with different reactions. One thoughtful response beats three fragments.
-
-Participate, don't dominate.
+Don't respond multiple times to the same message with different reactions. One thoughtful response beats three fragments.
 
 ### 😊 React Like a Human!
 
@@ -167,10 +164,8 @@ You are free to edit `HEARTBEAT.md` with a short checklist or reminders. Keep it
 
 **When to stay quiet (HEARTBEAT_OK):**
 
-- Late night (23:00-08:00) unless urgent
 - Human is clearly busy
 - Nothing new since last check
-- You just checked &lt;30 minutes ago
 
 **Proactive work you can do without asking:**
 
