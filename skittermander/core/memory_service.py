@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Iterable, List
+from typing import List
 import re
 
 import hashlib
@@ -15,20 +15,125 @@ from ..data.repositories import Repository
 from .embeddings import EmbeddingsClient
 
 
-def chunk_text(text: str, chunk_size: int | None = None, overlap: int = 100) -> List[str]:
-    chunk_size = chunk_size or settings.embeddings_max_chunk_chars
+_HEADER_RE = re.compile(r"^\s{0,3}#{1,6}\s+\S")
+
+
+def _split_markdown_sections(text: str) -> list[str]:
+    lines = text.splitlines()
+    if not lines:
+        return []
+    sections: list[str] = []
+    current: list[str] = []
+    for line in lines:
+        if _HEADER_RE.match(line) and current:
+            section = "\n".join(current).strip()
+            if section:
+                sections.append(section)
+            current = [line]
+        else:
+            current.append(line)
+    if current:
+        section = "\n".join(current).strip()
+        if section:
+            sections.append(section)
+    return sections
+
+
+def _split_by_words(text: str, max_chars: int) -> list[str]:
+    words = text.split()
+    if not words:
+        return []
+    chunks: list[str] = []
+    current = ""
+    for word in words:
+        if len(word) > max_chars:
+            if current:
+                chunks.append(current)
+                current = ""
+            # Single token larger than max: hard split is unavoidable.
+            for i in range(0, len(word), max_chars):
+                chunks.append(word[i : i + max_chars])
+            continue
+        candidate = f"{current} {word}".strip()
+        if not current:
+            current = word
+        elif len(candidate) <= max_chars:
+            current = candidate
+        else:
+            chunks.append(current)
+            current = word
+    if current:
+        chunks.append(current)
+    return chunks
+
+
+def _split_oversized(text: str, max_chars: int) -> list[str]:
     cleaned = text.strip()
     if not cleaned:
         return []
-    chunks: List[str] = []
-    start = 0
-    length = len(cleaned)
-    while start < length:
-        end = min(start + chunk_size, length)
-        chunks.append(cleaned[start:end])
-        if end == length:
-            break
-        start = max(0, end - overlap)
+    if len(cleaned) <= max_chars:
+        return [cleaned]
+
+    paragraphs = [part.strip() for part in re.split(r"\n\s*\n", cleaned) if part.strip()]
+    if len(paragraphs) > 1:
+        out: list[str] = []
+        for paragraph in paragraphs:
+            out.extend(_split_oversized(paragraph, max_chars))
+        return out
+
+    lines = [line.strip() for line in cleaned.splitlines() if line.strip()]
+    if len(lines) > 1:
+        out = []
+        for line in lines:
+            out.extend(_split_oversized(line, max_chars))
+        return out
+
+    sentences = [part.strip() for part in re.split(r"(?<=[.!?])\s+", cleaned) if part.strip()]
+    if len(sentences) > 1:
+        out = []
+        for sentence in sentences:
+            out.extend(_split_oversized(sentence, max_chars))
+        return out
+
+    return _split_by_words(cleaned, max_chars)
+
+
+def chunk_text(text: str, target_chars: int | None = None, max_chars: int | None = None) -> List[str]:
+    raw = text.strip()
+    if not raw:
+        return []
+
+    max_chars = max_chars or settings.embeddings_max_chunk_chars
+    max_chars = max(100, int(max_chars))
+    target_chars = target_chars or settings.embeddings_target_chunk_chars
+    target_chars = max(80, min(int(target_chars), max_chars))
+
+    sections = _split_markdown_sections(raw) or [raw]
+    units: list[str] = []
+    for section in sections:
+        units.extend(_split_oversized(section, max_chars))
+
+    chunks: list[str] = []
+    current = ""
+    for unit in units:
+        if not current:
+            current = unit
+            continue
+        candidate = f"{current}\n\n{unit}"
+        if len(candidate) <= max_chars:
+            current_distance = abs(len(current) - target_chars)
+            candidate_distance = abs(len(candidate) - target_chars)
+            # If we're already at/above target, split when adding would move us further away.
+            if len(current) >= target_chars and candidate_distance >= current_distance:
+                chunks.append(current)
+                current = unit
+            else:
+                current = candidate
+            continue
+        chunks.append(current)
+        current = unit
+    if current:
+        chunks.append(current)
     return chunks
 
 

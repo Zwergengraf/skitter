@@ -99,6 +99,16 @@ FIELDS: list[ConfigFieldSpec] = [
         field_type="string",
     ),
     ConfigFieldSpec(
+        key="embeddings_target_chunk_chars",
+        path=("embeddings", "target_chunk_chars"),
+        category="embeddings",
+        label="Target chunk chars",
+        field_type="number",
+        minimum=100,
+        maximum=5000,
+        step=50,
+    ),
+    ConfigFieldSpec(
         key="embeddings_max_chunk_chars",
         path=("embeddings", "max_chunk_chars"),
         category="embeddings",

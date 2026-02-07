@@ -34,6 +34,7 @@ class Settings(BaseSettings):
     embeddings_api_base: str = Field(default="")
     embeddings_api_key: str = Field(default="")
     embeddings_model: str = Field(default="text-embedding-3-small")
+    embeddings_target_chunk_chars: int = Field(default=600)
     embeddings_max_chunk_chars: int = Field(default=800)
     memory_min_similarity: float = Field(default=0.3)
 
