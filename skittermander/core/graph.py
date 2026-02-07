@@ -179,6 +179,30 @@ def build_graph(
     def _denied_message(tool_name: str) -> str:
         return f"{tool_name} denied: Request was denied by the user, please ask them for clarification."
 
+    async def _create_auto_tool_run(tool_name: str, payload: dict[str, Any]) -> str:
+        async with SessionLocal() as session:
+            repo = Repository(session)
+            tool_run = await repo.create_tool_run(
+                session_id=_session_id(),
+                tool_name=tool_name,
+                status="approved",
+                input_payload=payload,
+                approved_by="auto",
+            )
+        return tool_run.id
+
+    async def _complete_tool_run(tool_run_id: str | None, status: str, output: dict[str, Any]) -> None:
+        if not tool_run_id:
+            return
+        async with SessionLocal() as session:
+            repo = Repository(session)
+            await repo.complete_tool_run(tool_run_id, status, output)
+
+    async def _fail_untracked_call(tool_name: str, payload: dict[str, Any], message: str) -> str:
+        tool_run_id = await _create_auto_tool_run(tool_name, payload)
+        await _complete_tool_run(tool_run_id, "failed", {"error": message})
+        return message
+
     @tool("read")
     async def read(
         path: Optional[str] = None,
@@ -189,7 +213,7 @@ def build_graph(
         """Read the contents of a file. Supports text files and images (jpg, png, gif, webp). Images are sent as attachments. For text files, output is truncated to 2000 lines or 50KB (whichever is hit first). Use offset/limit for large files. When you need the full file, continue with offset until complete."""
         target = _coalesce_path(path, file_path)
         if not target:
-            return "read error: path is required"
+            return await _fail_untracked_call("read", {"path": path, "file_path": file_path}, "read error: path is required")
         payload: dict[str, Any] = {"path": target}
         if offset is not None:
             payload["offset"] = offset
@@ -201,9 +225,9 @@ def build_graph(
         try:
             result = await client.execute(_user_id(), _session_id(), "read", payload)
         except httpx.HTTPStatusError as exc:
+            await _complete_tool_run(decision.tool_run_id, "failed", {"error": exc.response.text})
             return f"read error: {exc.response.text}"
-        if decision.tool_run_id and approval_service is not None:
-            await approval_service.complete(decision.tool_run_id, "completed", result)
+        await _complete_tool_run(decision.tool_run_id, "completed", result if isinstance(result, dict) else {"result": result})
         if isinstance(result, dict):
             content_type = str(result.get("content_type") or "").lower()
             file_path = str(result.get("file_path") or "")
@@ -226,9 +250,9 @@ def build_graph(
         """Write content to a file. Creates the file if it doesn't exist, overwrites if it does. Automatically creates parent directories."""
         target = _coalesce_path(path, file_path)
         if not target:
-            return "write error: path is required"
+            return await _fail_untracked_call("write", {"path": path, "file_path": file_path}, "write error: path is required")
         if content is None:
-            return "write error: content is required"
+            return await _fail_untracked_call("write", {"path": target}, "write error: content is required")
         payload = {"path": target, "content": content}
         decision = await _maybe_approve("write", payload, approval_service, policy)
         if not decision.approved:
@@ -236,9 +260,9 @@ def build_graph(
         try:
             result = await client.execute(_user_id(), _session_id(), "write", payload)
         except httpx.HTTPStatusError as exc:
+            await _complete_tool_run(decision.tool_run_id, "failed", {"error": exc.response.text})
             return f"write error: {exc.response.text}"
-        if decision.tool_run_id and approval_service is not None:
-            await approval_service.complete(decision.tool_run_id, "completed", result)
+        await _complete_tool_run(decision.tool_run_id, "completed", result if isinstance(result, dict) else {"result": result})
         return json.dumps(result)
 
     @tool("edit")
@@ -253,13 +277,13 @@ def build_graph(
         """Edit a file by replacing exact text. The oldText must match exactly (including whitespace). Use this for precise, surgical edits."""
         target = _coalesce_path(path, file_path)
         if not target:
-            return "edit error: path is required"
+            return await _fail_untracked_call("edit", {"path": path, "file_path": file_path}, "edit error: path is required")
         old_value = oldText if oldText is not None else old_string
         new_value = newText if newText is not None else new_string
         if old_value is None:
-            return "edit error: oldText is required"
+            return await _fail_untracked_call("edit", {"path": target}, "edit error: oldText is required")
         if new_value is None:
-            return "edit error: newText is required"
+            return await _fail_untracked_call("edit", {"path": target}, "edit error: newText is required")
         payload = {"path": target, "oldText": old_value, "newText": new_value}
         decision = await _maybe_approve("edit", payload, approval_service, policy)
         if not decision.approved:
@@ -267,9 +291,9 @@ def build_graph(
         try:
             result = await client.execute(_user_id(), _session_id(), "edit", payload)
         except httpx.HTTPStatusError as exc:
+            await _complete_tool_run(decision.tool_run_id, "failed", {"error": exc.response.text})
             return f"edit error: {exc.response.text}"
-        if decision.tool_run_id and approval_service is not None:
-            await approval_service.complete(decision.tool_run_id, "completed", result)
+        await _complete_tool_run(decision.tool_run_id, "completed", result if isinstance(result, dict) else {"result": result})
         return json.dumps(result)
 
     @tool("list")
@@ -277,7 +301,7 @@ def build_graph(
         """List files and folders at a path in the workspace."""
         target = _coalesce_path(path, file_path)
         if not target:
-            return "list error: path is required"
+            return await _fail_untracked_call("list", {"path": path, "file_path": file_path}, "list error: path is required")
         payload = {"path": target}
         decision = await _maybe_approve("list", payload, approval_service, policy)
         if not decision.approved:
@@ -285,9 +309,9 @@ def build_graph(
         try:
             result = await client.execute(_user_id(), _session_id(), "list", payload)
         except httpx.HTTPStatusError as exc:
+            await _complete_tool_run(decision.tool_run_id, "failed", {"error": exc.response.text})
             return f"list error: {exc.response.text}"
-        if decision.tool_run_id and approval_service is not None:
-            await approval_service.complete(decision.tool_run_id, "completed", result)
+        await _complete_tool_run(decision.tool_run_id, "completed", result if isinstance(result, dict) else {"result": result})
         return json.dumps(result)
 
     @tool("delete")
@@ -297,26 +321,26 @@ def build_graph(
         """Delete a file or folder. Use recursive=true to delete non-empty folders."""
         target = _coalesce_path(path, file_path)
         if not target:
-            return "delete error: path is required"
+            return await _fail_untracked_call("delete", {"path": path, "file_path": file_path}, "delete error: path is required")
         payload = {"path": target, "recursive": bool(recursive)}
         if payload["recursive"] and approval_service is None:
-            return "delete error: recursive delete requires approval"
+            return await _fail_untracked_call("delete", payload, "delete error: recursive delete requires approval")
         decision = await _maybe_approve("delete", payload, approval_service, policy)
         if not decision.approved:
             return _denied_message("delete")
         try:
             result = await client.execute(_user_id(), _session_id(), "delete", payload)
         except httpx.HTTPStatusError as exc:
+            await _complete_tool_run(decision.tool_run_id, "failed", {"error": exc.response.text})
             return f"delete error: {exc.response.text}"
-        if decision.tool_run_id and approval_service is not None:
-            await approval_service.complete(decision.tool_run_id, "completed", result)
+        await _complete_tool_run(decision.tool_run_id, "completed", result if isinstance(result, dict) else {"result": result})
         return json.dumps(result)
 
     @tool("download")
     async def download(url: str, path: Optional[str] = None) -> str:
         """Download a file from a URL into the workspace. Optionally specify a target path."""
         if not url:
-            return "download error: url is required"
+            return await _fail_untracked_call("download", {"url": url, "path": path}, "download error: url is required")
         payload: dict[str, Any] = {"url": url}
         if path:
             payload["path"] = path
@@ -326,9 +350,9 @@ def build_graph(
         try:
             result = await client.execute(_user_id(), _session_id(), "download", payload)
         except httpx.HTTPStatusError as exc:
+            await _complete_tool_run(decision.tool_run_id, "failed", {"error": exc.response.text})
             return f"download error: {exc.response.text}"
-        if decision.tool_run_id and approval_service is not None:
-            await approval_service.complete(decision.tool_run_id, "completed", result)
+        await _complete_tool_run(decision.tool_run_id, "completed", result if isinstance(result, dict) else {"result": result})
         return json.dumps(result)
 
     @tool("http_fetch")
@@ -341,9 +365,9 @@ def build_graph(
         try:
             result = await client.execute(_user_id(), _session_id(), "http_fetch", payload)
         except httpx.HTTPStatusError as exc:
+            await _complete_tool_run(decision.tool_run_id, "failed", {"error": exc.response.text})
             return f"http_fetch error: {exc.response.text}"
-        if decision.tool_run_id and approval_service is not None:
-            await approval_service.complete(decision.tool_run_id, "completed", result)
+        await _complete_tool_run(decision.tool_run_id, "completed", result if isinstance(result, dict) else {"result": result})
         return json.dumps(result)
 
     @tool("browser")
@@ -372,9 +396,9 @@ def build_graph(
         try:
             result = await client.execute(_user_id(), _session_id(), "browser", payload)
         except httpx.HTTPStatusError as exc:
+            await _complete_tool_run(decision.tool_run_id, "failed", {"error": exc.response.text})
             return f"browser error: {exc.response.text}"
-        if decision.tool_run_id and approval_service is not None:
-            await approval_service.complete(decision.tool_run_id, "completed", result)
+        await _complete_tool_run(decision.tool_run_id, "completed", result if isinstance(result, dict) else {"result": result})
         return json.dumps(result)
 
     @tool("browser_action")
@@ -434,11 +458,12 @@ def build_graph(
             timeout_s = max(60, int(timeout_ms / 1000) + 15)
             result = await client.execute(_user_id(), _session_id(), "browser_action", payload, timeout=timeout_s)
         except httpx.HTTPStatusError as exc:
+            await _complete_tool_run(decision.tool_run_id, "failed", {"error": exc.response.text})
             return f"browser_action error: {exc.response.text}"
         except httpx.ReadTimeout:
+            await _complete_tool_run(decision.tool_run_id, "failed", {"error": "sandbox timed out"})
             return "browser_action error: sandbox timed out"
-        if decision.tool_run_id and approval_service is not None:
-            await approval_service.complete(decision.tool_run_id, "completed", result)
+        await _complete_tool_run(decision.tool_run_id, "completed", result if isinstance(result, dict) else {"result": result})
         return json.dumps(result)
 
     @tool("shell")
@@ -455,14 +480,14 @@ def build_graph(
         secrets = _normalize_secret_refs(secret_refs)
         if secrets:
             if background:
-                return "shell error: secret_refs cannot be used with background commands"
+                return await _fail_untracked_call("shell", payload, "shell error: secret_refs cannot be used with background commands")
             if approval_service is None:
-                return "shell error: secret execution requires approval"
+                return await _fail_untracked_call("shell", payload, "shell error: secret execution requires approval")
             manager = SecretsManager()
             try:
                 manager.ensure_ready()
             except RuntimeError as exc:
-                return f"shell error: {exc}"
+                return await _fail_untracked_call("shell", payload, f"shell error: {exc}")
             env: dict[str, str] = {}
             redact: list[str] = []
             missing: list[str] = []
@@ -476,13 +501,13 @@ def build_graph(
                     try:
                         value = manager.decrypt(secret.value_encrypted)
                     except RuntimeError:
-                        return f"shell error: failed to decrypt secret {name}"
+                        return await _fail_untracked_call("shell", payload, f"shell error: failed to decrypt secret {name}")
                     env[_secret_env_key(name)] = value
                     if value:
                         redact.append(value)
                     await repo.touch_secret(secret)
             if missing:
-                return f"shell error: missing secrets: {', '.join(missing)}"
+                return await _fail_untracked_call("shell", payload, f"shell error: missing secrets: {', '.join(missing)}")
             approval_payload = {**payload, "secret_refs": secrets}
             decision = await approval_service.request(
                 session_id=_session_id(),
@@ -502,9 +527,9 @@ def build_graph(
         try:
             result = await client.execute(_user_id(), _session_id(), "shell", exec_payload)
         except httpx.HTTPStatusError as exc:
+            await _complete_tool_run(decision.tool_run_id, "failed", {"error": exc.response.text})
             return f"shell error: {exc.response.text}"
-        if decision.tool_run_id and approval_service is not None:
-            await approval_service.complete(decision.tool_run_id, "completed", result)
+        await _complete_tool_run(decision.tool_run_id, "completed", result if isinstance(result, dict) else {"result": result})
         if payload.get("background") and isinstance(result, dict) and "pid" in result:
             async with SessionLocal() as session:
                 repo = Repository(session)
@@ -521,15 +546,15 @@ def build_graph(
         """Create a new per-user secret (name + value). Existing secrets cannot be overwritten."""
         secret_name = (name or "").strip()
         if not secret_name:
-            return "create_secret error: name is required"
+            return await _fail_untracked_call("create_secret", {"name": name}, "create_secret error: name is required")
         if value is None or value == "":
-            return "create_secret error: value is required"
+            return await _fail_untracked_call("create_secret", {"name": secret_name}, "create_secret error: value is required")
 
         manager = SecretsManager()
         try:
             manager.ensure_ready()
         except RuntimeError as exc:
-            return f"create_secret error: {exc}"
+            return await _fail_untracked_call("create_secret", {"name": secret_name}, f"create_secret error: {exc}")
 
         approval_payload = {"name": secret_name, "value": "[REDACTED]", "value_length": len(value)}
         decision = await _maybe_approve("create_secret", approval_payload, approval_service, policy)
@@ -541,13 +566,13 @@ def build_graph(
             repo = Repository(session)
             secret = await repo.create_secret(_user_id(), secret_name, encrypted)
         if secret is None:
-            return f"create_secret error: secret '{secret_name}' already exists"
-        if decision.tool_run_id and approval_service is not None:
-            await approval_service.complete(
+            await _complete_tool_run(
                 decision.tool_run_id,
-                "completed",
-                {"name": secret_name, "status": "created"},
+                "failed",
+                {"error": f"secret '{secret_name}' already exists"},
             )
+            return f"create_secret error: secret '{secret_name}' already exists"
+        await _complete_tool_run(decision.tool_run_id, "completed", {"name": secret_name, "status": "created"})
         return json.dumps({"name": secret_name, "status": "created"})
 
     @tool("web_search")
@@ -560,9 +585,20 @@ def build_graph(
         freshness: Optional[str] = None,
     ) -> str:
         """Search the web using Brave Search API."""
+        payload: dict[str, Any] = {
+            "query": query,
+            "count": count,
+            "country": country,
+            "search_lang": search_lang,
+            "ui_lang": ui_lang,
+            "freshness": freshness,
+        }
+        tool_run_id = await _create_auto_tool_run("web_search", payload)
         if not query.strip():
+            await _complete_tool_run(tool_run_id, "failed", {"error": "query is required"})
             return "web_search error: query is required"
         if not settings.brave_api_key:
+            await _complete_tool_run(tool_run_id, "failed", {"error": "SKITTER_BRAVE_API_KEY is not set"})
             return "web_search error: SKITTER_BRAVE_API_KEY is not set"
         params = {"q": query, "count": max(1, min(int(count), 10)), "country": country}
         if search_lang:
@@ -572,10 +608,14 @@ def build_graph(
         if freshness:
             params["freshness"] = freshness
         headers = {"Accept": "application/json", "X-Subscription-Token": settings.brave_api_key}
-        async with httpx.AsyncClient(timeout=20) as client:
-            resp = await client.get(settings.brave_api_base, params=params, headers=headers)
-            resp.raise_for_status()
-            data = resp.json()
+        try:
+            async with httpx.AsyncClient(timeout=20) as client:
+                resp = await client.get(settings.brave_api_base, params=params, headers=headers)
+                resp.raise_for_status()
+                data = resp.json()
+        except httpx.HTTPStatusError as exc:
+            await _complete_tool_run(tool_run_id, "failed", {"error": exc.response.text})
+            return f"web_search error: {exc.response.text}"
         results = []
         for item in (data.get("web", {}).get("results") or []):
             results.append(
@@ -585,26 +625,39 @@ def build_graph(
                     "snippet": item.get("description"),
                 }
             )
-        return json.dumps({"query": query, "results": results})
+        output = {"query": query, "results": results}
+        await _complete_tool_run(tool_run_id, "completed", output)
+        return json.dumps(output)
 
     @tool("web_fetch")
     async def web_fetch(url: str, extractMode: str = "markdown", maxChars: int = 20000) -> str:
         """Fetch and extract readable content from a URL (HTML → markdown/text)."""
+        payload: dict[str, Any] = {"url": url, "extractMode": extractMode, "maxChars": maxChars}
+        tool_run_id = await _create_auto_tool_run("web_fetch", payload)
         if not url:
+            await _complete_tool_run(tool_run_id, "failed", {"error": "url is required"})
             return "web_fetch error: url is required"
-        async with httpx.AsyncClient(timeout=30, follow_redirects=True) as client:
-            resp = await client.get(url)
-            resp.raise_for_status()
-            html = resp.text
+        try:
+            async with httpx.AsyncClient(timeout=30, follow_redirects=True) as client:
+                resp = await client.get(url)
+                resp.raise_for_status()
+                html = resp.text
+        except httpx.HTTPStatusError as exc:
+            await _complete_tool_run(tool_run_id, "failed", {"error": exc.response.text})
+            return f"web_fetch error: {exc.response.text}"
         doc = Document(html)
         content_html = doc.summary()
         if extractMode == "text":
             text = BeautifulSoup(content_html, "html.parser").get_text("\n")
             text = text.strip()
-            return json.dumps({"url": url, "content": text[:maxChars]})
+            output = {"url": url, "content": text[:maxChars]}
+            await _complete_tool_run(tool_run_id, "completed", output)
+            return json.dumps(output)
         markdown = md(content_html, heading_style="ATX")
         markdown = markdown.strip()
-        return json.dumps({"url": url, "content": markdown[:maxChars]})
+        output = {"url": url, "content": markdown[:maxChars]}
+        await _complete_tool_run(tool_run_id, "completed", output)
+        return json.dumps(output)
 
     @tool("schedule_create")
     async def schedule_create(
@@ -615,11 +668,22 @@ def build_graph(
         channel_id: Optional[str] = None,
     ) -> str:
         """Create a scheduled job using a cron expression or run_at timestamp (ISO-8601)."""
+        payload: dict[str, Any] = {
+            "name": name,
+            "prompt": prompt,
+            "cron": cron,
+            "run_at": run_at,
+            "channel_id": channel_id,
+        }
+        tool_run_id = await _create_auto_tool_run("schedule_create", payload)
         if scheduler_service is None:
+            await _complete_tool_run(tool_run_id, "failed", {"error": "scheduler not configured"})
             return "schedule_create error: scheduler not configured"
         if not prompt:
+            await _complete_tool_run(tool_run_id, "failed", {"error": "prompt is required"})
             return "schedule_create error: prompt is required"
         if not cron and not run_at:
+            await _complete_tool_run(tool_run_id, "failed", {"error": "cron or run_at is required"})
             return "schedule_create error: cron or run_at is required"
         if run_at:
             cron = f"DATE:{run_at}"
@@ -628,8 +692,10 @@ def build_graph(
             repo = Repository(session)
             user = await repo.get_user_by_id(_user_id())
             if user is None:
+                await _complete_tool_run(tool_run_id, "failed", {"error": "user not found"})
                 return "schedule_create error: user not found"
         result = await scheduler_service.create_job(user.id, target_channel, name or "Scheduled job", prompt, cron)
+        await _complete_tool_run(tool_run_id, "failed" if isinstance(result, dict) and result.get("error") else "completed", result if isinstance(result, dict) else {"result": result})
         return json.dumps(result)
 
     @tool("schedule_update")
@@ -641,7 +707,16 @@ def build_graph(
         enabled: Optional[bool] = None,
     ) -> str:
         """Update a scheduled job."""
+        payload: dict[str, Any] = {
+            "job_id": job_id,
+            "cron": cron,
+            "run_at": run_at,
+            "prompt": prompt,
+            "enabled": enabled,
+        }
+        tool_run_id = await _create_auto_tool_run("schedule_update", payload)
         if scheduler_service is None:
+            await _complete_tool_run(tool_run_id, "failed", {"error": "scheduler not configured"})
             return "schedule_update error: scheduler not configured"
         fields = {}
         if run_at:
@@ -655,28 +730,39 @@ def build_graph(
         if enabled is not None:
             fields["enabled"] = enabled
         result = await scheduler_service.update_job(job_id, **fields)
+        await _complete_tool_run(tool_run_id, "failed" if isinstance(result, dict) and result.get("error") else "completed", result if isinstance(result, dict) else {"result": result})
         return json.dumps(result)
 
     @tool("schedule_delete")
     async def schedule_delete(job_id: str) -> str:
         """Delete a scheduled job."""
+        payload: dict[str, Any] = {"job_id": job_id}
+        tool_run_id = await _create_auto_tool_run("schedule_delete", payload)
         if scheduler_service is None:
+            await _complete_tool_run(tool_run_id, "failed", {"error": "scheduler not configured"})
             return "schedule_delete error: scheduler not configured"
         result = await scheduler_service.delete_job(job_id)
+        await _complete_tool_run(tool_run_id, "failed" if isinstance(result, dict) and result.get("error") else "completed", result if isinstance(result, dict) else {"result": result})
         return json.dumps(result)
 
     @tool("schedule_list")
     async def schedule_list() -> str:
         """List scheduled jobs for the current user."""
+        payload: dict[str, Any] = {"user_id": _user_id()}
+        tool_run_id = await _create_auto_tool_run("schedule_list", payload)
         if scheduler_service is None:
+            await _complete_tool_run(tool_run_id, "failed", {"error": "scheduler not configured"})
             return "schedule_list error: scheduler not configured"
         async with SessionLocal() as session:
             repo = Repository(session)
             user = await repo.get_user_by_id(_user_id())
             if user is None:
+                await _complete_tool_run(tool_run_id, "failed", {"error": "user not found"})
                 return "schedule_list error: user not found"
         jobs = await scheduler_service.list_jobs(user.id)
-        return json.dumps({"jobs": jobs})
+        output = {"jobs": jobs}
+        await _complete_tool_run(tool_run_id, "completed", output)
+        return json.dumps(output)
 
     def _cosine_similarity(a: list[float], b: list[float]) -> float:
         if not a or not b:
@@ -693,16 +779,21 @@ def build_graph(
     @tool("memory_search")
     async def memory_search(query: str, top_k: int = 5) -> str:
         """Search memories (content of the folder `memory`) by semantic similarity."""
+        payload: dict[str, Any] = {"query": query, "top_k": top_k}
+        tool_run_id = await _create_auto_tool_run("memory_search", payload)
         if not query.strip():
+            await _complete_tool_run(tool_run_id, "failed", {"error": "query is required"})
             return "memory_search error: query is required"
         try:
             query_vec = await embedder.embed_query(query)
         except Exception as exc:
+            await _complete_tool_run(tool_run_id, "failed", {"error": str(exc)})
             return f"memory_search error: {exc}"
         async with SessionLocal() as session:
             repo = Repository(session)
             user = await repo.get_user_by_id(_user_id())
             if user is None:
+                await _complete_tool_run(tool_run_id, "failed", {"error": "user not found"})
                 return "memory_search error: user not found"
             entries = await repo.list_memory_entries(user.id)
         scored = []
@@ -725,7 +816,9 @@ def build_graph(
             )
             if len(results) >= max(1, min(top_k, 10)):
                 break
-        return json.dumps({"query": query, "results": results})
+        output = {"query": query, "results": results}
+        await _complete_tool_run(tool_run_id, "completed", output)
+        return json.dumps(output)
 
     model = build_llm(model_name=model_name, purpose=purpose)
     return create_agent(
