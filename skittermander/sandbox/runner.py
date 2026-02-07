@@ -194,6 +194,50 @@ def create_app() -> FastAPI:
         except (TypeError, ValueError):
             return None
 
+    def _read_process_state(proc_dir: Path) -> str:
+        try:
+            stat_raw = (proc_dir / "stat").read_text(encoding="utf-8", errors="replace")
+            # Linux /proc/<pid>/stat format: "<pid> (<comm>) <state> ..."
+            tail = stat_raw.split(") ", 1)
+            if len(tail) < 2:
+                return "?"
+            return tail[1].split(" ", 1)[0]
+        except OSError:
+            return "?"
+
+    def _read_process_cmdline(proc_dir: Path) -> str:
+        try:
+            raw = (proc_dir / "cmdline").read_bytes()
+        except OSError:
+            return ""
+        if not raw:
+            return ""
+        return raw.replace(b"\x00", b" ").decode("utf-8", errors="replace").strip()
+
+    def _list_non_runner_processes() -> list[dict[str, Any]]:
+        proc_root = Path("/proc")
+        self_pid = os.getpid()
+        results: list[dict[str, Any]] = []
+        if not proc_root.exists():
+            return results
+        for entry in proc_root.iterdir():
+            if not entry.name.isdigit():
+                continue
+            try:
+                pid = int(entry.name)
+            except ValueError:
+                continue
+            if pid == self_pid:
+                continue
+            state = _read_process_state(entry)
+            if state == "Z":
+                continue
+            cmdline = _read_process_cmdline(entry)
+            if not cmdline:
+                continue
+            results.append({"pid": pid, "state": state, "cmdline": cmdline})
+        return results
+
     @app.post("/execute")
     async def execute(req: ExecuteRequest):
         if req.tool in {"read", "write", "edit", "list", "delete"}:
@@ -698,6 +742,11 @@ def create_app() -> FastAPI:
             except OSError:
                 continue
         return {"status": "ok", "running": running}
+
+    @app.get("/processes/active")
+    async def processes_active():
+        processes = _list_non_runner_processes()
+        return {"status": "ok", "active": bool(processes), "count": len(processes), "processes": processes}
 
     return app
 

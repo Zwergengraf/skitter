@@ -279,11 +279,30 @@ class SandboxManager:
             if now - last_activity < idle_delta:
                 continue
             base_url = self._base_url_for_container(container, user_id)
-            busy = await self._has_active_tasks(user_id, base_url)
+            busy = await self._has_active_processes(base_url)
+            if busy is None:
+                # Backward compatibility with older sandbox images that don't expose /processes/active.
+                busy = await self._has_active_tasks(user_id, base_url)
+            else:
+                # Keep DB-tracked task checks in addition to live process checks.
+                busy = busy or await self._has_active_tasks(user_id, base_url)
             if busy:
                 continue
             await asyncio.to_thread(container.stop)
             self._cache.pop(user_id, None)
+
+    async def _has_active_processes(self, base_url: str) -> bool | None:
+        try:
+            async with httpx.AsyncClient(timeout=10) as client:
+                resp = await client.get(f"{base_url}/processes/active")
+            if resp.status_code == 404:
+                return None
+            resp.raise_for_status()
+            payload = resp.json()
+            return bool(payload.get("active"))
+        except Exception:
+            # Be conservative: if the sandbox cannot be queried, assume it may still be busy.
+            return True
 
     async def _has_active_tasks(self, user_id: str, base_url: str) -> bool:
         async with SessionLocal() as session:
