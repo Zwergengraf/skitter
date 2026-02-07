@@ -93,8 +93,6 @@ class AgentRuntime:
                         history.append(
                             HumanMessage(content=content, additional_kwargs={"message_id": envelope.message_id})
                         )
-            if not is_command and envelope.origin != "heartbeat":
-                await self._inject_memory(session_id, history, content)
             result = await self.graph.ainvoke({"messages": history})
             messages = result.get("messages", history)
             self._history[session_id] = list(messages)
@@ -187,55 +185,6 @@ class AgentRuntime:
             elif role == "system":
                 history.append(SystemMessage(content=content, additional_kwargs=meta))
         self._history[session_id] = history
-
-    async def _inject_memory(self, session_id: str, history: list[BaseMessage], query: str) -> None:
-        if not query.strip():
-            return
-        embedder = EmbeddingsClient()
-        try:
-            query_vec = await embedder.embed_query(query)
-        except Exception:
-            return
-        async with SessionLocal() as session:
-            repo = Repository(session)
-            user = await repo.get_user_by_id(current_user_id())
-            if user is None:
-                return
-            entries = await repo.list_memory_entries(user.id)
-        if not entries:
-            return
-
-        def cosine(a: list[float], b: list[float]) -> float:
-            if not a or not b:
-                return 0.0
-            if len(a) != len(b):
-                return 0.0
-            dot = sum(x * y for x, y in zip(a, b))
-            norm_a = sum(x * x for x in a) ** 0.5
-            norm_b = sum(y * y for y in b) ** 0.5
-            if norm_a == 0.0 or norm_b == 0.0:
-                return 0.0
-            return dot / (norm_a * norm_b)
-
-        scored = []
-        for entry in entries:
-            score = cosine(query_vec, entry.embedding)
-            if score >= settings.memory_min_similarity:
-                scored.append((score, entry))
-        if not scored:
-            return
-        scored.sort(key=lambda item: item[0], reverse=True)
-        top = scored[:5]
-        memory_lines = []
-        for score, entry in top:
-            memory_lines.append(f"- ({score:.2f}) {entry.summary}")
-        memory_block = "Relevant memory:\n" + "\n".join(memory_lines)
-        history[:] = [
-            msg
-            for msg in history
-            if not (isinstance(msg, SystemMessage) and msg.additional_kwargs.get("memory_injected"))
-        ]
-        history.append(SystemMessage(content=memory_block, additional_kwargs={"memory_injected": True}))
 
     def _ensure_system_prompt(self, history: list[BaseMessage], user_id: str) -> None:
         prompt = build_system_prompt(user_id)
