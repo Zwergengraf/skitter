@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import hashlib
 import json
+import logging
 import mimetypes
 import re
 import uuid
@@ -34,6 +36,7 @@ from ..data.db import SessionLocal
 from ..data.repositories import Repository
 
 _MEDIA_DIRECTIVE_RE = re.compile(r"^\s*MEDIA\s*:\s*(.+?)\s*$", re.IGNORECASE)
+_logger = logging.getLogger(__name__)
 
 
 class AgentRuntime:
@@ -154,6 +157,14 @@ class AgentRuntime:
                 attachments.append(attachment)
                 if attachment.path:
                     seen_paths.add(attachment.path)
+        attachments, dropped_count = self._dedupe_attachments(attachments)
+        if dropped_count > 0:
+            _logger.debug(
+                "Removed %d duplicate attachment(s) for session=%s message_id=%s",
+                dropped_count,
+                session_id,
+                envelope.message_id,
+            )
         cleaned = self._strip_attachment_paths(response_text) if attachments else response_text
         return AgentResponse(text=cleaned, attachments=attachments)
 
@@ -696,6 +707,7 @@ class AgentRuntime:
         self, user_id: str, messages: list[BaseMessage], message_id: str
     ) -> list[Attachment]:
         attachments: list[Attachment] = []
+        seen_resolved_paths: set[str] = set()
         image_exts = {".png", ".jpg", ".jpeg", ".gif", ".webp"}
         start_index = 0
         if message_id:
@@ -738,10 +750,14 @@ class AgentRuntime:
                 resolved = self._resolve_workspace_path(user_id, raw_path)
                 if not resolved or not resolved.exists():
                     continue
+                path_key = str(resolved)
+                if path_key in seen_resolved_paths:
+                    continue
                 try:
                     payload = resolved.read_bytes()
                 except OSError:
                     continue
+                seen_resolved_paths.add(path_key)
                 attachments.append(
                     Attachment(
                         filename=resolved.name,
@@ -783,6 +799,29 @@ class AgentRuntime:
             )
         cleaned = "\n".join(kept_lines).strip()
         return cleaned, attachments
+
+    def _dedupe_attachments(self, attachments: list[Attachment]) -> tuple[list[Attachment], int]:
+        unique: list[Attachment] = []
+        seen: set[tuple] = set()
+        dropped = 0
+        for attachment in attachments:
+            key = self._attachment_key(attachment)
+            if key in seen:
+                dropped += 1
+                continue
+            seen.add(key)
+            unique.append(attachment)
+        return unique, dropped
+
+    def _attachment_key(self, attachment: Attachment) -> tuple:
+        if attachment.path:
+            return ("path", str(Path(attachment.path).resolve()))
+        if attachment.bytes_data:
+            digest = hashlib.sha256(attachment.bytes_data).hexdigest()
+            return ("bytes", digest, attachment.filename)
+        if attachment.url:
+            return ("url", attachment.url, attachment.filename)
+        return ("name", attachment.filename)
 
     def _normalize_media_path(self, raw_path: str) -> str:
         value = str(raw_path or "").strip().strip("`").strip()
