@@ -7,10 +7,21 @@ prompt:
   - TOOLS.md
   - IDENTITY.md
   - USER.md
-openai:
-  api_base: https://api.openai.com/v1
-  api_key: ""
-  model: gpt-4o-mini
+models:
+  - name: main
+    model_id: local-main
+    api_base: http://localhost:1234/v1
+    api_key: ""
+    input_cost_per_1m: 0
+    output_cost_per_1m: 0
+  - name: heartbeat
+    model_id: local-heartbeat
+    api_base: http://localhost:1234/v1
+    api_key: ""
+    input_cost_per_1m: 0
+    output_cost_per_1m: 0
+main_model: main
+heartbeat_model: heartbeat
 embeddings:
   api_base: http://127.0.0.1:1234/v1
   api_key: ""

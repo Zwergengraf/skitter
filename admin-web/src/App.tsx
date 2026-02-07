@@ -32,7 +32,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
-import { formatBytes, formatJsonPreview, formatRelativeTime } from "@/lib/utils";
+import { formatBytes, formatCurrency, formatJsonPreview, formatNumber, formatRelativeTime } from "@/lib/utils";
 import { api } from "@/lib/api";
 import { incidents } from "@/lib/mock";
 import type { NavItemId } from "@/components/navigation";
@@ -1043,20 +1043,22 @@ export default function App() {
                       <TableHead>User</TableHead>
                       <TableHead>Transport</TableHead>
                       <TableHead>State</TableHead>
-                      <TableHead>Tokens</TableHead>
+                      <TableHead>Context</TableHead>
+                      <TableHead>Total tokens</TableHead>
+                      <TableHead>Cost</TableHead>
                       <TableHead>Last active</TableHead>
                     </TableRow>
                   </TableHeader>
                   <TableBody>
                     {sessionsLoading ? (
                       <TableRow>
-                        <TableCell colSpan={6} className="text-center text-sm text-mutedForeground">
+                        <TableCell colSpan={8} className="text-center text-sm text-mutedForeground">
                           Loading sessions...
                         </TableCell>
                       </TableRow>
                     ) : sessionsError ? (
                       <TableRow>
-                        <TableCell colSpan={6} className="text-center text-sm text-mutedForeground">
+                        <TableCell colSpan={8} className="text-center text-sm text-mutedForeground">
                           {sessionsError}
                         </TableCell>
                       </TableRow>
@@ -1085,7 +1087,15 @@ export default function App() {
                               {session.status}
                             </Badge>
                           </TableCell>
-                          <TableCell>—</TableCell>
+                          <TableCell className="text-mutedForeground">
+                            {formatNumber(session.last_input_tokens ?? 0)}
+                          </TableCell>
+                          <TableCell className="text-mutedForeground">
+                            {formatNumber(session.total_tokens ?? 0)}
+                          </TableCell>
+                          <TableCell className="text-mutedForeground">
+                            {formatCurrency(session.total_cost ?? 0)}
+                          </TableCell>
                           <TableCell className="text-mutedForeground">
                             {formatRelativeTime(session.last_active_at)}
                           </TableCell>
@@ -1093,7 +1103,7 @@ export default function App() {
                       ))
                     ) : (
                       <TableRow>
-                        <TableCell colSpan={6} className="text-center text-sm text-mutedForeground">
+                        <TableCell colSpan={8} className="text-center text-sm text-mutedForeground">
                           No sessions found.
                         </TableCell>
                       </TableRow>
@@ -2142,7 +2152,7 @@ export default function App() {
                 </div>
               ) : sessionDetail ? (
                 <div className="grid gap-6 overflow-hidden">
-                  <div className="grid gap-4 md:grid-cols-2">
+                  <div className="grid gap-4 md:grid-cols-3">
                     <div className="rounded-2xl border border-border bg-card p-4">
                       <p className="text-xs uppercase tracking-[0.2em] text-mutedForeground">Session</p>
                       <p className="mt-2 text-sm font-semibold">{sessionDetail.id}</p>
@@ -2156,6 +2166,16 @@ export default function App() {
                       <p className="mt-1 text-xs text-mutedForeground">
                         Last active {formatRelativeTime(sessionDetail.last_active_at)}
                       </p>
+                    </div>
+                    <div className="rounded-2xl border border-border bg-card p-4">
+                      <p className="text-xs uppercase tracking-[0.2em] text-mutedForeground">Usage</p>
+                      <div className="mt-2 space-y-1 text-xs text-mutedForeground">
+                        <p>Model: {sessionDetail.last_model ?? "—"}</p>
+                        <p>Context: {formatNumber(sessionDetail.last_input_tokens ?? 0)} tokens</p>
+                        <p>Last output: {formatNumber(sessionDetail.last_output_tokens ?? 0)} tokens</p>
+                        <p>Total tokens: {formatNumber(sessionDetail.total_tokens ?? 0)}</p>
+                        <p>Total cost: {formatCurrency(sessionDetail.total_cost ?? 0)}</p>
+                      </div>
                     </div>
                   </div>
                   <Tabs defaultValue="messages">

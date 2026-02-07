@@ -138,6 +138,14 @@ class DiscordTransport(TransportAdapter):
         async def tools(interaction: discord.Interaction) -> None:
             await self._handle_command(interaction, "tools")
 
+        @self.tree.command(name="model", description="List available models or set the active model")
+        async def model(interaction: discord.Interaction, model_name: Optional[str] = None) -> None:
+            await self._handle_command(interaction, "model", extra={"model_name": model_name} if model_name else None)
+
+        @self.tree.command(name="info", description="Show session usage and cost info")
+        async def info(interaction: discord.Interaction) -> None:
+            await self._handle_command(interaction, "info")
+
     def on_event(self, handler: EventHandler) -> None:
         self._handler = handler
 

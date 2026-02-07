@@ -126,7 +126,7 @@ You are free to edit `HEARTBEAT.md` with a short checklist or reminders. Keep it
 - Timing can drift slightly (every ~30 min is fine, not exact)
 - You want to reduce API calls by combining periodic checks
 
-**Use cron when:**
+**Use scheduled jobs when:**
 
 - Exact timing matters ("9:00 AM sharp every Monday")
 - Task needs isolation from main session history
@@ -134,7 +134,7 @@ You are free to edit `HEARTBEAT.md` with a short checklist or reminders. Keep it
 - One-shot reminders ("remind me in 20 minutes")
 - Output should deliver directly to a channel without main session involvement
 
-**Tip:** Batch similar periodic checks into `HEARTBEAT.md` instead of creating multiple cron jobs. Use cron for precise schedules and standalone tasks.
+**Tip:** Batch similar periodic checks into `HEARTBEAT.md` instead of creating multiple scheduled jobs. Use jobs for precise schedules and standalone tasks.
 
 **Things to check (rotate through these, 2-4 times per day):**
 

@@ -5,19 +5,31 @@ from pathlib import Path
 from typing import Any
 
 import yaml
-from pydantic import Field
+from pydantic import Field, BaseModel
+from pydantic import ConfigDict
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from .config_schema import flatten_config, build_config_from_settings
+
+
+class ModelConfig(BaseModel):
+    name: str
+    model: str = Field(alias="model_id")
+    api_base: str = Field(default="")
+    api_key: str = Field(default="")
+    input_cost_per_1m: float = Field(default=0.0)
+    output_cost_per_1m: float = Field(default=0.0)
+
+    model_config = ConfigDict(populate_by_name=True, extra="ignore")
 
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="SKITTER_", env_file=".env", env_file_encoding="utf-8")
 
     db_url: str = Field(default="postgresql+asyncpg://postgres:postgres@localhost:5432/skittermander")
-    openai_api_base: str = Field(default="https://api.openai.com/v1")
-    openai_api_key: str = Field(default="")
-    openai_model: str = Field(default="gpt-4o-mini")
+    models: list[ModelConfig] = Field(default_factory=list)
+    main_model: str = Field(default="")
+    heartbeat_model: str = Field(default="")
 
     embeddings_api_base: str = Field(default="")
     embeddings_api_key: str = Field(default="")
@@ -108,7 +120,14 @@ def apply_settings_update(values: dict[str, Any]) -> Settings:
 settings = Settings()
 _yaml_config = _load_yaml_config(_config_path())
 if _yaml_config:
-    apply_settings_update(flatten_config(_yaml_config))
+    flat = flatten_config(_yaml_config)
+    if "models" in _yaml_config:
+        flat["models"] = _yaml_config.get("models")
+    if "main_model" in _yaml_config:
+        flat["main_model"] = _yaml_config.get("main_model")
+    if "heartbeat_model" in _yaml_config:
+        flat["heartbeat_model"] = _yaml_config.get("heartbeat_model")
+    apply_settings_update(flat)
 else:
     try:
         _write_yaml_config(_config_path(), build_config_from_settings(settings))

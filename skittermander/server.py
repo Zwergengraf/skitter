@@ -3,12 +3,13 @@ from __future__ import annotations
 import asyncio
 import os
 import json
-from datetime import datetime
+from datetime import datetime, UTC
 
 import uvicorn
 
 from .api.app import create_app
 from .core.runtime import AgentRuntime
+from .core.llm import list_models, resolve_model_name
 from .core.scheduler import SchedulerService
 from .core.heartbeat import HeartbeatService
 from .core.config import settings
@@ -83,7 +84,7 @@ async def main() -> None:
                     {
                         "last_channel_id": envelope.channel_id,
                         "last_origin": envelope.origin,
-                        "last_seen_at": datetime.utcnow().isoformat(),
+                        "last_seen_at": datetime.now(UTC).isoformat(),
                     },
                 )
                 if not user.approved:
@@ -123,6 +124,70 @@ async def main() -> None:
             jobs = await scheduler.list_jobs(user.id)
             lines = [f"{j['id']} | {j['name']} | {j['cron']} | {'on' if j['enabled'] else 'off'}" for j in jobs]
             await transport.send_message(envelope.channel_id, "Scheduled jobs:\n" + "\n".join(lines))
+            return
+        if envelope.origin == "discord" and envelope.command == "model":
+            requested = envelope.metadata.get("model_name") if envelope.metadata else None
+            models = list_models()
+            if not models:
+                await transport.send_message(envelope.channel_id, "No models are configured.")
+                return
+            if not requested:
+                async with SessionLocal() as session:
+                    repo = Repository(session)
+                    active = await repo.get_active_session(internal_user_id)
+                current = active.model if active and active.model else None
+                if current is None:
+                    current = resolve_model_name(None, purpose="main")
+                lines = []
+                for item in models:
+                    suffix = " (active)" if current and item.name.lower() == current.lower() else ""
+                    lines.append(f"- {item.name}{suffix}")
+                await transport.send_message(envelope.channel_id, "Available models:\n" + "\n".join(lines))
+                return
+            match = None
+            for item in models:
+                if item.name.lower() == str(requested).lower():
+                    match = item
+                    break
+            if match is None:
+                await transport.send_message(
+                    envelope.channel_id,
+                    f"Unknown model `{requested}`. Use /model to list available models.",
+                )
+                return
+            async with SessionLocal() as session:
+                repo = Repository(session)
+                active = await repo.get_active_session(internal_user_id)
+                if active is None:
+                    active = await repo.create_session(internal_user_id, model=match.name)
+                else:
+                    await repo.set_session_model(active.id, match.name)
+            runtime.set_session_model(active.id, match.name)
+            await transport.send_message(
+                envelope.channel_id,
+                f"Active model set to `{match.name}`.",
+            )
+            return
+        if envelope.origin == "discord" and envelope.command == "info":
+            async with SessionLocal() as session:
+                repo = Repository(session)
+                active = await repo.get_active_session(internal_user_id)
+            if active is None:
+                await transport.send_message(envelope.channel_id, "No active session found.")
+                return
+            model_name = active.last_model or active.model or resolve_model_name(None, purpose="main")
+            lines = [
+                f"Session: `{active.id}`",
+                f"Model: `{model_name}`",
+                f"Context tokens (last input): {active.last_input_tokens or 0}",
+                f"Last output tokens: {active.last_output_tokens or 0}",
+                f"Last total tokens: {active.last_total_tokens or 0}",
+                f"Total input tokens: {active.input_tokens or 0}",
+                f"Total output tokens: {active.output_tokens or 0}",
+                f"Total tokens: {active.total_tokens or 0}",
+                f"Total cost: ${active.total_cost or 0.0:.4f}",
+            ]
+            await transport.send_message(envelope.channel_id, "\n".join(lines))
             return
         if envelope.origin == "discord" and envelope.command in {"schedule_delete", "schedule_pause", "schedule_resume"}:
             job_id = envelope.metadata.get("job_id")

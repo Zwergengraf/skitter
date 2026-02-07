@@ -12,6 +12,7 @@ from apscheduler.triggers.date import DateTrigger
 from ..data.db import SessionLocal
 from ..data.repositories import Repository
 from .config import settings
+from .llm import resolve_model_name
 from .models import MessageEnvelope
 
 
@@ -167,7 +168,8 @@ class SchedulerService:
         try:
             async with SessionLocal() as session:
                 repo = Repository(session)
-                session_obj = await repo.create_session(job.user_id, status="scheduled")
+                model_name = resolve_model_name(None, purpose="main")
+                session_obj = await repo.create_session(job.user_id, status="scheduled", model=model_name)
                 session_id = session_obj.id
                 await repo.add_message(session_id, role="user", content=job.prompt)
 

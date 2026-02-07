@@ -18,12 +18,14 @@ from ...data.repositories import Repository
 router = APIRouter(prefix="/v1/overview", tags=["overview"])
 
 
-def _cost_trajectory() -> list[OverviewCostPoint]:
+async def _cost_trajectory(repo: Repository, days: int = 7) -> list[OverviewCostPoint]:
     today = datetime.utcnow().date()
     points: list[OverviewCostPoint] = []
-    for i in range(6, -1, -1):
+    rows = await repo.list_cost_trajectory(days=days)
+    cost_by_day = {row[0].date(): float(row[1] or 0.0) for row in rows}
+    for i in range(days - 1, -1, -1):
         day = today - timedelta(days=i)
-        points.append(OverviewCostPoint(label=day.strftime("%a"), cost=0.0))
+        points.append(OverviewCostPoint(label=day.strftime("%a"), cost=cost_by_day.get(day, 0.0)))
     return points
 
 
@@ -71,7 +73,7 @@ async def get_overview(request: Request, repo: Repository = Depends(get_repo)) -
     ]
 
     return OverviewOut(
-        cost_trajectory=_cost_trajectory(),
+        cost_trajectory=await _cost_trajectory(repo),
         system_health=_system_health(request),
         live_sessions=live_sessions,
         tool_approvals=approvals,

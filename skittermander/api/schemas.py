@@ -15,6 +15,16 @@ class SessionOut(BaseModel):
     user_id: str
     created_at: datetime
     status: str
+    input_tokens: int = 0
+    output_tokens: int = 0
+    total_tokens: int = 0
+    total_cost: float = 0.0
+    last_input_tokens: int = 0
+    last_output_tokens: int = 0
+    last_total_tokens: int = 0
+    last_cost: float = 0.0
+    last_model: str | None = None
+    last_usage_at: datetime | None = None
 
 
 class SessionListItem(BaseModel):
@@ -23,6 +33,9 @@ class SessionListItem(BaseModel):
     transport: str
     status: str
     last_active_at: datetime | None = None
+    total_tokens: int = 0
+    total_cost: float = 0.0
+    last_input_tokens: int = 0
 
 
 class SessionMessageOut(BaseModel):
@@ -50,6 +63,16 @@ class SessionDetailOut(BaseModel):
     status: str
     created_at: datetime
     last_active_at: datetime | None = None
+    input_tokens: int = 0
+    output_tokens: int = 0
+    total_tokens: int = 0
+    total_cost: float = 0.0
+    last_input_tokens: int = 0
+    last_output_tokens: int = 0
+    last_total_tokens: int = 0
+    last_cost: float = 0.0
+    last_model: str | None = None
+    last_usage_at: datetime | None = None
     messages: list[SessionMessageOut]
     tool_runs: list[SessionToolRunOut]
 

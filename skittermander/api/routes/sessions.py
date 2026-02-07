@@ -30,6 +30,9 @@ async def list_sessions(
             transport="discord",
             status=session.status,
             last_active_at=last_active_at,
+            total_tokens=session.total_tokens or 0,
+            total_cost=session.total_cost or 0.0,
+            last_input_tokens=session.last_input_tokens or 0,
         )
         for session, transport_user_id, last_active_at in sessions
     ]
@@ -39,7 +42,22 @@ async def list_sessions(
 async def create_session(payload: SessionCreate, repo: Repository = Depends(get_repo)) -> SessionOut:
     user = await repo.get_or_create_user(payload.user_id)
     session = await repo.create_session(user.id)
-    return SessionOut(id=session.id, user_id=session.user_id, created_at=session.created_at, status=session.status)
+    return SessionOut(
+        id=session.id,
+        user_id=session.user_id,
+        created_at=session.created_at,
+        status=session.status,
+        input_tokens=session.input_tokens or 0,
+        output_tokens=session.output_tokens or 0,
+        total_tokens=session.total_tokens or 0,
+        total_cost=session.total_cost or 0.0,
+        last_input_tokens=session.last_input_tokens or 0,
+        last_output_tokens=session.last_output_tokens or 0,
+        last_total_tokens=session.last_total_tokens or 0,
+        last_cost=session.last_cost or 0.0,
+        last_model=session.last_model,
+        last_usage_at=session.last_usage_at,
+    )
 
 
 @router.get("/{session_id}", response_model=SessionOut)
@@ -47,7 +65,22 @@ async def get_session(session_id: str, repo: Repository = Depends(get_repo)) -> 
     session = await repo.get_session(session_id)
     if session is None:
         raise HTTPException(status_code=404, detail="Session not found")
-    return SessionOut(id=session.id, user_id=session.user_id, created_at=session.created_at, status=session.status)
+    return SessionOut(
+        id=session.id,
+        user_id=session.user_id,
+        created_at=session.created_at,
+        status=session.status,
+        input_tokens=session.input_tokens or 0,
+        output_tokens=session.output_tokens or 0,
+        total_tokens=session.total_tokens or 0,
+        total_cost=session.total_cost or 0.0,
+        last_input_tokens=session.last_input_tokens or 0,
+        last_output_tokens=session.last_output_tokens or 0,
+        last_total_tokens=session.last_total_tokens or 0,
+        last_cost=session.last_cost or 0.0,
+        last_model=session.last_model,
+        last_usage_at=session.last_usage_at,
+    )
 
 
 @router.get("/{session_id}/detail", response_model=SessionDetailOut)
@@ -66,6 +99,16 @@ async def get_session_detail(session_id: str, repo: Repository = Depends(get_rep
         status=session.status,
         created_at=session.created_at,
         last_active_at=last_active_at,
+        input_tokens=session.input_tokens or 0,
+        output_tokens=session.output_tokens or 0,
+        total_tokens=session.total_tokens or 0,
+        total_cost=session.total_cost or 0.0,
+        last_input_tokens=session.last_input_tokens or 0,
+        last_output_tokens=session.last_output_tokens or 0,
+        last_total_tokens=session.last_total_tokens or 0,
+        last_cost=session.last_cost or 0.0,
+        last_model=session.last_model,
+        last_usage_at=session.last_usage_at,
         messages=[
             SessionMessageOut(
                 id=message.id,

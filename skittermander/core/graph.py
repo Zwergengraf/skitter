@@ -121,7 +121,12 @@ async def _maybe_approve(
     )
 
 
-def build_graph(approval_service: ToolApprovalService | None = None, scheduler_service: SchedulerService | None = None):
+def build_graph(
+    approval_service: ToolApprovalService | None = None,
+    scheduler_service: SchedulerService | None = None,
+    model_name: str | None = None,
+    purpose: str = "main",
+):
     client = ToolRunnerClient()
     policy = ToolApprovalPolicy()
     embedder = EmbeddingsClient()
@@ -685,7 +690,7 @@ def build_graph(approval_service: ToolApprovalService | None = None, scheduler_s
                 break
         return json.dumps({"query": query, "results": results})
 
-    model = build_llm()
+    model = build_llm(model_name=model_name, purpose=purpose)
     return create_agent(
         model,
         tools=[

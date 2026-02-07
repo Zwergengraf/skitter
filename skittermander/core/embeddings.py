@@ -9,8 +9,8 @@ from .config import settings
 
 class EmbeddingsClient:
     def __init__(self) -> None:
-        self.base_url = (settings.embeddings_api_base or settings.openai_api_base).rstrip("/")
-        self.api_key = settings.embeddings_api_key or settings.openai_api_key
+        self.base_url = settings.embeddings_api_base.rstrip("/")
+        self.api_key = settings.embeddings_api_key
         self.model = settings.embeddings_model
 
     async def embed_documents(self, texts: list[str]) -> list[list[float]]:

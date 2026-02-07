@@ -24,7 +24,7 @@ from .graph import (
     set_current_user_id,
 )
 from .models import AgentResponse, Attachment, MessageEnvelope, StreamEvent
-from .llm import build_llm
+from .llm import build_llm, resolve_model, resolve_model_name
 from .prompting import build_system_prompt
 from ..tools.approval_service import ToolApprovalService
 from ..core.embeddings import EmbeddingsClient
@@ -41,14 +41,26 @@ class AgentRuntime:
         scheduler_service=None,
     ) -> None:
         self.event_bus = event_bus
-        self.graph = graph or build_graph(approval_service=approval_service, scheduler_service=scheduler_service)
+        self._approval_service = approval_service
+        self._scheduler_service = scheduler_service
+        self._fixed_graph = graph
+        self._graphs: dict[str, object] = {}
+        if graph is None:
+            default_name = resolve_model_name(None, purpose="main")
+            self._graphs[default_name] = build_graph(
+                approval_service=approval_service,
+                scheduler_service=scheduler_service,
+                model_name=default_name,
+                purpose="main",
+            )
         self._history: dict[str, list[BaseMessage]] = defaultdict(list)
+        self._session_models: dict[str, str] = {}
 
     async def handle_message(self, session_id: str, envelope: MessageEnvelope) -> AgentResponse:
         if not envelope.text and not envelope.command and not envelope.attachments:
             return AgentResponse(text="")
-        if not settings.openai_api_key:
-            return AgentResponse(text="LLM is not configured. Set SKITTER_OPENAI_API_KEY to enable responses.")
+        if not settings.models:
+            return AgentResponse(text="LLM is not configured. Define at least one model in config.yaml.")
 
         content = envelope.text
         is_command = False
@@ -93,7 +105,9 @@ class AgentRuntime:
                         history.append(
                             HumanMessage(content=content, additional_kwargs={"message_id": envelope.message_id})
                         )
-            result = await self.graph.ainvoke({"messages": history})
+            model_name = await self._get_session_model(session_id, envelope)
+            graph = self._get_graph(model_name, purpose="heartbeat" if envelope.origin == "heartbeat" else "main")
+            result = await graph.ainvoke({"messages": history})
             messages = result.get("messages", history)
             self._history[session_id] = list(messages)
 
@@ -102,6 +116,10 @@ class AgentRuntime:
                 if isinstance(msg, AIMessage):
                     response = msg.content
                     break
+
+            usage = self._collect_usage(messages, envelope.message_id)
+            if usage is not None:
+                await self._record_usage(session_id, internal_user_id, model_name, usage)
         finally:
             reset_current_origin(token_origin)
             reset_current_user_id(token_user)
@@ -122,6 +140,38 @@ class AgentRuntime:
     def clear_history(self, session_id: str) -> None:
         self._history.pop(session_id, None)
 
+    def set_session_model(self, session_id: str, model_name: str) -> None:
+        if model_name:
+            self._session_models[session_id] = model_name
+
+    async def _get_session_model(self, session_id: str, envelope: MessageEnvelope) -> str:
+        if envelope.origin == "heartbeat":
+            return resolve_model_name(None, purpose="heartbeat")
+        cached = self._session_models.get(session_id)
+        if cached:
+            return cached
+        async with SessionLocal() as session:
+            repo = Repository(session)
+            record = await repo.get_session(session_id)
+        if record and getattr(record, "model", None):
+            self._session_models[session_id] = record.model
+            return record.model
+        default_name = resolve_model_name(None, purpose="main")
+        self._session_models[session_id] = default_name
+        return default_name
+
+    def _get_graph(self, model_name: str, purpose: str = "main") -> object:
+        if self._fixed_graph is not None:
+            return self._fixed_graph
+        if model_name not in self._graphs:
+            self._graphs[model_name] = build_graph(
+                approval_service=self._approval_service,
+                scheduler_service=self._scheduler_service,
+                model_name=model_name,
+                purpose=purpose,
+            )
+        return self._graphs[model_name]
+
     def drop_messages_since(self, session_id: str, message_id: str) -> None:
         if not message_id:
             return
@@ -133,6 +183,99 @@ class AgentRuntime:
             if isinstance(msg, HumanMessage) and msg.additional_kwargs.get("message_id") == message_id:
                 del history[idx:]
                 break
+
+    def _usage_from_message(self, msg: AIMessage) -> tuple[int, int, int] | None:
+        usage_meta = getattr(msg, "usage_metadata", None)
+        if isinstance(usage_meta, dict):
+            input_tokens = usage_meta.get("input_tokens") or usage_meta.get("prompt_tokens") or 0
+            output_tokens = usage_meta.get("output_tokens") or usage_meta.get("completion_tokens") or 0
+            total_tokens = usage_meta.get("total_tokens")
+            if total_tokens is None:
+                total_tokens = input_tokens + output_tokens
+            if input_tokens or output_tokens or total_tokens:
+                return int(input_tokens), int(output_tokens), int(total_tokens)
+        meta = getattr(msg, "response_metadata", None) or {}
+        if isinstance(meta, dict):
+            token_usage = meta.get("token_usage") or meta.get("usage") or {}
+            if isinstance(token_usage, dict):
+                input_tokens = token_usage.get("prompt_tokens") or token_usage.get("input_tokens") or 0
+                output_tokens = token_usage.get("completion_tokens") or token_usage.get("output_tokens") or 0
+                total_tokens = token_usage.get("total_tokens")
+                if total_tokens is None:
+                    total_tokens = input_tokens + output_tokens
+                if input_tokens or output_tokens or total_tokens:
+                    return int(input_tokens), int(output_tokens), int(total_tokens)
+        return None
+
+    def _collect_usage(self, messages: list[BaseMessage], message_id: str | None) -> dict | None:
+        if not messages:
+            return None
+        start_idx = None
+        if message_id:
+            for idx in range(len(messages) - 1, -1, -1):
+                msg = messages[idx]
+                if isinstance(msg, HumanMessage) and msg.additional_kwargs.get("message_id") == message_id:
+                    start_idx = idx
+                    break
+        slice_messages = messages[start_idx + 1 :] if start_idx is not None else messages
+        total_input = 0
+        total_output = 0
+        total_tokens = 0
+        last = None
+        for msg in slice_messages:
+            if not isinstance(msg, AIMessage):
+                continue
+            usage = self._usage_from_message(msg)
+            if usage is None:
+                continue
+            input_tokens, output_tokens, total = usage
+            total_input += input_tokens
+            total_output += output_tokens
+            total_tokens += total
+            last = usage
+        if total_input == 0 and total_output == 0 and total_tokens == 0:
+            return None
+        last_input, last_output, last_total = last if last else (0, 0, 0)
+        return {
+            "input_tokens": total_input,
+            "output_tokens": total_output,
+            "total_tokens": total_tokens,
+            "last_input_tokens": last_input,
+            "last_output_tokens": last_output,
+            "last_total_tokens": last_total,
+        }
+
+    async def _record_usage(
+        self,
+        session_id: str,
+        user_id: str,
+        model_name: str,
+        usage: dict,
+    ) -> None:
+        try:
+            resolved = resolve_model(model_name)
+        except RuntimeError:
+            return
+        input_tokens = int(usage.get("input_tokens") or 0)
+        output_tokens = int(usage.get("output_tokens") or 0)
+        total_tokens = int(usage.get("total_tokens") or 0)
+        cost = (input_tokens / 1_000_000.0) * resolved.input_cost_per_1m + (
+            output_tokens / 1_000_000.0
+        ) * resolved.output_cost_per_1m
+        async with SessionLocal() as session:
+            repo = Repository(session)
+            await repo.record_llm_usage(
+                session_id=session_id,
+                user_id=user_id,
+                model=resolved.name,
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
+                total_tokens=total_tokens,
+                cost=cost,
+                last_input_tokens=int(usage.get("last_input_tokens") or 0),
+                last_output_tokens=int(usage.get("last_output_tokens") or 0),
+                last_total_tokens=int(usage.get("last_total_tokens") or 0),
+            )
 
     async def summarize_session(self, session_id: str) -> str:
         await self._ensure_history(session_id)
@@ -146,7 +289,7 @@ class AgentRuntime:
             transcript_lines.append(f"{role}: {content}")
         transcript = "\n".join(transcript_lines)
 
-        if not settings.openai_api_key:
+        if not settings.models:
             return transcript
 
         llm = build_llm()

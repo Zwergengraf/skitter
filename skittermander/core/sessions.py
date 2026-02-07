@@ -8,6 +8,7 @@ from ..data.db import SessionLocal
 from ..data.repositories import Repository
 from .memory_service import MemoryService
 from .runtime import AgentRuntime
+from .llm import resolve_model_name
 from .workspace import ensure_user_workspace, user_workspace_root
 
 
@@ -27,7 +28,8 @@ class SessionManager:
             repo = Repository(session)
             active = await repo.get_active_session(user_id)
             if active is None:
-                active = await repo.create_session(user_id)
+                model_name = resolve_model_name(None, purpose="main")
+                active = await repo.create_session(user_id, model=model_name)
         self._channel_session[channel_id] = active.id
         return active.id
 
@@ -46,7 +48,8 @@ class SessionManager:
                     await self.memory_service.index_file(user_id, active.id, summary_path, force=True)
                 await repo.end_session(active.id, status="ended")
                 self.runtime.clear_history(active.id)
-            new_session = await repo.create_session(user_id)
+            model_name = resolve_model_name(None, purpose="main")
+            new_session = await repo.create_session(user_id, model=model_name)
         self._channel_session[channel_id] = new_session.id
         return summary_path, new_session.id
 

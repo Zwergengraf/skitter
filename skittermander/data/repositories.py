@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import List, Optional
 
 from sqlalchemy import func, select
@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from .models import (
     Artifact,
     Channel,
+    LlmUsage,
     MemoryEntry,
     Message,
     ScheduledJob,
@@ -94,8 +95,8 @@ class Repository:
         result = await self.session.execute(select(User).where(User.id == user_id))
         return result.scalar_one_or_none()
 
-    async def create_session(self, user_id: str, status: str = "active") -> Session:
-        session = Session(id=str(uuid.uuid4()), user_id=user_id, status=status)
+    async def create_session(self, user_id: str, status: str = "active", model: str | None = None) -> Session:
+        session = Session(id=str(uuid.uuid4()), user_id=user_id, status=status, model=model)
         self.session.add(session)
         await self.session.commit()
         return session
@@ -103,6 +104,15 @@ class Repository:
     async def get_session(self, session_id: str) -> Optional[Session]:
         result = await self.session.execute(select(Session).where(Session.id == session_id))
         return result.scalar_one_or_none()
+
+    async def set_session_model(self, session_id: str, model: str) -> Optional[Session]:
+        result = await self.session.execute(select(Session).where(Session.id == session_id))
+        session = result.scalar_one_or_none()
+        if session is None:
+            return None
+        session.model = model
+        await self.session.commit()
+        return session
 
     async def get_active_session(self, user_id: str) -> Optional[Session]:
         result = await self.session.execute(
@@ -130,6 +140,46 @@ class Repository:
         self.session.add(message)
         await self.session.commit()
         return message
+
+    async def record_llm_usage(
+        self,
+        session_id: str,
+        user_id: str,
+        model: str,
+        input_tokens: int,
+        output_tokens: int,
+        total_tokens: int,
+        cost: float,
+        last_input_tokens: int | None = None,
+        last_output_tokens: int | None = None,
+        last_total_tokens: int | None = None,
+    ) -> LlmUsage:
+        usage = LlmUsage(
+            id=str(uuid.uuid4()),
+            session_id=session_id,
+            user_id=user_id,
+            model=model,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            total_tokens=total_tokens,
+            cost=cost,
+        )
+        self.session.add(usage)
+        result = await self.session.execute(select(Session).where(Session.id == session_id))
+        session = result.scalar_one_or_none()
+        if session is not None:
+            session.input_tokens = (session.input_tokens or 0) + input_tokens
+            session.output_tokens = (session.output_tokens or 0) + output_tokens
+            session.total_tokens = (session.total_tokens or 0) + total_tokens
+            session.total_cost = (session.total_cost or 0.0) + cost
+            session.last_input_tokens = last_input_tokens if last_input_tokens is not None else input_tokens
+            session.last_output_tokens = last_output_tokens if last_output_tokens is not None else output_tokens
+            session.last_total_tokens = last_total_tokens if last_total_tokens is not None else total_tokens
+            session.last_cost = cost
+            session.last_model = model
+            session.last_usage_at = datetime.utcnow()
+        await self.session.commit()
+        return usage
 
     async def list_messages(self, session_id: str) -> List[Message]:
         result = await self.session.execute(
@@ -170,6 +220,22 @@ class Repository:
         )
         if status:
             stmt = stmt.where(Session.status == status)
+        result = await self.session.execute(stmt)
+        return list(result.all())
+
+    async def list_cost_trajectory(self, days: int = 7) -> list[tuple[datetime, float]]:
+        if days < 1:
+            return []
+        start = datetime.utcnow().date() - timedelta(days=days - 1)
+        stmt = (
+            select(
+                func.date_trunc("day", LlmUsage.created_at).label("day"),
+                func.coalesce(func.sum(LlmUsage.cost), 0.0).label("cost"),
+            )
+            .where(LlmUsage.created_at >= start)
+            .group_by("day")
+            .order_by("day")
+        )
         result = await self.session.execute(stmt)
         return list(result.all())
 

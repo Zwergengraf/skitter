@@ -20,13 +20,13 @@ class ConfigFieldSpec:
 
 CATEGORIES = {
     "database": "Database",
-    "openai": "OpenAI",
     "embeddings": "Embeddings",
     "brave": "Brave Search",
     "prompt": "Prompt",
     "browser": "Browser",
     "scheduler": "Scheduler",
     "discord": "Discord",
+    "models": "Models",
     "heartbeat": "Heartbeat",
     "users": "Users",
     "workspace": "Workspace",
@@ -61,26 +61,20 @@ FIELDS: list[ConfigFieldSpec] = [
         field_type="string",
     ),
     ConfigFieldSpec(
-        key="openai_api_base",
-        path=("openai", "api_base"),
-        category="openai",
-        label="API Base",
+        key="main_model",
+        path=("main_model",),
+        category="models",
+        label="Main model",
         field_type="string",
+        description="Model name from the models list.",
     ),
     ConfigFieldSpec(
-        key="openai_api_key",
-        path=("openai", "api_key"),
-        category="openai",
-        label="API Key",
+        key="heartbeat_model",
+        path=("heartbeat_model",),
+        category="models",
+        label="Heartbeat model",
         field_type="string",
-        secret=True,
-    ),
-    ConfigFieldSpec(
-        key="openai_model",
-        path=("openai", "model"),
-        category="openai",
-        label="Model",
-        field_type="string",
+        description="Model name from the models list (optional).",
     ),
     ConfigFieldSpec(
         key="embeddings_api_base",
@@ -387,6 +381,17 @@ def build_config_from_settings(current: Any) -> dict:
         if field.field_type == "list" and isinstance(value, str):
             value = [item.strip() for item in value.split(",") if item.strip()]
         _set_nested(data, field.path, value)
+    if hasattr(current, "models"):
+        try:
+            models = [model.model_dump(by_alias=True) for model in current.models]
+        except Exception:
+            models = []
+        if models:
+            data["models"] = models
+    if hasattr(current, "main_model") and getattr(current, "main_model"):
+        data["main_model"] = getattr(current, "main_model")
+    if hasattr(current, "heartbeat_model") and getattr(current, "heartbeat_model"):
+        data["heartbeat_model"] = getattr(current, "heartbeat_model")
     return data
 
 

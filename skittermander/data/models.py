@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import JSON, Integer, String, Text
+from sqlalchemy import JSON, Integer, String, Text, Float
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
@@ -26,6 +26,17 @@ class Session(Base):
     user_id: Mapped[str] = mapped_column(String, index=True)
     created_at: Mapped[datetime] = mapped_column(default=datetime.utcnow)
     status: Mapped[str] = mapped_column(String, default="active")
+    model: Mapped[str | None] = mapped_column(String, nullable=True)
+    input_tokens: Mapped[int] = mapped_column(Integer, default=0)
+    output_tokens: Mapped[int] = mapped_column(Integer, default=0)
+    total_tokens: Mapped[int] = mapped_column(Integer, default=0)
+    total_cost: Mapped[float] = mapped_column(Float, default=0.0)
+    last_input_tokens: Mapped[int] = mapped_column(Integer, default=0)
+    last_output_tokens: Mapped[int] = mapped_column(Integer, default=0)
+    last_total_tokens: Mapped[int] = mapped_column(Integer, default=0)
+    last_cost: Mapped[float] = mapped_column(Float, default=0.0)
+    last_model: Mapped[str | None] = mapped_column(String, nullable=True)
+    last_usage_at: Mapped[datetime | None] = mapped_column(nullable=True)
 
 
 class Message(Base):
@@ -37,6 +48,20 @@ class Message(Base):
     content: Mapped[str] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(default=datetime.utcnow)
     meta: Mapped[dict] = mapped_column(JSON, default=dict)
+
+
+class LlmUsage(Base):
+    __tablename__ = "llm_usage"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    session_id: Mapped[str] = mapped_column(String, index=True)
+    user_id: Mapped[str] = mapped_column(String, index=True)
+    model: Mapped[str] = mapped_column(String)
+    input_tokens: Mapped[int] = mapped_column(Integer, default=0)
+    output_tokens: Mapped[int] = mapped_column(Integer, default=0)
+    total_tokens: Mapped[int] = mapped_column(Integer, default=0)
+    cost: Mapped[float] = mapped_column(Float, default=0.0)
+    created_at: Mapped[datetime] = mapped_column(default=datetime.utcnow)
 
 
 class ToolRun(Base):
