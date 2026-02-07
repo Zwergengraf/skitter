@@ -176,6 +176,9 @@ def build_graph(
         #return f"SKITTER_SECRET_{key}" # Disabled so Skills get the ENVs they expect without needing to know about the SKITTER_ prefix
         return f"{key}"
 
+    def _denied_message(tool_name: str) -> str:
+        return f"{tool_name} denied: Request was denied by the user, please ask them for clarification."
+
     @tool("read")
     async def read(
         path: Optional[str] = None,
@@ -194,7 +197,7 @@ def build_graph(
             payload["limit"] = limit
         decision = await _maybe_approve("read", payload, approval_service, policy)
         if not decision.approved:
-            return "read error: tool execution denied"
+            return _denied_message("read")
         try:
             result = await client.execute(_user_id(), _session_id(), "read", payload)
         except httpx.HTTPStatusError as exc:
@@ -229,7 +232,7 @@ def build_graph(
         payload = {"path": target, "content": content}
         decision = await _maybe_approve("write", payload, approval_service, policy)
         if not decision.approved:
-            return "write error: tool execution denied"
+            return _denied_message("write")
         try:
             result = await client.execute(_user_id(), _session_id(), "write", payload)
         except httpx.HTTPStatusError as exc:
@@ -260,7 +263,7 @@ def build_graph(
         payload = {"path": target, "oldText": old_value, "newText": new_value}
         decision = await _maybe_approve("edit", payload, approval_service, policy)
         if not decision.approved:
-            return "edit error: tool execution denied"
+            return _denied_message("edit")
         try:
             result = await client.execute(_user_id(), _session_id(), "edit", payload)
         except httpx.HTTPStatusError as exc:
@@ -278,7 +281,7 @@ def build_graph(
         payload = {"path": target}
         decision = await _maybe_approve("list", payload, approval_service, policy)
         if not decision.approved:
-            return "list error: tool execution denied"
+            return _denied_message("list")
         try:
             result = await client.execute(_user_id(), _session_id(), "list", payload)
         except httpx.HTTPStatusError as exc:
@@ -300,7 +303,7 @@ def build_graph(
             return "delete error: recursive delete requires approval"
         decision = await _maybe_approve("delete", payload, approval_service, policy)
         if not decision.approved:
-            return "delete error: tool execution denied"
+            return _denied_message("delete")
         try:
             result = await client.execute(_user_id(), _session_id(), "delete", payload)
         except httpx.HTTPStatusError as exc:
@@ -319,7 +322,7 @@ def build_graph(
             payload["path"] = path
         decision = await _maybe_approve("download", payload, approval_service, policy)
         if not decision.approved:
-            return "download error: tool execution denied"
+            return _denied_message("download")
         try:
             result = await client.execute(_user_id(), _session_id(), "download", payload)
         except httpx.HTTPStatusError as exc:
@@ -334,7 +337,7 @@ def build_graph(
         payload = {"url": url}
         decision = await _maybe_approve("http_fetch", payload, approval_service, policy)
         if not decision.approved:
-            return "http_fetch error: tool execution denied"
+            return _denied_message("http_fetch")
         try:
             result = await client.execute(_user_id(), _session_id(), "http_fetch", payload)
         except httpx.HTTPStatusError as exc:
@@ -365,7 +368,7 @@ def build_graph(
         }
         decision = await _maybe_approve("browser", payload, approval_service, policy)
         if not decision.approved:
-            return "browser error: tool execution denied"
+            return _denied_message("browser")
         try:
             result = await client.execute(_user_id(), _session_id(), "browser", payload)
         except httpx.HTTPStatusError as exc:
@@ -426,7 +429,7 @@ def build_graph(
         }
         decision = await _maybe_approve("browser_action", payload, approval_service, policy)
         if not decision.approved:
-            return "browser_action error: tool execution denied"
+            return _denied_message("browser_action")
         try:
             timeout_s = max(60, int(timeout_ms / 1000) + 15)
             result = await client.execute(_user_id(), _session_id(), "browser_action", payload, timeout=timeout_s)
@@ -489,12 +492,12 @@ def build_graph(
                 requested_by=_user_id(),
             )
             if not decision.approved:
-                return "shell error: tool execution denied"
+                return _denied_message("shell")
             exec_payload = {**payload, "env": env, "redact": redact}
         else:
             decision = await _maybe_approve("shell", payload, approval_service, policy)
             if not decision.approved:
-                return "shell error: tool execution denied"
+                return _denied_message("shell")
             exec_payload = payload
         try:
             result = await client.execute(_user_id(), _session_id(), "shell", exec_payload)
@@ -531,7 +534,7 @@ def build_graph(
         approval_payload = {"name": secret_name, "value": "[REDACTED]", "value_length": len(value)}
         decision = await _maybe_approve("create_secret", approval_payload, approval_service, policy)
         if not decision.approved:
-            return "create_secret error: tool execution denied"
+            return _denied_message("create_secret")
 
         encrypted = manager.encrypt(value)
         async with SessionLocal() as session:
