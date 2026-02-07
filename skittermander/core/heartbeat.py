@@ -12,6 +12,7 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from ..data.db import SessionLocal
 from ..data.repositories import Repository
 from .config import settings
+from .llm import resolve_model_name
 from .workspace import user_workspace_root
 from .models import MessageEnvelope
 
@@ -121,10 +122,10 @@ class HeartbeatService:
                     if not channel_id or (origin and origin != "discord"):
                         self._logger.info(f"Skipping heartbeat for user {user_id} due to missing or unsupported channel/origin")
                         return
-                    session_obj = await repo.get_active_session(user_id)
+                    session_obj = await repo.get_latest_session_by_status(user_id, "heartbeat")
                     if session_obj is None:
-                        self._logger.info(f"No active session for user {user_id}, skipping heartbeat")
-                        return
+                        model_name = resolve_model_name(None, purpose="heartbeat")
+                        session_obj = await repo.create_session(user_id=user_id, status="heartbeat", model=model_name)
                     heartbeat_content = self._load_heartbeat_content(user_id)
                     if not heartbeat_content:
                         self._logger.info(f"No meaningful HEARTBEAT.md content for user {user_id}, skipping heartbeat")
@@ -140,10 +141,13 @@ class HeartbeatService:
                         metadata={"internal_user_id": user.id},
                     )
 
+                # Keep heartbeat context isolated to persisted heartbeat messages only.
+                self.runtime.clear_history(session_obj.id)
                 response = await self.runtime.handle_message(session_obj.id, envelope)
                 if response.text.strip() == "HEARTBEAT_OK" and not response.attachments:
                     self._logger.info(f"Heartbeat for user {user_id} returned HEARTBEAT_OK with no attachments, skipping delivery")
                     self.runtime.drop_messages_since(session_obj.id, envelope.message_id)
+                    self.runtime.clear_history(session_obj.id)
                     return
 
                 async with SessionLocal() as session:
@@ -171,5 +175,8 @@ class HeartbeatService:
                         content=response.text,
                         metadata={"origin": "heartbeat", "response_to": envelope.message_id},
                     )
+                    keep_messages = max(1, int(settings.heartbeat_history_runs)) * 2
+                    await repo.prune_messages_keep_latest(session_obj.id, keep_messages)
+                self.runtime.clear_history(session_obj.id)
             except Exception as exc:
                 self._logger.exception("Heartbeat failed for user %s: %s", user_id, exc)

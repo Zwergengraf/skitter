@@ -120,6 +120,14 @@ class Repository:
         )
         return result.scalars().first()
 
+    async def get_latest_session_by_status(self, user_id: str, status: str) -> Optional[Session]:
+        result = await self.session.execute(
+            select(Session)
+            .where(Session.user_id == user_id, Session.status == status)
+            .order_by(Session.created_at.desc())
+        )
+        return result.scalars().first()
+
     async def end_session(self, session_id: str, status: str = "ended") -> Optional[Session]:
         result = await self.session.execute(select(Session).where(Session.id == session_id))
         session = result.scalar_one_or_none()
@@ -186,6 +194,20 @@ class Repository:
             select(Message).where(Message.session_id == session_id).order_by(Message.created_at.asc())
         )
         return list(result.scalars().all())
+
+    async def prune_messages_keep_latest(self, session_id: str, keep: int) -> int:
+        if keep < 0:
+            keep = 0
+        result = await self.session.execute(
+            select(Message).where(Message.session_id == session_id).order_by(Message.created_at.desc(), Message.id.desc())
+        )
+        messages = list(result.scalars().all())
+        to_delete = messages[keep:]
+        for message in to_delete:
+            await self.session.delete(message)
+        if to_delete:
+            await self.session.commit()
+        return len(to_delete)
 
     async def list_recent_sessions(self, limit: int = 10, status: str | None = "active") -> List[tuple]:
         last_active_subq = (

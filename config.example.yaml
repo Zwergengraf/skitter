@@ -7,6 +7,9 @@ prompt:
   - TOOLS.md
   - IDENTITY.md
   - USER.md
+context:
+  max_tool_messages: 10
+  max_chat_messages: 32
 models:
   - name: main
     model_id: local-main
@@ -43,6 +46,7 @@ users:
 heartbeat:
   enabled: true
   interval_minutes: 30
+  history_runs: 5
   prompt: Follow these instructions in the following file (HEARTBEAT.md) strictly. Do not infer or repeat old tasks from prior chats. If nothing needs attention, reply HEARTBEAT_OK.
   quiet_hours_start: "23:00"
   quiet_hours_end: "08:00"

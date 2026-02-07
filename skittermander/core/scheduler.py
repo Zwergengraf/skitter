@@ -171,7 +171,6 @@ class SchedulerService:
                 model_name = resolve_model_name(None, purpose="main")
                 session_obj = await repo.create_session(job.user_id, status="scheduled", model=model_name)
                 session_id = session_obj.id
-                await repo.add_message(session_id, role="user", content=job.prompt)
 
             envelope = MessageEnvelope(
                 message_id=run.id,
@@ -188,7 +187,6 @@ class SchedulerService:
 
             async with SessionLocal() as session:
                 repo = Repository(session)
-                await repo.add_message(session_id, role="assistant", content=response.text)
                 await repo.update_scheduled_run(
                     run.id,
                     status="success",
@@ -198,6 +196,8 @@ class SchedulerService:
                 )
                 if job.schedule_type == "date":
                     await repo.update_scheduled_job(job_id, enabled=False)
+            if session_id:
+                self.runtime.clear_history(session_id)
         except Exception as exc:
             async with SessionLocal() as session:
                 repo = Repository(session)

@@ -111,6 +111,7 @@ class AgentRuntime:
                             HumanMessage(content=content, additional_kwargs={"message_id": envelope.message_id})
                         )
             model_name = await self._get_session_model(session_id, envelope)
+            await self._compact_history_for_context(history, model_name)
             graph = self._get_graph(model_name, purpose="heartbeat" if envelope.origin == "heartbeat" else "main")
             result = await graph.ainvoke({"messages": history})
             messages = result.get("messages", history)
@@ -188,6 +189,147 @@ class AgentRuntime:
             if isinstance(msg, HumanMessage) and msg.additional_kwargs.get("message_id") == message_id:
                 del history[idx:]
                 break
+
+    def _is_tool_chatter_message(self, msg: BaseMessage) -> bool:
+        if isinstance(msg, ToolMessage):
+            return True
+        if isinstance(msg, AIMessage):
+            tool_calls = getattr(msg, "tool_calls", None)
+            if tool_calls:
+                return True
+            meta = getattr(msg, "additional_kwargs", None) or {}
+            if isinstance(meta, dict) and meta.get("tool_calls"):
+                return True
+        return False
+
+    def _is_chat_message(self, msg: BaseMessage) -> bool:
+        if isinstance(msg, HumanMessage):
+            return True
+        if isinstance(msg, AIMessage) and not self._is_tool_chatter_message(msg):
+            return True
+        return False
+
+    def _trim_tool_messages(self, history: list[BaseMessage]) -> None:
+        max_tool = max(0, int(settings.context_max_tool_messages))
+        if max_tool <= 0:
+            history[:] = [msg for msg in history if not self._is_tool_chatter_message(msg)]
+            return
+        tool_indices = [idx for idx, msg in enumerate(history) if self._is_tool_chatter_message(msg)]
+        if len(tool_indices) <= max_tool:
+            return
+        keep_indices = set(tool_indices[-max_tool:])
+        compacted: list[BaseMessage] = []
+        for idx, msg in enumerate(history):
+            if self._is_tool_chatter_message(msg) and idx not in keep_indices:
+                continue
+            compacted.append(msg)
+        history[:] = compacted
+
+    def _message_content_to_text(self, content: object) -> str:
+        if isinstance(content, str):
+            return content
+        if isinstance(content, list):
+            parts: list[str] = []
+            for item in content:
+                if isinstance(item, str):
+                    parts.append(item)
+                    continue
+                if isinstance(item, dict):
+                    kind = str(item.get("type") or "").lower()
+                    if kind == "text":
+                        parts.append(str(item.get("text") or ""))
+                    elif kind == "image":
+                        parts.append("[image]")
+                    elif kind == "file":
+                        parts.append("[file]")
+                    else:
+                        parts.append(str(item))
+                    continue
+                parts.append(str(item))
+            return "\n".join(part for part in parts if part).strip()
+        return str(content)
+
+    async def _summarize_chat_messages(
+        self,
+        previous_summary: str,
+        messages: list[BaseMessage],
+        model_name: str,
+    ) -> str:
+        lines: list[str] = []
+        for msg in messages:
+            role = "user" if isinstance(msg, HumanMessage) else "assistant"
+            text = self._message_content_to_text(getattr(msg, "content", ""))
+            if not text:
+                continue
+            lines.append(f"{role}: {text}")
+        if not lines:
+            return previous_summary.strip()
+        transcript = "\n".join(lines)
+        if not settings.models:
+            merged = f"{previous_summary.strip()}\n{transcript}".strip()
+            return merged[:4000]
+        llm = build_llm(model_name=model_name, purpose="main")
+        prompt = [
+            SystemMessage(
+                content=(
+                    "You summarize older conversation context for a chat agent. "
+                    "Produce concise bullet points with stable facts, decisions, and open tasks. "
+                    "Avoid speculation and keep it compact."
+                )
+            ),
+            HumanMessage(
+                content=(
+                    f"Existing summary:\n{previous_summary or '(none)'}\n\n"
+                    f"New older messages to fold in:\n{transcript}\n\n"
+                    "Return an updated merged summary only."
+                )
+            ),
+        ]
+        try:
+            result = await llm.ainvoke(prompt)
+            text = self._message_content_to_text(getattr(result, "content", ""))
+            return text.strip() or previous_summary.strip()
+        except Exception:
+            merged = f"{previous_summary.strip()}\n{transcript}".strip()
+            return merged[:4000]
+
+    async def _compact_history_for_context(self, history: list[BaseMessage], model_name: str) -> None:
+        self._trim_tool_messages(history)
+        max_chat = max(1, int(settings.context_max_chat_messages))
+        chat_indices = [idx for idx, msg in enumerate(history) if self._is_chat_message(msg)]
+        if len(chat_indices) <= max_chat:
+            return
+        old_chat_indices = chat_indices[:-max_chat]
+        if not old_chat_indices:
+            return
+
+        summary_indices = [
+            idx
+            for idx, msg in enumerate(history)
+            if isinstance(msg, SystemMessage) and msg.additional_kwargs.get("conversation_summary")
+        ]
+        previous_summary = ""
+        if summary_indices:
+            previous_summary = self._message_content_to_text(history[summary_indices[-1]].content)
+        to_summarize = [history[idx] for idx in old_chat_indices if idx < len(history)]
+        new_summary = await self._summarize_chat_messages(previous_summary, to_summarize, model_name)
+        if not new_summary:
+            return
+
+        remove_indices = sorted(set(old_chat_indices + summary_indices), reverse=True)
+        for idx in remove_indices:
+            if 0 <= idx < len(history):
+                del history[idx]
+
+        insert_idx = 0
+        for idx, msg in enumerate(history):
+            if isinstance(msg, SystemMessage) and msg.additional_kwargs.get("system_prompt"):
+                insert_idx = idx + 1
+                break
+        history.insert(
+            insert_idx,
+            SystemMessage(content=new_summary, additional_kwargs={"conversation_summary": True}),
+        )
 
     def _usage_from_message(self, msg: AIMessage) -> tuple[int, int, int] | None:
         usage_meta = getattr(msg, "usage_metadata", None)

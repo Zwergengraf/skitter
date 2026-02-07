@@ -49,6 +49,7 @@ class Settings(BaseSettings):
 
     heartbeat_enabled: bool = Field(default=True)
     heartbeat_interval_minutes: int = Field(default=30)
+    heartbeat_history_runs: int = Field(default=5)
     heartbeat_prompt: str = Field(
         default=(
             "Read HEARTBEAT.md if it exists (workspace context). Follow it strictly. "
@@ -84,6 +85,8 @@ class Settings(BaseSettings):
     prompt_context_files: str = Field(
         default="AGENTS.md,TOOLS.md,IDENTITY.md,USER.md,BOOTSTRAP.md"
     )
+    context_max_tool_messages: int = Field(default=10)
+    context_max_chat_messages: int = Field(default=80)
 
     # Env-only: do not add to config schema or UI.
     secrets_master_key: str = Field(default="", exclude=True)
