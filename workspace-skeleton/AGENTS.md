@@ -1,6 +1,6 @@
 # AGENTS.md - Your Workspace
 
-Your workspace is home. Treat it that way.
+Your workspace (root directory in the filesystem) is home. Treat it that way.
 
 ## Every Session
 

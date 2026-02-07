@@ -108,7 +108,6 @@ class HeartbeatService:
             asyncio.create_task(self._run_for_user(user.id, lock))
 
     async def _run_for_user(self, user_id: str, lock: asyncio.Lock) -> None:
-        self._logger.info(f"Running heartbeat for user {user_id}")
         async with lock:
             try:
                 async with SessionLocal() as session:
@@ -120,7 +119,7 @@ class HeartbeatService:
                     channel_id = meta.get("last_channel_id")
                     origin = meta.get("last_origin")
                     if not channel_id or (origin and origin != "discord"):
-                        self._logger.info(f"Skipping heartbeat for user {user_id} due to missing or unsupported channel/origin")
+                        self._logger.warning(f"Skipping heartbeat for user {user_id} due to missing or unsupported channel/origin")
                         return
                     session_obj = await repo.get_latest_session_by_status(user_id, "heartbeat")
                     if session_obj is None:
@@ -128,7 +127,6 @@ class HeartbeatService:
                         session_obj = await repo.create_session(user_id=user_id, status="heartbeat", model=model_name)
                     heartbeat_content = self._load_heartbeat_content(user_id)
                     if not heartbeat_content:
-                        self._logger.info(f"No meaningful HEARTBEAT.md content for user {user_id}, skipping heartbeat")
                         return
                     prompt = f"{settings.heartbeat_prompt}\n\n{heartbeat_content}".strip()
                     envelope = MessageEnvelope(

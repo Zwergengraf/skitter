@@ -13,6 +13,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     pip install --break-system-packages fastapi uvicorn httpx pydantic playwright && \
     python3 -m playwright install --with-deps chromium
 
+# Install UV from the official image
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
+
 WORKDIR /app
 
 COPY skittermander/sandbox/runner.py /app/runner.py
