@@ -513,6 +513,40 @@ def build_graph(
                 )
         return json.dumps(result)
 
+    @tool("create_secret")
+    async def create_secret(name: str, value: str) -> str:
+        """Create a new per-user secret (name + value). Existing secrets cannot be overwritten."""
+        secret_name = (name or "").strip()
+        if not secret_name:
+            return "create_secret error: name is required"
+        if value is None or value == "":
+            return "create_secret error: value is required"
+
+        manager = SecretsManager()
+        try:
+            manager.ensure_ready()
+        except RuntimeError as exc:
+            return f"create_secret error: {exc}"
+
+        approval_payload = {"name": secret_name, "value": "[REDACTED]", "value_length": len(value)}
+        decision = await _maybe_approve("create_secret", approval_payload, approval_service, policy)
+        if not decision.approved:
+            return "create_secret error: tool execution denied"
+
+        encrypted = manager.encrypt(value)
+        async with SessionLocal() as session:
+            repo = Repository(session)
+            secret = await repo.create_secret(_user_id(), secret_name, encrypted)
+        if secret is None:
+            return f"create_secret error: secret '{secret_name}' already exists"
+        if decision.tool_run_id and approval_service is not None:
+            await approval_service.complete(
+                decision.tool_run_id,
+                "completed",
+                {"name": secret_name, "status": "created"},
+            )
+        return json.dumps({"name": secret_name, "status": "created"})
+
     @tool("web_search")
     async def web_search(
         query: str,
@@ -704,6 +738,7 @@ def build_graph(
             browser,
             browser_action,
             shell,
+            create_secret,
             memory_search,
             web_search,
             web_fetch,

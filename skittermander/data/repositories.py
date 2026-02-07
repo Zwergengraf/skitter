@@ -518,6 +518,22 @@ class Repository:
         )
         return result.scalar_one_or_none()
 
+    async def create_secret(self, user_id: str, name: str, value_encrypted: str) -> Optional[Secret]:
+        existing = await self.get_secret(user_id, name)
+        if existing is not None:
+            return None
+        secret = Secret(
+            id=str(uuid.uuid4()),
+            user_id=user_id,
+            name=name,
+            value_encrypted=value_encrypted,
+            created_at=datetime.utcnow(),
+            updated_at=datetime.utcnow(),
+        )
+        self.session.add(secret)
+        await self.session.commit()
+        return secret
+
     async def upsert_secret(self, user_id: str, name: str, value_encrypted: str) -> Secret:
         secret = await self.get_secret(user_id, name)
         if secret is None:

@@ -77,7 +77,7 @@ class Settings(BaseSettings):
 
     max_sub_agents: int = Field(default=4)
     tool_approval_required: bool = Field(default=True)
-    tool_approval_tools: str = Field(default="read,write,edit,list,delete,download,browser,browser_action,sub_agent,shell")
+    tool_approval_tools: str = Field(default="read,write,edit,list,delete,download,browser,browser_action,sub_agent,shell,create_secret")
     cors_origins: str = Field(default="http://localhost:5173")
     config_path: str = Field(default="config.yaml")
     prompt_path: str = Field(default="system_prompt.md")
