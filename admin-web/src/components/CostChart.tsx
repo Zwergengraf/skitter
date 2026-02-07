@@ -7,6 +7,8 @@ interface CostChartProps {
 }
 
 export function CostChart({ data }: CostChartProps) {
+  const toTwoDecimals = (value: number | string) => Number(value || 0).toFixed(2);
+
   if (!data.length) {
     return (
       <div className="flex h-52 items-center justify-center rounded-2xl border border-dashed border-border bg-muted/40 text-sm text-mutedForeground">
@@ -26,13 +28,20 @@ export function CostChart({ data }: CostChartProps) {
             </linearGradient>
           </defs>
           <XAxis dataKey="label" axisLine={false} tickLine={false} fontSize={12} />
-          <YAxis axisLine={false} tickLine={false} fontSize={12} width={30} />
+          <YAxis
+            axisLine={false}
+            tickLine={false}
+            fontSize={12}
+            width={45}
+            tickFormatter={(value: number | string) => toTwoDecimals(value)}
+          />
           <Tooltip
             contentStyle={{
               borderRadius: 12,
               border: "1px solid rgba(15,23,42,0.1)",
               boxShadow: "0 8px 24px rgba(15,23,42,0.12)",
             }}
+            formatter={(value: number | string) => toTwoDecimals(value)}
           />
           <Area type="monotone" dataKey="cost" stroke="#0e7490" fill="url(#cost)" strokeWidth={2} />
         </AreaChart>
