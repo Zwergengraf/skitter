@@ -10,6 +10,7 @@ prompt:
 context:
   max_tool_messages: 10
   max_chat_messages: 32
+  compact_every_messages: 8
 models:
   - name: main
     model_id: local-main

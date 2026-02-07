@@ -75,6 +75,17 @@ FIELDS: list[ConfigFieldSpec] = [
         step=1,
     ),
     ConfigFieldSpec(
+        key="context_compact_every_messages",
+        path=("context", "compact_every_messages"),
+        category="context",
+        label="Compaction batch size",
+        field_type="number",
+        description="Summarize only when chat overflow reaches this many messages.",
+        minimum=1,
+        maximum=500,
+        step=1,
+    ),
+    ConfigFieldSpec(
         key="db_url",
         path=("database", "url"),
         category="database",

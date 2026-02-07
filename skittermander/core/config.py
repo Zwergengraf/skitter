@@ -87,6 +87,7 @@ class Settings(BaseSettings):
     )
     context_max_tool_messages: int = Field(default=10)
     context_max_chat_messages: int = Field(default=80)
+    context_compact_every_messages: int = Field(default=8)
 
     # Env-only: do not add to config schema or UI.
     secrets_master_key: str = Field(default="", exclude=True)

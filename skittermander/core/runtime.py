@@ -393,8 +393,14 @@ class AgentRuntime:
         self._trim_tool_messages(history)
         self._sanitize_tool_sequence(history)
         max_chat = max(1, int(settings.context_max_chat_messages))
+        compact_every = max(1, int(settings.context_compact_every_messages))
         chat_indices = [idx for idx, msg in enumerate(history) if self._is_chat_message(msg)]
-        if len(chat_indices) <= max_chat:
+        overflow_count = len(chat_indices) - max_chat
+        if overflow_count <= 0:
+            return
+        # Avoid summarizing on every turn once the cap is reached.
+        # We summarize only when the overflow has accumulated into a batch.
+        if overflow_count < compact_every:
             return
         old_chat_indices = chat_indices[:-max_chat]
         if not old_chat_indices:
