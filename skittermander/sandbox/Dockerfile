@@ -28,6 +28,7 @@ COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
 
 # Install Codex using npm
 RUN npm install -g @openai/codex
+ENV CODEX_HOME=/workspace/.codex
 
 WORKDIR /app
 
