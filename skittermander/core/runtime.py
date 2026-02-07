@@ -225,6 +225,71 @@ class AgentRuntime:
             compacted.append(msg)
         history[:] = compacted
 
+    def _extract_tool_call_ids(self, msg: AIMessage) -> set[str]:
+        ids: set[str] = set()
+        tool_calls = getattr(msg, "tool_calls", None)
+        if isinstance(tool_calls, list):
+            for call in tool_calls:
+                if isinstance(call, dict):
+                    call_id = call.get("id")
+                    if call_id:
+                        ids.add(str(call_id))
+                else:
+                    call_id = getattr(call, "id", None)
+                    if call_id:
+                        ids.add(str(call_id))
+        meta = getattr(msg, "additional_kwargs", None) or {}
+        if isinstance(meta, dict):
+            raw_calls = meta.get("tool_calls")
+            if isinstance(raw_calls, list):
+                for call in raw_calls:
+                    if isinstance(call, dict):
+                        call_id = call.get("id")
+                        if call_id:
+                            ids.add(str(call_id))
+        return ids
+
+    def _sanitize_tool_sequence(self, history: list[BaseMessage]) -> None:
+        ai_tool_ids_by_index: dict[int, set[str]] = {}
+        seen_ai_tool_ids: set[str] = set()
+        responded_ids: set[str] = set()
+
+        for idx, msg in enumerate(history):
+            if isinstance(msg, AIMessage):
+                call_ids = self._extract_tool_call_ids(msg)
+                if call_ids:
+                    ai_tool_ids_by_index[idx] = call_ids
+                    seen_ai_tool_ids.update(call_ids)
+                continue
+            if isinstance(msg, ToolMessage):
+                tool_call_id = getattr(msg, "tool_call_id", None)
+                if tool_call_id and str(tool_call_id) in seen_ai_tool_ids:
+                    responded_ids.add(str(tool_call_id))
+
+        valid_ai_indices: set[int] = set()
+        valid_tool_ids: set[str] = set()
+        for idx, call_ids in ai_tool_ids_by_index.items():
+            if call_ids and call_ids.issubset(responded_ids):
+                valid_ai_indices.add(idx)
+                valid_tool_ids.update(call_ids)
+
+        sanitized: list[BaseMessage] = []
+        for idx, msg in enumerate(history):
+            if isinstance(msg, AIMessage):
+                call_ids = self._extract_tool_call_ids(msg)
+                if call_ids and idx not in valid_ai_indices:
+                    continue
+                sanitized.append(msg)
+                continue
+            if isinstance(msg, ToolMessage):
+                tool_call_id = getattr(msg, "tool_call_id", None)
+                if not tool_call_id or str(tool_call_id) not in valid_tool_ids:
+                    continue
+                sanitized.append(msg)
+                continue
+            sanitized.append(msg)
+        history[:] = sanitized
+
     def _message_content_to_text(self, content: object) -> str:
         if isinstance(content, str):
             return content
@@ -324,7 +389,9 @@ class AgentRuntime:
             return merged[:4000]
 
     async def _compact_history_for_context(self, session_id: str, history: list[BaseMessage], model_name: str) -> None:
+        self._sanitize_tool_sequence(history)
         self._trim_tool_messages(history)
+        self._sanitize_tool_sequence(history)
         max_chat = max(1, int(settings.context_max_chat_messages))
         chat_indices = [idx for idx, msg in enumerate(history) if self._is_chat_message(msg)]
         if len(chat_indices) <= max_chat:
@@ -352,8 +419,6 @@ class AgentRuntime:
                 continue
             new_slice.append(msg)
         new_summary = await self._summarize_chat_messages(previous_summary, new_slice, model_name)
-        print(f"Compacted {len(old_chat_indices)} chat messages into summary for session {session_id}. "
-                          f"Previous summary length: {len(previous_summary)}, new summary length: {len(new_summary)}.")
         if not new_slice and previous_summary:
             new_summary = previous_summary
         if not new_summary and not previous_summary:
