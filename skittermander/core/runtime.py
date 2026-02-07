@@ -111,7 +111,7 @@ class AgentRuntime:
                             HumanMessage(content=content, additional_kwargs={"message_id": envelope.message_id})
                         )
             model_name = await self._get_session_model(session_id, envelope)
-            await self._compact_history_for_context(history, model_name)
+            await self._compact_history_for_context(session_id, history, model_name)
             graph = self._get_graph(model_name, purpose="heartbeat" if envelope.origin == "heartbeat" else "main")
             result = await graph.ainvoke({"messages": history})
             messages = result.get("messages", history)
@@ -249,6 +249,36 @@ class AgentRuntime:
             return "\n".join(part for part in parts if part).strip()
         return str(content)
 
+    def _message_datetime(self, msg: BaseMessage) -> datetime | None:
+        meta = getattr(msg, "additional_kwargs", None) or {}
+        if not isinstance(meta, dict):
+            return None
+        raw = meta.get("_db_created_at")
+        if not raw:
+            return None
+        if isinstance(raw, datetime):
+            return raw
+        if not isinstance(raw, str):
+            return None
+        try:
+            return datetime.fromisoformat(raw)
+        except ValueError:
+            return None
+
+    def _summary_checkpoint(self, msg: BaseMessage) -> datetime | None:
+        meta = getattr(msg, "additional_kwargs", None) or {}
+        if not isinstance(meta, dict):
+            return None
+        raw = meta.get("summary_checkpoint")
+        if isinstance(raw, datetime):
+            return raw
+        if isinstance(raw, str):
+            try:
+                return datetime.fromisoformat(raw)
+            except ValueError:
+                return None
+        return None
+
     async def _summarize_chat_messages(
         self,
         previous_summary: str,
@@ -273,7 +303,7 @@ class AgentRuntime:
             SystemMessage(
                 content=(
                     "You summarize older conversation context for a chat agent. "
-                    "Produce concise bullet points with stable facts, decisions, and open tasks. "
+                    "Produce a short summary of only the most important facts, decisions, and events. Do not include unimportant details (e.g. IDs) or small talk. "
                     "Avoid speculation and keep it compact."
                 )
             ),
@@ -293,7 +323,7 @@ class AgentRuntime:
             merged = f"{previous_summary.strip()}\n{transcript}".strip()
             return merged[:4000]
 
-    async def _compact_history_for_context(self, history: list[BaseMessage], model_name: str) -> None:
+    async def _compact_history_for_context(self, session_id: str, history: list[BaseMessage], model_name: str) -> None:
         self._trim_tool_messages(history)
         max_chat = max(1, int(settings.context_max_chat_messages))
         chat_indices = [idx for idx, msg in enumerate(history) if self._is_chat_message(msg)]
@@ -309,12 +339,33 @@ class AgentRuntime:
             if isinstance(msg, SystemMessage) and msg.additional_kwargs.get("conversation_summary")
         ]
         previous_summary = ""
+        previous_checkpoint: datetime | None = None
         if summary_indices:
-            previous_summary = self._message_content_to_text(history[summary_indices[-1]].content)
+            latest_summary = history[summary_indices[-1]]
+            previous_summary = self._message_content_to_text(latest_summary.content)
+            previous_checkpoint = self._summary_checkpoint(latest_summary)
         to_summarize = [history[idx] for idx in old_chat_indices if idx < len(history)]
-        new_summary = await self._summarize_chat_messages(previous_summary, to_summarize, model_name)
-        if not new_summary:
+        new_slice: list[BaseMessage] = []
+        for msg in to_summarize:
+            dt = self._message_datetime(msg)
+            if previous_checkpoint is not None and dt is not None and dt <= previous_checkpoint:
+                continue
+            new_slice.append(msg)
+        new_summary = await self._summarize_chat_messages(previous_summary, new_slice, model_name)
+        print(f"Compacted {len(old_chat_indices)} chat messages into summary for session {session_id}. "
+                          f"Previous summary length: {len(previous_summary)}, new summary length: {len(new_summary)}.")
+        if not new_slice and previous_summary:
+            new_summary = previous_summary
+        if not new_summary and not previous_summary:
             return
+
+        checkpoint = previous_checkpoint
+        for msg in new_slice:
+            dt = self._message_datetime(msg)
+            if dt is None:
+                continue
+            if checkpoint is None or dt > checkpoint:
+                checkpoint = dt
 
         remove_indices = sorted(set(old_chat_indices + summary_indices), reverse=True)
         for idx in remove_indices:
@@ -328,8 +379,17 @@ class AgentRuntime:
                 break
         history.insert(
             insert_idx,
-            SystemMessage(content=new_summary, additional_kwargs={"conversation_summary": True}),
+            SystemMessage(
+                content=new_summary,
+                additional_kwargs={
+                    "conversation_summary": True,
+                    "summary_checkpoint": checkpoint.isoformat() if checkpoint else "",
+                },
+            ),
         )
+        async with SessionLocal() as session:
+            repo = Repository(session)
+            await repo.set_session_context_summary(session_id, new_summary, checkpoint)
 
     def _usage_from_message(self, msg: AIMessage) -> tuple[int, int, int] | None:
         usage_meta = getattr(msg, "usage_metadata", None)
@@ -457,12 +517,15 @@ class AgentRuntime:
             return
         async with SessionLocal() as session:
             repo = Repository(session)
+            session_record = await repo.get_session(session_id)
             records = await repo.list_messages(session_id)
         history: list[BaseMessage] = []
         for record in records:
             role = record.role
             content = record.content
-            meta = record.meta or {}
+            meta = dict(record.meta or {})
+            meta["_db_message_id"] = record.id
+            meta["_db_created_at"] = record.created_at.isoformat()
             if role == "user":
                 attachments_meta = meta.get("attachments")
                 if isinstance(attachments_meta, list) and attachments_meta:
@@ -474,6 +537,18 @@ class AgentRuntime:
                 history.append(AIMessage(content=content, additional_kwargs=meta))
             elif role == "system":
                 history.append(SystemMessage(content=content, additional_kwargs=meta))
+        if session_record and session_record.context_summary:
+            checkpoint = session_record.context_summary_checkpoint
+            history.insert(
+                0,
+                SystemMessage(
+                    content=session_record.context_summary,
+                    additional_kwargs={
+                        "conversation_summary": True,
+                        "summary_checkpoint": checkpoint.isoformat() if checkpoint else "",
+                    },
+                ),
+            )
         self._history[session_id] = history
 
     def _ensure_system_prompt(self, history: list[BaseMessage], user_id: str) -> None:

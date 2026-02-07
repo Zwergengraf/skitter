@@ -20,6 +20,12 @@ ALTER TABLE sessions
     ADD COLUMN IF NOT EXISTS model TEXT;
 
 ALTER TABLE sessions
+    ADD COLUMN IF NOT EXISTS context_summary TEXT;
+
+ALTER TABLE sessions
+    ADD COLUMN IF NOT EXISTS context_summary_checkpoint TIMESTAMPTZ;
+
+ALTER TABLE sessions
     ADD COLUMN IF NOT EXISTS input_tokens INTEGER NOT NULL DEFAULT 0;
 
 ALTER TABLE sessions

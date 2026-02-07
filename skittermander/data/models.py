@@ -27,6 +27,8 @@ class Session(Base):
     created_at: Mapped[datetime] = mapped_column(default=datetime.utcnow)
     status: Mapped[str] = mapped_column(String, default="active")
     model: Mapped[str | None] = mapped_column(String, nullable=True)
+    context_summary: Mapped[str | None] = mapped_column(Text, nullable=True)
+    context_summary_checkpoint: Mapped[datetime | None] = mapped_column(nullable=True)
     input_tokens: Mapped[int] = mapped_column(Integer, default=0)
     output_tokens: Mapped[int] = mapped_column(Integer, default=0)
     total_tokens: Mapped[int] = mapped_column(Integer, default=0)

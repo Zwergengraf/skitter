@@ -72,10 +72,8 @@ cors:
 tools:
   approval_required: false
   approval_tools:
-  - read
   - write
   - edit
-  - list
   - delete
   - download
   - browser

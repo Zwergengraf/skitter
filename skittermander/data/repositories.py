@@ -114,6 +114,23 @@ class Repository:
         await self.session.commit()
         return session
 
+    async def set_session_context_summary(
+        self,
+        session_id: str,
+        summary: str,
+        checkpoint: datetime | None,
+    ) -> Optional[Session]:
+        result = await self.session.execute(select(Session).where(Session.id == session_id))
+        session = result.scalar_one_or_none()
+        if session is None:
+            return None
+        session.context_summary = summary
+        if checkpoint is not None and checkpoint.tzinfo is not None:
+            checkpoint = checkpoint.replace(tzinfo=None)
+        session.context_summary_checkpoint = checkpoint
+        await self.session.commit()
+        return session
+
     async def get_active_session(self, user_id: str) -> Optional[Session]:
         result = await self.session.execute(
             select(Session).where(Session.user_id == user_id, Session.status == "active").order_by(Session.created_at.desc())

@@ -144,6 +144,7 @@ class SchedulerService:
             {
                 "id": job.id,
                 "name": job.name,
+                "prompt": job.prompt,
                 "cron": job.schedule_expr,
                 "enabled": job.enabled,
                 "next_run_at": job.next_run_at.isoformat() if job.next_run_at else None,
