@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import secrets as stdlib_secrets
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 
 from ..core.events import EventBus
 from ..core.runtime import AgentRuntime
@@ -33,6 +36,26 @@ def create_app() -> FastAPI:
     app.state.user_notifier = None
 
     app.state.runtime.ready = True
+
+    @app.middleware("http")
+    async def _api_key_guard(request, call_next):
+        if request.url.path.startswith("/v1/"):
+            # Allow CORS preflight through without auth headers.
+            if request.method.upper() != "OPTIONS":
+                expected = settings.api_key.strip()
+                if not expected:
+                    return JSONResponse(
+                        status_code=503,
+                        content={"detail": "API key auth is enabled but SKITTER_API_KEY is not configured."},
+                    )
+                provided = (request.headers.get("x-api-key") or "").strip()
+                if not provided:
+                    auth_header = (request.headers.get("authorization") or "").strip()
+                    if auth_header.lower().startswith("bearer "):
+                        provided = auth_header[7:].strip()
+                if not provided or not stdlib_secrets.compare_digest(provided, expected):
+                    return JSONResponse(status_code=401, content={"detail": "Invalid API key."})
+        return await call_next(request)
 
     @app.on_event("startup")
     async def _start_sandbox_manager() -> None:

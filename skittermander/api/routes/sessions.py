@@ -27,7 +27,7 @@ async def list_sessions(
         SessionListItem(
             id=session.id,
             user=transport_user_id,
-            transport="discord",
+            transport=session.origin or "unknown",
             status=session.status,
             last_active_at=last_active_at,
             total_tokens=session.total_tokens or 0,
@@ -41,7 +41,12 @@ async def list_sessions(
 @router.post("", response_model=SessionOut)
 async def create_session(payload: SessionCreate, repo: Repository = Depends(get_repo)) -> SessionOut:
     user = await repo.get_or_create_user(payload.user_id)
-    session = await repo.create_session(user.id)
+    origin = (payload.origin or "web").strip() or "web"
+    session = None
+    if payload.reuse_active:
+        session = await repo.get_active_session(user.id, origin=origin)
+    if session is None:
+        session = await repo.create_session(user.id, origin=origin)
     return SessionOut(
         id=session.id,
         user_id=session.user_id,

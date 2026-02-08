@@ -85,6 +85,8 @@ class Settings(BaseSettings):
         default="read,write,edit,list,delete,download,browser,browser_action,sub_agent,sub_agent_batch,shell,create_secret"
     )
     cors_origins: str = Field(default="http://localhost:5173")
+    # Env-only: API key required for /v1/* HTTP endpoints.
+    api_key: str = Field(default="", exclude=True)
     config_path: str = Field(default="config.yaml")
     prompt_path: str = Field(default="system_prompt.md")
     prompt_context_files: str = Field(

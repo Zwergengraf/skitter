@@ -26,10 +26,10 @@ class SessionManager:
         ensure_user_workspace(user_id)
         async with SessionLocal() as session:
             repo = Repository(session)
-            active = await repo.get_active_session(user_id)
+            active = await repo.get_active_session(user_id, origin="discord")
             if active is None:
                 model_name = resolve_model_name(None, purpose="main")
-                active = await repo.create_session(user_id, model=model_name)
+                active = await repo.create_session(user_id, model=model_name, origin="discord")
         self._channel_session[channel_id] = active.id
         return active.id
 
@@ -40,7 +40,7 @@ class SessionManager:
         ensure_user_workspace(user_id)
         async with SessionLocal() as session:
             repo = Repository(session)
-            active = await repo.get_active_session(user_id)
+            active = await repo.get_active_session(user_id, origin="discord")
             if active is not None:
                 summary = await self.runtime.summarize_session(active.id)
                 summary_path, _ = self._write_summary(user_id, summary, active.id)
@@ -49,7 +49,7 @@ class SessionManager:
                 await repo.end_session(active.id, status="ended")
                 self.runtime.clear_history(active.id)
             model_name = resolve_model_name(None, purpose="main")
-            new_session = await repo.create_session(user_id, model=model_name)
+            new_session = await repo.create_session(user_id, model=model_name, origin="discord")
         self._channel_session[channel_id] = new_session.id
         return summary_path, new_session.id
 

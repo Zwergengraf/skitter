@@ -124,7 +124,12 @@ class HeartbeatService:
                     session_obj = await repo.get_latest_session_by_status(user_id, "heartbeat")
                     if session_obj is None:
                         model_name = resolve_model_name(None, purpose="heartbeat")
-                        session_obj = await repo.create_session(user_id=user_id, status="heartbeat", model=model_name)
+                        session_obj = await repo.create_session(
+                            user_id=user_id,
+                            status="heartbeat",
+                            model=model_name,
+                            origin="heartbeat",
+                        )
                     heartbeat_content = self._load_heartbeat_content(user_id)
                     if not heartbeat_content:
                         return

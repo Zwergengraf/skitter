@@ -27,6 +27,7 @@ class Session(Base):
     user_id: Mapped[str] = mapped_column(String, index=True)
     created_at: Mapped[datetime] = mapped_column(default=datetime.utcnow)
     status: Mapped[str] = mapped_column(String, default="active")
+    origin: Mapped[str] = mapped_column(String, default="discord")
     model: Mapped[str | None] = mapped_column(String, nullable=True)
     context_summary: Mapped[str | None] = mapped_column(Text, nullable=True)
     context_summary_checkpoint: Mapped[datetime | None] = mapped_column(nullable=True)

@@ -197,7 +197,7 @@ async def main() -> None:
             if not requested:
                 async with SessionLocal() as session:
                     repo = Repository(session)
-                    active = await repo.get_active_session(internal_user_id)
+                    active = await repo.get_active_session(internal_user_id, origin="discord")
                 current = active.model if active and active.model else None
                 if current is None:
                     current = resolve_model_name(None, purpose="main")
@@ -220,9 +220,9 @@ async def main() -> None:
                 return
             async with SessionLocal() as session:
                 repo = Repository(session)
-                active = await repo.get_active_session(internal_user_id)
+                active = await repo.get_active_session(internal_user_id, origin="discord")
                 if active is None:
-                    active = await repo.create_session(internal_user_id, model=match.name)
+                    active = await repo.create_session(internal_user_id, model=match.name, origin="discord")
                 else:
                     await repo.set_session_model(active.id, match.name)
             runtime.set_session_model(active.id, match.name)
@@ -234,7 +234,7 @@ async def main() -> None:
         if envelope.origin == "discord" and envelope.command == "info":
             async with SessionLocal() as session:
                 repo = Repository(session)
-                active = await repo.get_active_session(internal_user_id)
+                active = await repo.get_active_session(internal_user_id, origin="discord")
             if active is None:
                 await transport.send_message(envelope.channel_id, "No active session found.")
                 return

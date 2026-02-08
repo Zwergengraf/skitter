@@ -22,6 +22,13 @@ ALTER TABLE sessions
     ADD COLUMN IF NOT EXISTS model TEXT;
 
 ALTER TABLE sessions
+    ADD COLUMN IF NOT EXISTS origin TEXT;
+
+UPDATE sessions
+SET origin = 'discord'
+WHERE origin IS NULL;
+
+ALTER TABLE sessions
     ADD COLUMN IF NOT EXISTS context_summary TEXT;
 
 ALTER TABLE sessions
@@ -101,9 +108,28 @@ CREATE TABLE IF NOT EXISTS memory_entries (
 CREATE INDEX IF NOT EXISTS memory_entries_user_id_idx
     ON memory_entries (user_id);
 
-CREATE INDEX IF NOT EXISTS memory_entries_embedding_cosine_idx
-    ON memory_entries USING ivfflat (embedding vector_cosine_ops)
-    WITH (lists = 100);
+DO $$
+DECLARE
+    embedding_typmod INTEGER;
+BEGIN
+    SELECT a.atttypmod
+    INTO embedding_typmod
+    FROM pg_attribute a
+    JOIN pg_class c ON c.oid = a.attrelid
+    JOIN pg_namespace n ON n.oid = c.relnamespace
+    WHERE c.relname = 'memory_entries'
+      AND n.nspname = current_schema()
+      AND a.attname = 'embedding'
+      AND a.attnum > 0
+      AND NOT a.attisdropped;
+
+    -- pgvector ANN indexes require a fixed-dimension vector column.
+    IF embedding_typmod IS NOT NULL AND embedding_typmod > 0 THEN
+        EXECUTE 'CREATE INDEX IF NOT EXISTS memory_entries_embedding_cosine_idx
+                 ON memory_entries USING ivfflat (embedding vector_cosine_ops)
+                 WITH (lists = 100)';
+    END IF;
+END $$;
 
 CREATE TABLE IF NOT EXISTS secrets (
     id TEXT PRIMARY KEY,

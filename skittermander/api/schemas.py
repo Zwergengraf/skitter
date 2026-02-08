@@ -8,6 +8,8 @@ from pydantic import BaseModel, Field
 
 class SessionCreate(BaseModel):
     user_id: str
+    origin: str = "web"
+    reuse_active: bool = True
 
 
 class SessionOut(BaseModel):
@@ -93,12 +95,20 @@ class MessageCreate(BaseModel):
     metadata: Dict[str, Any] = Field(default_factory=dict)
 
 
+class AttachmentOut(BaseModel):
+    filename: str
+    content_type: str
+    url: str | None = None
+    download_url: str | None = None
+
+
 class MessageOut(BaseModel):
     id: str
     session_id: str
     role: str
     content: str
     created_at: datetime
+    attachments: list[AttachmentOut] = Field(default_factory=list)
 
 
 class ToolApprovalRequest(BaseModel):

@@ -2,15 +2,45 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime
+from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi.responses import FileResponse, RedirectResponse
 
 from ..deps import get_repo
 from ..schemas import MessageCreate, MessageOut
-from ...core.models import MessageEnvelope
+from ...core.models import Attachment, MessageEnvelope
+from ...core.workspace import user_workspace_root
 from ...data.repositories import Repository
 
 router = APIRouter(prefix="/v1/messages", tags=["messages"])
+
+def _serialize_runtime_attachments(attachments: list[Attachment]) -> list[dict]:
+    items: list[dict] = []
+    for attachment in attachments:
+        items.append(
+            {
+                "filename": attachment.filename,
+                "content_type": attachment.content_type or "application/octet-stream",
+                "url": attachment.url,
+                "path": attachment.path,
+            }
+        )
+    return items
+
+
+def _attachments_for_response(message_id: str, items: list[dict]) -> list[dict]:
+    response_items: list[dict] = []
+    for idx, item in enumerate(items):
+        response_items.append(
+            {
+                "filename": str(item.get("filename") or "attachment"),
+                "content_type": str(item.get("content_type") or "application/octet-stream"),
+                "url": item.get("url"),
+                "download_url": f"/v1/messages/{message_id}/attachments/{idx}",
+            }
+        )
+    return response_items
 
 
 @router.post("", response_model=MessageOut)
@@ -46,13 +76,66 @@ async def send_message(
 
     runtime = request.app.state.runtime
     response = await runtime.handle_message(payload.session_id, envelope)
+    serialized_attachments = _serialize_runtime_attachments(response.attachments)
+    assistant_meta = {"response_to": envelope.message_id}
+    if serialized_attachments:
+        assistant_meta["attachments"] = serialized_attachments
     assistant_msg = await repo.add_message(
-        payload.session_id, role="assistant", content=response.text, metadata={"response_to": envelope.message_id}
+        payload.session_id, role="assistant", content=response.text, metadata=assistant_meta
     )
+    response_attachments = _attachments_for_response(assistant_msg.id, serialized_attachments)
     return MessageOut(
         id=assistant_msg.id,
         session_id=assistant_msg.session_id,
         role=assistant_msg.role,
         content=assistant_msg.content,
         created_at=assistant_msg.created_at,
+        attachments=response_attachments,
     )
+
+
+@router.get("/{message_id}/attachments/{attachment_index}")
+async def get_message_attachment(
+    message_id: str,
+    attachment_index: int,
+    repo: Repository = Depends(get_repo),
+):
+    message = await repo.get_message(message_id)
+    if message is None:
+        raise HTTPException(status_code=404, detail="Message not found")
+    session = await repo.get_session(message.session_id)
+    if session is None:
+        raise HTTPException(status_code=404, detail="Session not found")
+    meta = message.meta or {}
+    attachments = meta.get("attachments")
+    if not isinstance(attachments, list):
+        raise HTTPException(status_code=404, detail="Attachment not found")
+    if attachment_index < 0 or attachment_index >= len(attachments):
+        raise HTTPException(status_code=404, detail="Attachment not found")
+    item = attachments[attachment_index]
+    if not isinstance(item, dict):
+        raise HTTPException(status_code=404, detail="Attachment not found")
+
+    url = str(item.get("url") or "").strip()
+    path_str = str(item.get("path") or "").strip()
+    if path_str:
+        workspace_root = user_workspace_root(session.user_id).resolve()
+        candidate = Path(path_str)
+        try:
+            resolved = candidate.resolve(strict=False)
+        except OSError as exc:
+            raise HTTPException(status_code=404, detail="Attachment not found") from exc
+        try:
+            resolved.relative_to(workspace_root)
+        except ValueError as exc:
+            raise HTTPException(status_code=403, detail="Attachment path is not allowed") from exc
+        if not resolved.exists() or not resolved.is_file():
+            raise HTTPException(status_code=404, detail="Attachment file missing")
+        filename = str(item.get("filename") or resolved.name)
+        content_type = str(item.get("content_type") or "application/octet-stream")
+        return FileResponse(path=resolved, filename=filename, media_type=content_type)
+
+    if url:
+        return RedirectResponse(url=url, status_code=307)
+
+    raise HTTPException(status_code=404, detail="Attachment not found")

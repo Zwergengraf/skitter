@@ -170,7 +170,12 @@ class SchedulerService:
             async with SessionLocal() as session:
                 repo = Repository(session)
                 model_name = resolve_model_name(None, purpose="main")
-                session_obj = await repo.create_session(job.user_id, status="scheduled", model=model_name)
+                session_obj = await repo.create_session(
+                    job.user_id,
+                    status="scheduled",
+                    model=model_name,
+                    origin="scheduler",
+                )
                 session_id = session_obj.id
 
             envelope = MessageEnvelope(

@@ -92,14 +92,35 @@ class Repository:
         result = await self.session.execute(select(User).where(User.id == user_id))
         return result.scalar_one_or_none()
 
-    async def create_session(self, user_id: str, status: str = "active", model: str | None = None) -> Session:
-        session = Session(id=str(uuid.uuid4()), user_id=user_id, status=status, model=model)
+    async def create_session(
+        self,
+        user_id: str,
+        status: str = "active",
+        model: str | None = None,
+        origin: str = "discord",
+    ) -> Session:
+        # Enforce a single active session per user+origin so transports can keep separate active sessions.
+        if status == "active":
+            existing_result = await self.session.execute(
+                select(Session).where(
+                    Session.user_id == user_id,
+                    Session.status == "active",
+                    Session.origin == origin,
+                )
+            )
+            for existing in existing_result.scalars().all():
+                existing.status = "ended"
+        session = Session(id=str(uuid.uuid4()), user_id=user_id, status=status, model=model, origin=origin)
         self.session.add(session)
         await self.session.commit()
         return session
 
     async def get_session(self, session_id: str) -> Optional[Session]:
         result = await self.session.execute(select(Session).where(Session.id == session_id))
+        return result.scalar_one_or_none()
+
+    async def get_message(self, message_id: str) -> Optional[Message]:
+        result = await self.session.execute(select(Message).where(Message.id == message_id))
         return result.scalar_one_or_none()
 
     async def set_session_model(self, session_id: str, model: str) -> Optional[Session]:
@@ -128,10 +149,11 @@ class Repository:
         await self.session.commit()
         return session
 
-    async def get_active_session(self, user_id: str) -> Optional[Session]:
-        result = await self.session.execute(
-            select(Session).where(Session.user_id == user_id, Session.status == "active").order_by(Session.created_at.desc())
-        )
+    async def get_active_session(self, user_id: str, origin: str | None = None) -> Optional[Session]:
+        stmt = select(Session).where(Session.user_id == user_id, Session.status == "active")
+        if origin:
+            stmt = stmt.where(Session.origin == origin)
+        result = await self.session.execute(stmt.order_by(Session.created_at.desc()))
         return result.scalars().first()
 
     async def get_latest_session_by_status(self, user_id: str, status: str) -> Optional[Session]:
