@@ -3,7 +3,6 @@ from __future__ import annotations
 from pathlib import Path
 from typing import List
 import re
-import math
 
 import logging
 
@@ -257,34 +256,32 @@ class MemoryService:
             self._logger.exception("Memory search embedding failed: %s", exc)
             return []
 
+        limit = max(1, min(top_k, 10))
         async with SessionLocal() as session:
             repo = Repository(session)
-            entries = await repo.list_memory_entries(user_id)
+            min_score = settings.memory_min_similarity
+            rows = await repo.search_memory_entries_pgvector(
+                user_id=user_id,
+                query_embedding=query_vec,
+                top_k=limit,
+                min_similarity=min_score,
+            )
 
-        scored: list[tuple[float, object]] = []
-        for entry in entries:
-            score = self._cosine_similarity(query_vec, entry.embedding)
-            scored.append((score, entry))
-        scored.sort(key=lambda item: item[0], reverse=True)
-
-        min_score = settings.memory_min_similarity
-        limit = max(1, min(top_k, 10))
         results: list[dict] = []
-        for score, entry in scored:
-            if score < min_score:
-                continue
-            source = self._extract_tag_value(entry.tags or [], "file:") or "(unknown)"
+        for row in rows:
+            tags = row.get("tags") or []
+            source = self._extract_tag_value(tags, "file:") or "(unknown)"
+            created_at = row.get("created_at")
+            score = float(row.get("score") or 0.0)
             results.append(
                 {
                     "score": round(score, 4),
-                    "summary": entry.summary,
-                    "tags": entry.tags,
+                    "summary": str(row.get("summary") or ""),
+                    "tags": tags,
                     "source": source,
-                    "created_at": entry.created_at.isoformat(),
+                    "created_at": created_at.isoformat() if hasattr(created_at, "isoformat") else str(created_at),
                 }
             )
-            if len(results) >= limit:
-                break
         return results
 
     def _extract_tag_value(self, tags: list, prefix: str) -> str:
@@ -292,15 +289,3 @@ class MemoryService:
             if isinstance(tag, str) and tag.startswith(prefix):
                 return tag[len(prefix) :]
         return ""
-
-    def _cosine_similarity(self, a: list[float], b: list[float]) -> float:
-        if not a or not b:
-            return 0.0
-        if len(a) != len(b):
-            return 0.0
-        dot = sum(x * y for x, y in zip(a, b))
-        norm_a = math.sqrt(sum(x * x for x in a))
-        norm_b = math.sqrt(sum(y * y for y in b))
-        if norm_a == 0.0 or norm_b == 0.0:
-            return 0.0
-        return dot / (norm_a * norm_b)

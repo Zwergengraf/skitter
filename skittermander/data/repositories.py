@@ -2,9 +2,9 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime, timedelta
-from typing import List, Optional
+from typing import Any, List, Optional
 
-from sqlalchemy import func, select
+from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from .models import (
@@ -420,6 +420,45 @@ class Repository:
     async def list_memory_entries(self, user_id: str) -> List[MemoryEntry]:
         result = await self.session.execute(select(MemoryEntry).where(MemoryEntry.user_id == user_id))
         return list(result.scalars().all())
+
+    async def search_memory_entries_pgvector(
+        self,
+        user_id: str,
+        query_embedding: list[float],
+        top_k: int,
+        min_similarity: float,
+    ) -> list[dict[str, Any]]:
+        if not query_embedding:
+            return []
+        limit = max(1, min(int(top_k), 10))
+        query_vector = "[" + ",".join(f"{float(value):.12g}" for value in query_embedding) + "]"
+        stmt = text(
+            """
+            SELECT
+              id,
+              user_id,
+              embedding,
+              summary,
+              tags,
+              created_at,
+              (1 - (embedding <=> CAST(:query_vector AS vector))) AS score
+            FROM memory_entries
+            WHERE user_id = :user_id
+              AND (1 - (embedding <=> CAST(:query_vector AS vector))) >= :min_similarity
+            ORDER BY (embedding <=> CAST(:query_vector AS vector)) ASC
+            LIMIT :limit
+            """
+        )
+        result = await self.session.execute(
+            stmt,
+            {
+                "user_id": user_id,
+                "query_vector": query_vector,
+                "min_similarity": float(min_similarity),
+                "limit": limit,
+            },
+        )
+        return [dict(row) for row in result.mappings().all()]
 
     async def delete_memory_by_tag(self, user_id: str, tag: str) -> int:
         entries = await self.list_memory_entries(user_id)

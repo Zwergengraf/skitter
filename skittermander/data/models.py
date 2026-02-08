@@ -4,6 +4,7 @@ from datetime import datetime
 
 from sqlalchemy import JSON, Integer, String, Text, Float
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
+from pgvector.sqlalchemy import Vector
 
 
 class Base(DeclarativeBase):
@@ -84,7 +85,7 @@ class MemoryEntry(Base):
 
     id: Mapped[str] = mapped_column(String, primary_key=True)
     user_id: Mapped[str] = mapped_column(String, index=True)
-    embedding: Mapped[list] = mapped_column(JSON, default=list)
+    embedding: Mapped[list[float]] = mapped_column(Vector(), nullable=False)
     summary: Mapped[str] = mapped_column(Text)
     tags: Mapped[list] = mapped_column(JSON, default=list)
     created_at: Mapped[datetime] = mapped_column(default=datetime.utcnow)

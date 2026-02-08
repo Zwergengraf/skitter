@@ -1,3 +1,5 @@
+CREATE EXTENSION IF NOT EXISTS vector;
+
 CREATE TABLE IF NOT EXISTS users (
     id TEXT PRIMARY KEY,
     transport_user_id TEXT NOT NULL,
@@ -90,11 +92,18 @@ CREATE TABLE IF NOT EXISTS tool_runs (
 CREATE TABLE IF NOT EXISTS memory_entries (
     id TEXT PRIMARY KEY,
     user_id TEXT NOT NULL,
-    embedding JSONB NOT NULL DEFAULT '[]'::jsonb,
+    embedding vector NOT NULL,
     summary TEXT NOT NULL,
     tags JSONB NOT NULL DEFAULT '[]'::jsonb,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+
+CREATE INDEX IF NOT EXISTS memory_entries_user_id_idx
+    ON memory_entries (user_id);
+
+CREATE INDEX IF NOT EXISTS memory_entries_embedding_cosine_idx
+    ON memory_entries USING ivfflat (embedding vector_cosine_ops)
+    WITH (lists = 100);
 
 CREATE TABLE IF NOT EXISTS secrets (
     id TEXT PRIMARY KEY,
