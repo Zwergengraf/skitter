@@ -28,20 +28,6 @@ class MessageEnvelope:
 
 
 @dataclass
-class ToolCall:
-    name: str
-    input: Dict[str, Any]
-    approval_required: bool = True
-
-
-@dataclass
-class ToolResult:
-    name: str
-    output: Dict[str, Any]
-    status: str
-
-
-@dataclass
 class StreamEvent:
     session_id: str
     type: str

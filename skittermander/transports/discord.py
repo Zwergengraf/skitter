@@ -1,6 +1,4 @@
 from __future__ import annotations
-
-import asyncio
 import io
 import json
 from datetime import datetime
@@ -10,13 +8,9 @@ import discord
 from discord import app_commands
 
 from ..core.config import settings
-from ..core.events import EventBus
-from ..core.runtime import AgentRuntime
-from ..core.sessions import SessionManager
 from ..data.db import SessionLocal
 from ..data.repositories import Repository
 from ..tools.approval_service import ToolApprovalService
-from ..tools.sandbox_manager import sandbox_manager
 from ..core.models import Attachment, MessageEnvelope
 from .base import EventHandler, TransportAdapter
 
@@ -324,158 +318,3 @@ class DiscordTransport(TransportAdapter):
                         guild_id=str(guild.id),
                         guild_name=guild.name,
                     )
-
-
-async def _run() -> None:
-    event_bus = EventBus()
-    approval_service = ToolApprovalService(event_bus)
-    from ..core.scheduler import SchedulerService
-
-    runtime = AgentRuntime(event_bus, approval_service=approval_service)
-    transport = DiscordTransport()
-    transport.set_approval_service(approval_service)
-    approval_service.set_notifier(transport.send_approval_request)
-    scheduler = SchedulerService(runtime)
-    runtime.set_scheduler_service(scheduler)
-    async def _deliver(channel_id: str, text: str, attachments: list) -> None:
-        await transport.send_message(channel_id, text, attachments)
-    scheduler.set_deliver(_deliver)
-    await scheduler.start()
-    if sandbox_manager is not None:
-        await sandbox_manager.start()
-
-    session_manager = SessionManager(runtime, settings.workspace_root)
-
-    def _format_memory_search_results(query: str, results: list[dict]) -> str:
-        if not results:
-            return f"No memory results found for query: `{query}`"
-        lines = [f"Memory search results for `{query}`:"]
-        for idx, item in enumerate(results, start=1):
-            score = float(item.get("score", 0.0))
-            source = str(item.get("source") or "(unknown)")
-            summary = str(item.get("summary") or "").strip().replace("\n", " ")
-            if len(summary) > 260:
-                summary = summary[:257] + "..."
-            lines.append(f"{idx}. similarity={score:.4f} | source={source}")
-            lines.append(f"   {summary}")
-        text = "\n".join(lines)
-        if len(text) > 1900:
-            text = text[:1897] + "..."
-        return text
-
-    async def handler(envelope: MessageEnvelope) -> None:
-        async with SessionLocal() as session:
-            repo = Repository(session)
-            user = await repo.get_or_create_user(envelope.user_id)
-            if not user.approved:
-                if not (user.meta or {}).get("approval_notified"):
-                    await transport.send_message(
-                        envelope.channel_id,
-                        "Your account is not yet approved. An admin has to approve it first.",
-                    )
-                    await repo.mark_user_notified(user.id)
-                envelope.metadata["suppress_ack"] = True
-                return
-            envelope.metadata["internal_user_id"] = user.id
-
-        await transport.send_typing(envelope.channel_id)
-
-        if envelope.command == "new":
-            summary_path, new_session_id = await session_manager.start_new_session(
-                user_id=envelope.metadata.get("internal_user_id", envelope.user_id),
-                channel_id=envelope.channel_id,
-            )
-            if summary_path:
-                await transport.send_message(
-                    envelope.channel_id,
-                    f"Started a new session. Summary saved to `{summary_path.name}`.",
-                )
-            else:
-                await transport.send_message(envelope.channel_id, "Started a new session.")
-            return
-
-        if envelope.command == "memory_reindex":
-            stats = await session_manager.reindex_memories(envelope.metadata.get("internal_user_id", envelope.user_id))
-            await transport.send_message(
-                envelope.channel_id,
-                f"Memory reindex complete. Indexed: {stats['indexed']}, skipped: {stats['skipped']}, removed: {stats['removed']}.",
-            )
-            return
-
-        if envelope.command == "memory_search":
-            query = str((envelope.metadata or {}).get("query") or "").strip()
-            if not query:
-                envelope.metadata["ephemeral_response"] = "Query is required."
-                envelope.metadata["suppress_ack"] = True
-                return
-            results = await session_manager.search_memories(
-                envelope.metadata.get("internal_user_id", envelope.user_id),
-                query,
-                top_k=5,
-            )
-            envelope.metadata["ephemeral_response"] = _format_memory_search_results(query, results)
-            envelope.metadata["suppress_ack"] = True
-            return
-
-        if envelope.command == "schedule_list":
-            async with SessionLocal() as session:
-                repo = Repository(session)
-                user = await repo.get_or_create_user(envelope.user_id)
-            jobs = await scheduler.list_jobs(user.id)
-            lines = [f"{j['id']} | {j['name']} | {j['cron']} | {'on' if j['enabled'] else 'off'}" for j in jobs]
-            await transport.send_message(envelope.channel_id, "Scheduled jobs:\n" + "\n".join(lines))
-            return
-
-        if envelope.command in {"schedule_delete", "schedule_pause", "schedule_resume"}:
-            job_id = envelope.metadata.get("job_id")
-            if not job_id:
-                await transport.send_message(envelope.channel_id, "Job id is required.")
-                return
-            if envelope.command == "schedule_delete":
-                result = await scheduler.delete_job(job_id)
-            elif envelope.command == "schedule_pause":
-                result = await scheduler.update_job(job_id, enabled=False)
-            else:
-                result = await scheduler.update_job(job_id, enabled=True)
-            await transport.send_message(envelope.channel_id, json.dumps(result))
-            return
-
-        session_id = await session_manager.get_or_create_session(
-            envelope.metadata.get("internal_user_id", envelope.user_id),
-            envelope.channel_id,
-        )
-
-        async with SessionLocal() as session:
-            repo = Repository(session)
-            metadata = dict(envelope.metadata)
-            metadata.update({"message_id": envelope.message_id, "origin": envelope.origin})
-            if envelope.attachments:
-                attachments_meta = [
-                    {
-                        "filename": attachment.filename,
-                        "url": attachment.url,
-                        "content_type": attachment.content_type or "",
-                    }
-                    for attachment in envelope.attachments
-                    if attachment.url
-                ]
-                if attachments_meta:
-                    metadata["attachments"] = attachments_meta
-                    envelope.metadata["attachments"] = attachments_meta
-            await repo.add_message(session_id, role="user", content=envelope.text, metadata=metadata)
-
-        response = await runtime.handle_message(session_id, envelope)
-        if response.text or response.attachments:
-            await transport.send_message(envelope.channel_id, response.text, attachments=response.attachments)
-            async with SessionLocal() as session:
-                repo = Repository(session)
-                await repo.add_message(
-                    session_id, role="assistant", content=response.text, metadata={"response_to": envelope.message_id}
-                )
-
-    transport.on_event(handler)
-    await transport.start()
-
-
-if __name__ == "__main__":
-    asyncio.run(_run())

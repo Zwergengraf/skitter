@@ -204,6 +204,25 @@ def build_graph(
         await _complete_tool_run(tool_run_id, "failed", {"error": message})
         return message
 
+    async def _execute_sandbox_tool(
+        tool_name: str,
+        tool_run_id: str | None,
+        payload: dict[str, Any],
+        timeout: float | None = None,
+    ) -> tuple[Any | None, str | None]:
+        try:
+            result = await client.execute(_user_id(), _session_id(), tool_name, payload, timeout=timeout)
+        except httpx.HTTPStatusError as exc:
+            detail = exc.response.text
+            await _complete_tool_run(tool_run_id, "failed", {"error": detail})
+            return None, f"{tool_name} error: {detail}"
+        except httpx.RequestError as exc:
+            detail = str(exc)
+            await _complete_tool_run(tool_run_id, "failed", {"error": detail})
+            return None, f"{tool_name} error: {detail}"
+        await _complete_tool_run(tool_run_id, "completed", result if isinstance(result, dict) else {"result": result})
+        return result, None
+
     @tool("read")
     async def read(
         path: Optional[str] = None,
@@ -223,12 +242,9 @@ def build_graph(
         decision = await _maybe_approve("read", payload, approval_service, policy)
         if not decision.approved:
             return _denied_message("read")
-        try:
-            result = await client.execute(_user_id(), _session_id(), "read", payload)
-        except httpx.HTTPStatusError as exc:
-            await _complete_tool_run(decision.tool_run_id, "failed", {"error": exc.response.text})
-            return f"read error: {exc.response.text}"
-        await _complete_tool_run(decision.tool_run_id, "completed", result if isinstance(result, dict) else {"result": result})
+        result, error = await _execute_sandbox_tool("read", decision.tool_run_id, payload)
+        if error:
+            return error
         if isinstance(result, dict):
             content_type = str(result.get("content_type") or "").lower()
             file_path = str(result.get("file_path") or "")
@@ -258,12 +274,9 @@ def build_graph(
         decision = await _maybe_approve("write", payload, approval_service, policy)
         if not decision.approved:
             return _denied_message("write")
-        try:
-            result = await client.execute(_user_id(), _session_id(), "write", payload)
-        except httpx.HTTPStatusError as exc:
-            await _complete_tool_run(decision.tool_run_id, "failed", {"error": exc.response.text})
-            return f"write error: {exc.response.text}"
-        await _complete_tool_run(decision.tool_run_id, "completed", result if isinstance(result, dict) else {"result": result})
+        result, error = await _execute_sandbox_tool("write", decision.tool_run_id, payload)
+        if error:
+            return error
         return json.dumps(result)
 
     @tool("edit")
@@ -289,12 +302,9 @@ def build_graph(
         decision = await _maybe_approve("edit", payload, approval_service, policy)
         if not decision.approved:
             return _denied_message("edit")
-        try:
-            result = await client.execute(_user_id(), _session_id(), "edit", payload)
-        except httpx.HTTPStatusError as exc:
-            await _complete_tool_run(decision.tool_run_id, "failed", {"error": exc.response.text})
-            return f"edit error: {exc.response.text}"
-        await _complete_tool_run(decision.tool_run_id, "completed", result if isinstance(result, dict) else {"result": result})
+        result, error = await _execute_sandbox_tool("edit", decision.tool_run_id, payload)
+        if error:
+            return error
         return json.dumps(result)
 
     @tool("list")
@@ -311,12 +321,9 @@ def build_graph(
         decision = await _maybe_approve("list", payload, approval_service, policy)
         if not decision.approved:
             return _denied_message("list")
-        try:
-            result = await client.execute(_user_id(), _session_id(), "list", payload)
-        except httpx.HTTPStatusError as exc:
-            await _complete_tool_run(decision.tool_run_id, "failed", {"error": exc.response.text})
-            return f"list error: {exc.response.text}"
-        await _complete_tool_run(decision.tool_run_id, "completed", result if isinstance(result, dict) else {"result": result})
+        result, error = await _execute_sandbox_tool("list", decision.tool_run_id, payload)
+        if error:
+            return error
         return json.dumps(result)
 
     @tool("delete")
@@ -333,12 +340,9 @@ def build_graph(
         decision = await _maybe_approve("delete", payload, approval_service, policy)
         if not decision.approved:
             return _denied_message("delete")
-        try:
-            result = await client.execute(_user_id(), _session_id(), "delete", payload)
-        except httpx.HTTPStatusError as exc:
-            await _complete_tool_run(decision.tool_run_id, "failed", {"error": exc.response.text})
-            return f"delete error: {exc.response.text}"
-        await _complete_tool_run(decision.tool_run_id, "completed", result if isinstance(result, dict) else {"result": result})
+        result, error = await _execute_sandbox_tool("delete", decision.tool_run_id, payload)
+        if error:
+            return error
         return json.dumps(result)
 
     @tool("download")
@@ -352,12 +356,9 @@ def build_graph(
         decision = await _maybe_approve("download", payload, approval_service, policy)
         if not decision.approved:
             return _denied_message("download")
-        try:
-            result = await client.execute(_user_id(), _session_id(), "download", payload)
-        except httpx.HTTPStatusError as exc:
-            await _complete_tool_run(decision.tool_run_id, "failed", {"error": exc.response.text})
-            return f"download error: {exc.response.text}"
-        await _complete_tool_run(decision.tool_run_id, "completed", result if isinstance(result, dict) else {"result": result})
+        result, error = await _execute_sandbox_tool("download", decision.tool_run_id, payload)
+        if error:
+            return error
         return json.dumps(result)
 
     @tool("http_fetch")
@@ -367,12 +368,9 @@ def build_graph(
         decision = await _maybe_approve("http_fetch", payload, approval_service, policy)
         if not decision.approved:
             return _denied_message("http_fetch")
-        try:
-            result = await client.execute(_user_id(), _session_id(), "http_fetch", payload)
-        except httpx.HTTPStatusError as exc:
-            await _complete_tool_run(decision.tool_run_id, "failed", {"error": exc.response.text})
-            return f"http_fetch error: {exc.response.text}"
-        await _complete_tool_run(decision.tool_run_id, "completed", result if isinstance(result, dict) else {"result": result})
+        result, error = await _execute_sandbox_tool("http_fetch", decision.tool_run_id, payload)
+        if error:
+            return error
         return json.dumps(result)
 
     @tool("browser")
@@ -398,12 +396,9 @@ def build_graph(
         decision = await _maybe_approve("browser", payload, approval_service, policy)
         if not decision.approved:
             return _denied_message("browser")
-        try:
-            result = await client.execute(_user_id(), _session_id(), "browser", payload)
-        except httpx.HTTPStatusError as exc:
-            await _complete_tool_run(decision.tool_run_id, "failed", {"error": exc.response.text})
-            return f"browser error: {exc.response.text}"
-        await _complete_tool_run(decision.tool_run_id, "completed", result if isinstance(result, dict) else {"result": result})
+        result, error = await _execute_sandbox_tool("browser", decision.tool_run_id, payload)
+        if error:
+            return error
         return json.dumps(result)
 
     @tool("browser_action")
@@ -459,16 +454,15 @@ def build_graph(
         decision = await _maybe_approve("browser_action", payload, approval_service, policy)
         if not decision.approved:
             return _denied_message("browser_action")
-        try:
-            timeout_s = max(60, int(timeout_ms / 1000) + 15)
-            result = await client.execute(_user_id(), _session_id(), "browser_action", payload, timeout=timeout_s)
-        except httpx.HTTPStatusError as exc:
-            await _complete_tool_run(decision.tool_run_id, "failed", {"error": exc.response.text})
-            return f"browser_action error: {exc.response.text}"
-        except httpx.ReadTimeout:
-            await _complete_tool_run(decision.tool_run_id, "failed", {"error": "sandbox timed out"})
-            return "browser_action error: sandbox timed out"
-        await _complete_tool_run(decision.tool_run_id, "completed", result if isinstance(result, dict) else {"result": result})
+        timeout_s = max(60, int(timeout_ms / 1000) + 15)
+        result, error = await _execute_sandbox_tool(
+            "browser_action",
+            decision.tool_run_id,
+            payload,
+            timeout=timeout_s,
+        )
+        if error:
+            return error
         return json.dumps(result)
 
     @tool("shell")
@@ -529,12 +523,9 @@ def build_graph(
             if not decision.approved:
                 return _denied_message("shell")
             exec_payload = payload
-        try:
-            result = await client.execute(_user_id(), _session_id(), "shell", exec_payload)
-        except httpx.HTTPStatusError as exc:
-            await _complete_tool_run(decision.tool_run_id, "failed", {"error": exc.response.text})
-            return f"shell error: {exc.response.text}"
-        await _complete_tool_run(decision.tool_run_id, "completed", result if isinstance(result, dict) else {"result": result})
+        result, error = await _execute_sandbox_tool("shell", decision.tool_run_id, exec_payload)
+        if error:
+            return error
         return json.dumps(result)
 
     @tool("create_secret")
@@ -612,6 +603,9 @@ def build_graph(
         except httpx.HTTPStatusError as exc:
             await _complete_tool_run(tool_run_id, "failed", {"error": exc.response.text})
             return f"web_search error: {exc.response.text}"
+        except httpx.RequestError as exc:
+            await _complete_tool_run(tool_run_id, "failed", {"error": str(exc)})
+            return f"web_search error: {exc}"
         results = []
         for item in (data.get("web", {}).get("results") or []):
             results.append(
@@ -641,6 +635,9 @@ def build_graph(
         except httpx.HTTPStatusError as exc:
             await _complete_tool_run(tool_run_id, "failed", {"error": exc.response.text})
             return f"web_fetch error: {exc.response.text}"
+        except httpx.RequestError as exc:
+            await _complete_tool_run(tool_run_id, "failed", {"error": str(exc)})
+            return f"web_fetch error: {exc}"
         doc = Document(html)
         content_html = doc.summary()
         if extractMode == "text":

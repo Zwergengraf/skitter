@@ -529,7 +529,7 @@ def create_app() -> FastAPI:
                         tab = context.pages[int(index)]
                     except (IndexError, ValueError) as exc:
                         raise HTTPException(status_code=400, detail="invalid tab index") from exc
-                    _pages[session_id] = tab
+                    _pages[profile_id] = tab
                     await tab.bring_to_front()
                     return {"status": "ok", "url": tab.url}
 
@@ -543,7 +543,7 @@ def create_app() -> FastAPI:
                         raise HTTPException(status_code=400, detail="invalid tab index") from exc
                     await tab.close()
                     pages = context.pages
-                    _pages[session_id] = pages[0] if pages else await context.new_page()
+                    _pages[profile_id] = pages[0] if pages else await context.new_page()
                     return {"status": "ok"}
 
                 if action == "click":

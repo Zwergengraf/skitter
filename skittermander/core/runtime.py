@@ -656,8 +656,7 @@ class AgentRuntime:
         ]
         if not prompt:
             return
-        print("Using system prompt:"
-              f"\n{'-'*40}\n{prompt}\n{'-'*40}")
+        _logger.debug("Loaded system prompt for user_id=%s (%d chars)", user_id, len(prompt))
         history.insert(0, SystemMessage(content=prompt, additional_kwargs={"system_prompt": True}))
 
     def _serialize_attachments(self, attachments: list[Attachment]) -> list[dict]:
@@ -857,17 +856,8 @@ class AgentRuntime:
         return resolved
 
     def _resolve_workspace_path(self, user_id: str, raw_path: str) -> Path | None:
-        if not raw_path:
-            return None
-        path = Path(raw_path)
-        from .workspace import user_workspace_root
-
-        workspace = user_workspace_root(user_id)
-        if raw_path.startswith("/workspace/"):
-            return workspace / Path(raw_path).relative_to("/workspace")
-        if path.is_absolute():
-            return path
-        return workspace / path
+        # Keep all attachment resolution confined to the current user's workspace.
+        return self._resolve_user_workspace_file(user_id, raw_path)
 
     def _strip_attachment_paths(self, text: str) -> str:
         if not text:
