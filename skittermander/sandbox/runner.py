@@ -214,6 +214,23 @@ def create_app() -> FastAPI:
             return ""
         return raw.replace(b"\x00", b" ").decode("utf-8", errors="replace").strip()
 
+    def _is_internal_process(cmdline: str) -> bool:
+        lowered = cmdline.lower()
+        # Playwright driver and Chromium/Brave helper processes are internal runtime infrastructure.
+        internal_markers = (
+            "playwright/driver/package/cli.js run-driver",
+            "/playwright/driver/node",
+            "chrome_crashpad_handler",
+            "--type=zygote",
+            "--type=gpu-process",
+            "--type=utility",
+            "--type=renderer",
+            "--remote-debugging-pipe",
+            "chromium",
+            "brave-browser",
+        )
+        return any(marker in lowered for marker in internal_markers)
+
     def _list_non_runner_processes() -> list[dict[str, Any]]:
         proc_root = Path("/proc")
         self_pid = os.getpid()
@@ -234,6 +251,8 @@ def create_app() -> FastAPI:
                 continue
             cmdline = _read_process_cmdline(entry)
             if not cmdline:
+                continue
+            if _is_internal_process(cmdline):
                 continue
             results.append({"pid": pid, "state": state, "cmdline": cmdline})
         return results
