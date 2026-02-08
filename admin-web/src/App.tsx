@@ -75,6 +75,9 @@ export default function App() {
   const [toolRunsData, setToolRunsData] = useState<ToolRunListItem[]>([]);
   const [toolRunsError, setToolRunsError] = useState<string | null>(null);
   const [toolRunsLoading, setToolRunsLoading] = useState<boolean>(false);
+  const [selectedToolRun, setSelectedToolRun] = useState<ToolRunListItem | null>(null);
+  const [toolRunToolFilter, setToolRunToolFilter] = useState<string>("all");
+  const [toolRunUserFilter, setToolRunUserFilter] = useState<string>("all");
   const [memoryData, setMemoryData] = useState<MemoryEntry[]>([]);
   const [memoryError, setMemoryError] = useState<string | null>(null);
   const [memoryLoading, setMemoryLoading] = useState<boolean>(false);
@@ -262,6 +265,7 @@ export default function App() {
 
   useEffect(() => {
     if (active !== "tools") {
+      setSelectedToolRun(null);
       return;
     }
     refreshToolRuns();
@@ -717,6 +721,42 @@ export default function App() {
     return match?.id ?? value;
   };
 
+  const toolRunTools = useMemo(() => {
+    return Array.from(
+      new Set(toolRunsData.map((tool) => tool.tool).filter((tool): tool is string => Boolean(tool)))
+    ).sort((a, b) => a.localeCompare(b));
+  }, [toolRunsData]);
+
+  const toolRunUsers = useMemo(() => {
+    return Array.from(
+      new Set(
+        toolRunsData
+          .map((tool) => tool.requested_by)
+          .filter((userId): userId is string => Boolean(userId))
+      )
+    ).sort((a, b) => userLabelFor(a).localeCompare(userLabelFor(b)));
+  }, [toolRunsData, usersData]);
+
+  const filteredToolRuns = useMemo(() => {
+    return toolRunsData.filter((tool) => {
+      if (toolRunToolFilter !== "all" && tool.tool !== toolRunToolFilter) {
+        return false;
+      }
+      if (toolRunUserFilter !== "all" && tool.requested_by !== toolRunUserFilter) {
+        return false;
+      }
+      return true;
+    });
+  }, [toolRunsData, toolRunToolFilter, toolRunUserFilter]);
+
+  const formatFullJson = (value: unknown) => {
+    try {
+      return JSON.stringify(value ?? {}, null, 2);
+    } catch {
+      return String(value ?? "");
+    }
+  };
+
   useEffect(() => {
     if (!jobDialogOpen) {
       return;
@@ -1125,6 +1165,44 @@ export default function App() {
                 />
               </CardHeader>
               <CardContent className="space-y-4">
+                <div className="flex flex-wrap items-center gap-3">
+                  <Select value={toolRunToolFilter} onValueChange={setToolRunToolFilter}>
+                    <SelectTrigger className="w-52">
+                      <SelectValue placeholder="Filter by tool" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="all">All tools</SelectItem>
+                      {toolRunTools.map((toolName) => (
+                        <SelectItem key={toolName} value={toolName}>
+                          {toolName}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  <Select value={toolRunUserFilter} onValueChange={setToolRunUserFilter}>
+                    <SelectTrigger className="w-64">
+                      <SelectValue placeholder="Filter by user" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="all">All users</SelectItem>
+                      {toolRunUsers.map((userId) => (
+                        <SelectItem key={userId} value={userId}>
+                          {userLabelFor(userId)}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => {
+                      setToolRunToolFilter("all");
+                      setToolRunUserFilter("all");
+                    }}
+                  >
+                    Clear filters
+                  </Button>
+                </div>
                 {toolRunsLoading ? (
                   <div className="rounded-2xl border border-dashed border-border bg-muted/40 px-4 py-6 text-sm text-mutedForeground">
                     Loading tool runs...
@@ -1133,11 +1211,12 @@ export default function App() {
                   <div className="rounded-2xl border border-dashed border-border bg-muted/40 px-4 py-6 text-sm text-mutedForeground">
                     {toolRunsError}
                   </div>
-                ) : toolRunsData.length ? (
-                  toolRunsData.map((tool) => (
+                ) : filteredToolRuns.length ? (
+                  filteredToolRuns.map((tool) => (
                     <div
                       key={tool.id}
-                      className="rounded-2xl border border-border bg-card px-5 py-4"
+                      className="cursor-pointer rounded-2xl border border-border bg-card px-5 py-4 transition-colors hover:bg-muted/20"
+                      onClick={() => setSelectedToolRun(tool)}
                     >
                       <div className="flex flex-wrap items-center justify-between gap-4">
                         <div>
@@ -1160,6 +1239,16 @@ export default function App() {
                         >
                           {tool.status}
                         </Badge>
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            setSelectedToolRun(tool);
+                          }}
+                        >
+                          Details
+                        </Button>
                       </div>
                       <div className="mt-4 grid gap-3 text-xs text-mutedForeground md:grid-cols-3">
                         <div>
@@ -1174,7 +1263,10 @@ export default function App() {
                           <p className="uppercase tracking-[0.2em] text-mutedForeground">Session</p>
                           <button
                             className="mt-1 text-sm text-primary underline-offset-4 hover:underline"
-                            onClick={() => openSessionDetail(tool.session_id)}
+                            onClick={(event) => {
+                              event.stopPropagation();
+                              openSessionDetail(tool.session_id);
+                            }}
                           >
                             View session
                           </button>
@@ -1202,7 +1294,7 @@ export default function App() {
                   ))
                 ) : (
                   <div className="rounded-2xl border border-dashed border-border bg-muted/40 px-4 py-6 text-sm text-mutedForeground">
-                    No tool runs found.
+                    {toolRunsData.length ? "No tool runs match the selected filters." : "No tool runs found."}
                   </div>
                 )}
               </CardContent>
@@ -2131,6 +2223,83 @@ export default function App() {
               </ScrollArea>
             </CardContent>
           </Card>
+        )}
+
+        {selectedToolRun && (
+          <Dialog
+            open={Boolean(selectedToolRun)}
+            onOpenChange={(open) => {
+              if (!open) {
+                setSelectedToolRun(null);
+              }
+            }}
+          >
+            <DialogContent className="w-[98vw] max-w-[1700px] max-h-[92vh] overflow-hidden p-0">
+              <div className="border-b border-border p-6">
+                <DialogHeader>
+                  <DialogTitle>Tool Run Details</DialogTitle>
+                  <DialogDescription>
+                    Full input and output payload for `{selectedToolRun.tool}`.
+                  </DialogDescription>
+                </DialogHeader>
+              </div>
+              <div className="grid gap-4 border-b border-border p-6 md:grid-cols-4">
+                <div className="rounded-2xl border border-border bg-card p-4">
+                  <p className="text-xs uppercase tracking-[0.2em] text-mutedForeground">Tool</p>
+                  <p className="mt-2 text-sm font-semibold">{selectedToolRun.tool}</p>
+                </div>
+                <div className="rounded-2xl border border-border bg-card p-4">
+                  <p className="text-xs uppercase tracking-[0.2em] text-mutedForeground">Status</p>
+                  <div className="mt-2">
+                    <Badge
+                      variant={
+                        selectedToolRun.status === "pending"
+                          ? "warning"
+                          : selectedToolRun.status === "running"
+                          ? "secondary"
+                          : selectedToolRun.status === "failed"
+                          ? "danger"
+                          : "success"
+                      }
+                    >
+                      {selectedToolRun.status}
+                    </Badge>
+                  </div>
+                </div>
+                <div className="rounded-2xl border border-border bg-card p-4">
+                  <p className="text-xs uppercase tracking-[0.2em] text-mutedForeground">Requested by</p>
+                  <div className="mt-2">{renderUser(selectedToolRun.requested_by)}</div>
+                </div>
+                <div className="rounded-2xl border border-border bg-card p-4">
+                  <p className="text-xs uppercase tracking-[0.2em] text-mutedForeground">Created</p>
+                  <p className="mt-2 text-sm">{formatRelativeTime(selectedToolRun.created_at)}</p>
+                </div>
+              </div>
+              <div className="grid min-h-0 flex-1 gap-4 p-6 md:grid-cols-2">
+                <div className="min-h-0">
+                  <p className="text-xs font-semibold uppercase tracking-[0.2em] text-mutedForeground">Input</p>
+                  <ScrollArea className="mt-2 h-[52vh] rounded-2xl border border-border bg-muted/40 p-3">
+                    <pre className="text-xs text-foreground whitespace-pre-wrap">
+                      {formatFullJson(selectedToolRun.input)}
+                    </pre>
+                  </ScrollArea>
+                </div>
+                <div className="min-h-0">
+                  <p className="text-xs font-semibold uppercase tracking-[0.2em] text-mutedForeground">Output</p>
+                  <ScrollArea className="mt-2 h-[52vh] rounded-2xl border border-border bg-muted/40 p-3">
+                    <pre className="text-xs text-foreground whitespace-pre-wrap">
+                      {formatFullJson(selectedToolRun.output)}
+                    </pre>
+                  </ScrollArea>
+                </div>
+              </div>
+              <div className="flex justify-end border-t border-border p-4">
+                <Button variant="outline" onClick={() => setSelectedToolRun(null)}>
+                  Close
+                </Button>
+              </div>
+            </DialogContent>
+          </Dialog>
         )}
 
         {selectedSessionId && (
