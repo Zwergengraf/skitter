@@ -52,9 +52,9 @@ users:
   approved_message: Hey! I just came online. Who am I? Who are you?
 heartbeat:
   enabled: true
-  interval_minutes: 30
+  interval_minutes: 15
   history_runs: 5
-  prompt: Follow these instructions in the following file (HEARTBEAT.md) strictly. Do not infer or repeat old tasks from prior chats. If nothing needs attention, reply HEARTBEAT_OK.
+  prompt: "Follow these instructions from the file `HEARTBEAT.md` strictly. Do not infer or repeat old tasks from prior chats. If nothing needs attention, reply with: HEARTBEAT_OK"
   quiet_hours_start: "23:00"
   quiet_hours_end: "08:00"
 workspace:
