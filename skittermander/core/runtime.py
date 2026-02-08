@@ -28,8 +28,9 @@ from .graph import (
     set_current_user_id,
 )
 from .models import AgentResponse, Attachment, MessageEnvelope, StreamEvent
-from .llm import build_llm, resolve_model, resolve_model_name
+from .llm import build_llm, resolve_model_name
 from .prompting import build_system_prompt
+from .usage import collect_usage, record_usage
 from ..tools.approval_service import ToolApprovalService
 from ..core.embeddings import EmbeddingsClient
 from ..data.db import SessionLocal
@@ -130,9 +131,9 @@ class AgentRuntime:
                     response = msg.content
                     break
 
-            usage = self._collect_usage(messages, envelope.message_id)
+            usage = collect_usage(messages, envelope.message_id)
             if usage is not None:
-                await self._record_usage(session_id, internal_user_id, model_name, usage)
+                await record_usage(session_id, internal_user_id, model_name, usage)
         finally:
             reset_current_origin(token_origin)
             reset_current_user_id(token_user)
@@ -486,99 +487,6 @@ class AgentRuntime:
         async with SessionLocal() as session:
             repo = Repository(session)
             await repo.set_session_context_summary(session_id, new_summary, checkpoint)
-
-    def _usage_from_message(self, msg: AIMessage) -> tuple[int, int, int] | None:
-        usage_meta = getattr(msg, "usage_metadata", None)
-        if isinstance(usage_meta, dict):
-            input_tokens = usage_meta.get("input_tokens") or usage_meta.get("prompt_tokens") or 0
-            output_tokens = usage_meta.get("output_tokens") or usage_meta.get("completion_tokens") or 0
-            total_tokens = usage_meta.get("total_tokens")
-            if total_tokens is None:
-                total_tokens = input_tokens + output_tokens
-            if input_tokens or output_tokens or total_tokens:
-                return int(input_tokens), int(output_tokens), int(total_tokens)
-        meta = getattr(msg, "response_metadata", None) or {}
-        if isinstance(meta, dict):
-            token_usage = meta.get("token_usage") or meta.get("usage") or {}
-            if isinstance(token_usage, dict):
-                input_tokens = token_usage.get("prompt_tokens") or token_usage.get("input_tokens") or 0
-                output_tokens = token_usage.get("completion_tokens") or token_usage.get("output_tokens") or 0
-                total_tokens = token_usage.get("total_tokens")
-                if total_tokens is None:
-                    total_tokens = input_tokens + output_tokens
-                if input_tokens or output_tokens or total_tokens:
-                    return int(input_tokens), int(output_tokens), int(total_tokens)
-        return None
-
-    def _collect_usage(self, messages: list[BaseMessage], message_id: str | None) -> dict | None:
-        if not messages:
-            return None
-        start_idx = None
-        if message_id:
-            for idx in range(len(messages) - 1, -1, -1):
-                msg = messages[idx]
-                if isinstance(msg, HumanMessage) and msg.additional_kwargs.get("message_id") == message_id:
-                    start_idx = idx
-                    break
-        slice_messages = messages[start_idx + 1 :] if start_idx is not None else messages
-        total_input = 0
-        total_output = 0
-        total_tokens = 0
-        last = None
-        for msg in slice_messages:
-            if not isinstance(msg, AIMessage):
-                continue
-            usage = self._usage_from_message(msg)
-            if usage is None:
-                continue
-            input_tokens, output_tokens, total = usage
-            total_input += input_tokens
-            total_output += output_tokens
-            total_tokens += total
-            last = usage
-        if total_input == 0 and total_output == 0 and total_tokens == 0:
-            return None
-        last_input, last_output, last_total = last if last else (0, 0, 0)
-        return {
-            "input_tokens": total_input,
-            "output_tokens": total_output,
-            "total_tokens": total_tokens,
-            "last_input_tokens": last_input,
-            "last_output_tokens": last_output,
-            "last_total_tokens": last_total,
-        }
-
-    async def _record_usage(
-        self,
-        session_id: str,
-        user_id: str,
-        model_name: str,
-        usage: dict,
-    ) -> None:
-        try:
-            resolved = resolve_model(model_name)
-        except RuntimeError:
-            return
-        input_tokens = int(usage.get("input_tokens") or 0)
-        output_tokens = int(usage.get("output_tokens") or 0)
-        total_tokens = int(usage.get("total_tokens") or 0)
-        cost = (input_tokens / 1_000_000.0) * resolved.input_cost_per_1m + (
-            output_tokens / 1_000_000.0
-        ) * resolved.output_cost_per_1m
-        async with SessionLocal() as session:
-            repo = Repository(session)
-            await repo.record_llm_usage(
-                session_id=session_id,
-                user_id=user_id,
-                model=resolved.name,
-                input_tokens=input_tokens,
-                output_tokens=output_tokens,
-                total_tokens=total_tokens,
-                cost=cost,
-                last_input_tokens=int(usage.get("last_input_tokens") or 0),
-                last_output_tokens=int(usage.get("last_output_tokens") or 0),
-                last_total_tokens=int(usage.get("last_total_tokens") or 0),
-            )
 
     async def summarize_session(self, session_id: str) -> str:
         await self._ensure_history(session_id)

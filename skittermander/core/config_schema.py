@@ -407,6 +407,36 @@ FIELDS: list[ConfigFieldSpec] = [
         maximum=32,
         step=1,
     ),
+    ConfigFieldSpec(
+        key="subagent_timeout_seconds",
+        path=("sub_agents", "timeout_seconds"),
+        category="sub_agents",
+        label="Worker timeout (sec)",
+        field_type="number",
+        minimum=10,
+        maximum=3600,
+        step=5,
+    ),
+    ConfigFieldSpec(
+        key="subagent_max_tasks_per_batch",
+        path=("sub_agents", "max_tasks_per_batch"),
+        category="sub_agents",
+        label="Max batch size",
+        field_type="number",
+        minimum=1,
+        maximum=64,
+        step=1,
+    ),
+    ConfigFieldSpec(
+        key="subagent_transcript_chars",
+        path=("sub_agents", "transcript_chars"),
+        category="sub_agents",
+        label="Transcript chars",
+        field_type="number",
+        minimum=1000,
+        maximum=200000,
+        step=500,
+    ),
 ]
 
 

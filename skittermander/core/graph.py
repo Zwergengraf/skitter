@@ -15,6 +15,9 @@ from langchain.tools import tool
 
 from .config import settings
 from .llm import build_llm
+from .llm import resolve_model_name
+from .prompting import build_system_prompt
+from .subagents import SubAgentResult, SubAgentService, SubAgentTaskSpec
 from ..tools.approval_service import ApprovalDecision, ToolApprovalService
 from ..core.scheduler import SchedulerService
 from ..tools.middleware import ToolApprovalPolicy
@@ -126,11 +129,24 @@ def build_graph(
     scheduler_service: SchedulerService | None = None,
     model_name: str | None = None,
     purpose: str = "main",
+    include_subagent_tools: bool = True,
 ):
     client = ToolRunnerClient()
     policy = ToolApprovalPolicy()
     embedder = EmbeddingsClient()
     memory_service = MemoryService(embedder=embedder)
+    worker_model_name = model_name or resolve_model_name(None, purpose="main")
+    subagent_service: SubAgentService | None = None
+    if include_subagent_tools:
+        subagent_service = SubAgentService(
+            graph_factory=lambda worker_model: build_graph(
+                approval_service=approval_service,
+                scheduler_service=scheduler_service,
+                model_name=worker_model,
+                purpose="main",
+                include_subagent_tools=False,
+            )
+        )
 
     def _coalesce_path(path: Optional[str], file_path: Optional[str]) -> Optional[str]:
         if path and path.strip():
@@ -179,6 +195,24 @@ def build_graph(
 
     def _denied_message(tool_name: str) -> str:
         return f"{tool_name} denied: Request was denied by the user, please ask them for clarification."
+
+    def _subagent_manager_result(result: SubAgentResult) -> dict[str, Any]:
+        return {
+            "name": result.name,
+            "status": result.status,
+            "final_text": result.final_text,
+            "error": result.error,
+            "usage": result.usage,
+            "artifacts": result.artifacts,
+        }
+
+    def _subagent_summary(result: SubAgentResult) -> str:
+        if result.status == "completed":
+            text = (result.final_text or "").strip()
+            if len(text) > 320:
+                text = text[:317].rstrip() + "..."
+            return text or "Completed with no final text."
+        return result.error or "Sub-agent did not complete."
 
     async def _create_auto_tool_run(tool_name: str, payload: dict[str, Any]) -> str:
         async with SessionLocal() as session:
@@ -774,28 +808,164 @@ def build_graph(
         await _complete_tool_run(tool_run_id, "completed", output)
         return json.dumps(output)
 
+    @tool("sub_agent")
+    async def sub_agent(
+        task: str,
+        name: Optional[str] = None,
+        context: Optional[str] = None,
+        acceptance_criteria: Optional[str] = None,
+    ) -> str:
+        """Delegate a focused task to a single sub-agent worker."""
+        payload: dict[str, Any] = {
+            "task": task,
+            "name": name,
+            "context": context,
+            "acceptance_criteria": acceptance_criteria,
+        }
+        if not task or not task.strip():
+            return await _fail_untracked_call("sub_agent", payload, "sub_agent error: task is required")
+        if subagent_service is None:
+            return await _fail_untracked_call("sub_agent", payload, "sub_agent error: sub-agent service unavailable")
+        decision = await _maybe_approve("sub_agent", payload, approval_service, policy)
+        if not decision.approved:
+            return _denied_message("sub_agent")
+
+        spec = SubAgentTaskSpec(
+            task=task.strip(),
+            name=(name or "").strip() or None,
+            context=(context or "").strip() or None,
+            acceptance_criteria=(acceptance_criteria or "").strip() or None,
+        )
+        result = await subagent_service.run_one(
+            user_id=_user_id(),
+            session_id=_session_id(),
+            model_name=worker_model_name,
+            system_prompt=build_system_prompt(_user_id()),
+            spec=spec,
+        )
+        output = {
+            "worker": result.to_dict(),
+            "summary": _subagent_summary(result),
+        }
+        status = "completed" if result.status == "completed" else "failed"
+        await _complete_tool_run(decision.tool_run_id, status, output)
+        return json.dumps(
+            {
+                "worker": _subagent_manager_result(result),
+                "summary": _subagent_summary(result),
+            }
+        )
+
+    @tool("sub_agent_batch")
+    async def sub_agent_batch(tasks: list[dict[str, Any]]) -> str:
+        """Delegate multiple focused tasks to sub-agents and run them concurrently."""
+        payload: dict[str, Any] = {"tasks": tasks}
+        if subagent_service is None:
+            return await _fail_untracked_call(
+                "sub_agent_batch",
+                payload,
+                "sub_agent_batch error: sub-agent service unavailable",
+            )
+        if not isinstance(tasks, list) or not tasks:
+            return await _fail_untracked_call(
+                "sub_agent_batch",
+                payload,
+                "sub_agent_batch error: tasks must be a non-empty list",
+            )
+        max_batch = max(1, int(settings.subagent_max_tasks_per_batch))
+        if len(tasks) > max_batch:
+            return await _fail_untracked_call(
+                "sub_agent_batch",
+                payload,
+                f"sub_agent_batch error: batch size exceeds configured max ({max_batch})",
+            )
+
+        specs: list[SubAgentTaskSpec] = []
+        for idx, item in enumerate(tasks, start=1):
+            if not isinstance(item, dict):
+                return await _fail_untracked_call(
+                    "sub_agent_batch",
+                    payload,
+                    f"sub_agent_batch error: task #{idx} must be an object",
+                )
+            task_value = str(item.get("task") or "").strip()
+            if not task_value:
+                return await _fail_untracked_call(
+                    "sub_agent_batch",
+                    payload,
+                    f"sub_agent_batch error: task #{idx} is missing task text",
+                )
+            specs.append(
+                SubAgentTaskSpec(
+                    task=task_value,
+                    name=str(item.get("name") or "").strip() or None,
+                    context=str(item.get("context") or "").strip() or None,
+                    acceptance_criteria=str(item.get("acceptance_criteria") or "").strip() or None,
+                )
+            )
+
+        decision = await _maybe_approve("sub_agent_batch", payload, approval_service, policy)
+        if not decision.approved:
+            return _denied_message("sub_agent_batch")
+
+        results = await subagent_service.run_batch(
+            user_id=_user_id(),
+            session_id=_session_id(),
+            model_name=worker_model_name,
+            system_prompt=build_system_prompt(_user_id()),
+            specs=specs,
+        )
+        summary_rows = [
+            {
+                "name": result.name,
+                "status": result.status,
+                "summary": _subagent_summary(result),
+            }
+            for result in results
+        ]
+        completed_count = sum(1 for result in results if result.status == "completed")
+        failed_count = sum(1 for result in results if result.status == "failed")
+        timeout_count = sum(1 for result in results if result.status == "timeout")
+        aggregate = {
+            "total": len(results),
+            "completed": completed_count,
+            "failed": failed_count,
+            "timeout": timeout_count,
+        }
+        output = {
+            "results": [result.to_dict() for result in results],
+            "summary": summary_rows,
+            "aggregate": aggregate,
+        }
+        status = "completed" if failed_count == 0 and timeout_count == 0 else "failed"
+        await _complete_tool_run(decision.tool_run_id, status, output)
+        return json.dumps({"results": summary_rows, "aggregate": aggregate})
+
     model = build_llm(model_name=model_name, purpose=purpose)
+    tools = [
+        read,
+        write,
+        edit,
+        list_files,
+        delete,
+        download,
+        http_fetch,
+        browser,
+        browser_action,
+        shell,
+        create_secret,
+        memory_search,
+        web_search,
+        web_fetch,
+        schedule_create,
+        schedule_update,
+        schedule_delete,
+        schedule_list,
+    ]
+    if include_subagent_tools:
+        tools.extend([sub_agent, sub_agent_batch])
     return create_agent(
         model,
-        tools=[
-            read,
-            write,
-            edit,
-            list_files,
-            delete,
-            download,
-            http_fetch,
-            browser,
-            browser_action,
-            shell,
-            create_secret,
-            memory_search,
-            web_search,
-            web_fetch,
-            schedule_create,
-            schedule_update,
-            schedule_delete,
-            schedule_list,
-        ],
+        tools=tools,
         system_prompt=None,
     )

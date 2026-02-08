@@ -742,9 +742,6 @@ def create_app() -> FastAPI:
 
                 raise HTTPException(status_code=400, detail="Unknown browser_action")
 
-        if req.tool == "sub_agent":
-            return {"status": "pending", "detail": "Sub-agent tool is handled by the main runtime"}
-
         raise HTTPException(status_code=400, detail="Unknown tool")
 
     @app.get("/health")

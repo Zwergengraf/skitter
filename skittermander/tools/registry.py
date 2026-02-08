@@ -185,7 +185,31 @@ def default_registry() -> ToolRegistry:
         ToolSpec(
             name="sub_agent",
             description="Spawn a sub-agent",
-            input_schema={"type": "object", "properties": {"prompt": {"type": "string"}}},
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "task": {"type": "string"},
+                    "name": {"type": "string"},
+                    "context": {"type": "string"},
+                    "acceptance_criteria": {"type": "string"},
+                },
+            },
+            requires_approval=True,
+        )
+    )
+    registry.register(
+        ToolSpec(
+            name="sub_agent_batch",
+            description="Run multiple sub-agent tasks concurrently",
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "tasks": {
+                        "type": "array",
+                        "items": {"type": "object"},
+                    }
+                },
+            },
             requires_approval=True,
         )
     )

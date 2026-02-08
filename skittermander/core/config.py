@@ -77,8 +77,13 @@ class Settings(BaseSettings):
     sandbox_connect_backoff: float = Field(default=0.5)
 
     max_sub_agents: int = Field(default=4)
+    subagent_timeout_seconds: int = Field(default=180)
+    subagent_max_tasks_per_batch: int = Field(default=8)
+    subagent_transcript_chars: int = Field(default=12000)
     tool_approval_required: bool = Field(default=True)
-    tool_approval_tools: str = Field(default="read,write,edit,list,delete,download,browser,browser_action,sub_agent,shell,create_secret")
+    tool_approval_tools: str = Field(
+        default="read,write,edit,list,delete,download,browser,browser_action,sub_agent,sub_agent_batch,shell,create_secret"
+    )
     cors_origins: str = Field(default="http://localhost:5173")
     config_path: str = Field(default="config.yaml")
     prompt_path: str = Field(default="system_prompt.md")

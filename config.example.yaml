@@ -79,7 +79,11 @@ tools:
   - download
   - browser
   - sub_agent
+  - sub_agent_batch
   - shell
   - create_secret
 sub_agents:
   max_concurrent: 4
+  timeout_seconds: 180
+  max_tasks_per_batch: 8
+  transcript_chars: 12000
