@@ -61,28 +61,32 @@ class SkitterTuiApp(App[None]):
     }
 
     #status {
-        height: 3;
-        padding: 0 2;
-        border: tall;
+        height: 1;
+        padding: 0 1;
+        color: $text-muted;
+        background: transparent;
+        border: none;
     }
 
     #chat {
         height: 1fr;
         margin: 0 1;
-        border: round;
+        background: transparent;
+        border: none;
     }
 
     #input {
-        margin: 1 1 1 1;
-        border: round;
+        margin: 0 1 1 1;
+        background: transparent;
+        border: round #4c5563;
     }
     """
 
-    PANEL_USER_STYLE = "cyan"
-    PANEL_ASSISTANT_STYLE = "green"
-    PANEL_SYSTEM_STYLE = "yellow"
+    PANEL_USER_STYLE = "#5f7fb8"
+    PANEL_ASSISTANT_STYLE = "#5f9d8a"
+    PANEL_SYSTEM_STYLE = "grey42"
     PANEL_ERROR_STYLE = "red"
-    PANEL_OTHER_STYLE = "magenta"
+    PANEL_OTHER_STYLE = "#6c7482"
 
     BINDINGS = [
         ("ctrl+c", "quit", "Quit"),
@@ -464,7 +468,12 @@ class SkitterTuiApp(App[None]):
         chat = self.query_one("#chat", RichLog)
         ts = timestamp or datetime.now().strftime("%H:%M:%S")
         markdown = Markdown(text)
-        panel = Panel(markdown, title=f"{title} {ts}", border_style=border_style)
+        panel = Panel(
+            markdown,
+            title=f"{title} {ts}",
+            border_style=border_style,
+            title_align="left",
+        )
         chat.write(panel)
         chat.scroll_end(animate=False)
 
@@ -481,6 +490,6 @@ class SkitterTuiApp(App[None]):
     def _update_status(self, title: str, detail: str) -> None:
         status = self.query_one("#status", Static)
         if detail:
-            status.update(f"{title}\n{detail}")
+            status.update(f"{title} · {detail}")
         else:
             status.update(title)
