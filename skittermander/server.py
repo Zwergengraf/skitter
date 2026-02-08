@@ -37,6 +37,24 @@ def _serialize_attachments(attachments: list) -> list[dict]:
     return serialized
 
 
+def _format_memory_search_results(query: str, results: list[dict]) -> str:
+    if not results:
+        return f"No memory results found for query: `{query}`"
+    lines = [f"Memory search results for `{query}`:"]
+    for idx, item in enumerate(results, start=1):
+        score = float(item.get("score", 0.0))
+        source = str(item.get("source") or "(unknown)")
+        summary = str(item.get("summary") or "").strip().replace("\n", " ")
+        if len(summary) > 260:
+            summary = summary[:257] + "..."
+        lines.append(f"{idx}. similarity={score:.4f} | source={source}")
+        lines.append(f"   {summary}")
+    text = "\n".join(lines)
+    if len(text) > 1900:
+        text = text[:1897] + "..."
+    return text
+
+
 async def main() -> None:
     app = create_app()
     runtime: AgentRuntime = app.state.runtime
@@ -116,6 +134,16 @@ async def main() -> None:
                 envelope.channel_id,
                 f"Memory reindex complete. Indexed: {stats['indexed']}, skipped: {stats['skipped']}, removed: {stats['removed']}.",
             )
+            return
+        if envelope.origin == "discord" and envelope.command == "memory_search":
+            query = str((envelope.metadata or {}).get("query") or "").strip()
+            if not query:
+                envelope.metadata["ephemeral_response"] = "Query is required."
+                envelope.metadata["suppress_ack"] = True
+                return
+            results = await session_manager.search_memories(internal_user_id, query, top_k=5)
+            envelope.metadata["ephemeral_response"] = _format_memory_search_results(query, results)
+            envelope.metadata["suppress_ack"] = True
             return
         if envelope.origin == "discord" and envelope.command == "schedule_list":
             async with SessionLocal() as session:

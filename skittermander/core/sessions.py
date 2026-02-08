@@ -57,6 +57,9 @@ class SessionManager:
         memory_root = user_workspace_root(user_id) / "memory"
         return await self.memory_service.reindex_all(user_id, memory_root)
 
+    async def search_memories(self, user_id: str, query: str, top_k: int = 5) -> list[dict]:
+        return await self.memory_service.search(user_id, query, top_k)
+
     def _write_summary(self, user_id: str, summary: str, session_id: str) -> tuple[Path, str]:
         memory_root = user_workspace_root(user_id) / "memory"
         memory_root.mkdir(parents=True, exist_ok=True)

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import math
 import base64
 from pathlib import Path
 from contextvars import ContextVar, Token
@@ -23,6 +22,7 @@ from ..tools.sandbox_client import ToolRunnerClient
 from ..data.db import SessionLocal
 from ..data.repositories import Repository
 from .embeddings import EmbeddingsClient
+from .memory_service import MemoryService
 from .workspace import user_workspace_root
 from .secrets import SecretsManager
 
@@ -130,6 +130,7 @@ def build_graph(
     client = ToolRunnerClient()
     policy = ToolApprovalPolicy()
     embedder = EmbeddingsClient()
+    memory_service = MemoryService(embedder=embedder)
 
     def _coalesce_path(path: Optional[str], file_path: Optional[str]) -> Optional[str]:
         if path and path.strip():
@@ -759,18 +760,6 @@ def build_graph(
         await _complete_tool_run(tool_run_id, "completed", output)
         return json.dumps(output)
 
-    def _cosine_similarity(a: list[float], b: list[float]) -> float:
-        if not a or not b:
-            return 0.0
-        if len(a) != len(b):
-            return 0.0
-        dot = sum(x * y for x, y in zip(a, b))
-        norm_a = math.sqrt(sum(x * x for x in a))
-        norm_b = math.sqrt(sum(y * y for y in b))
-        if norm_a == 0.0 or norm_b == 0.0:
-            return 0.0
-        return dot / (norm_a * norm_b)
-
     @tool("memory_search")
     async def memory_search(query: str, top_k: int = 5) -> str:
         """Search memories (content of the folder `memory`) by semantic similarity."""
@@ -780,37 +769,10 @@ def build_graph(
             await _complete_tool_run(tool_run_id, "failed", {"error": "query is required"})
             return "memory_search error: query is required"
         try:
-            query_vec = await embedder.embed_query(query)
+            results = await memory_service.search(_user_id(), query, top_k)
         except Exception as exc:
             await _complete_tool_run(tool_run_id, "failed", {"error": str(exc)})
             return f"memory_search error: {exc}"
-        async with SessionLocal() as session:
-            repo = Repository(session)
-            user = await repo.get_user_by_id(_user_id())
-            if user is None:
-                await _complete_tool_run(tool_run_id, "failed", {"error": "user not found"})
-                return "memory_search error: user not found"
-            entries = await repo.list_memory_entries(user.id)
-        scored = []
-        for entry in entries:
-            score = _cosine_similarity(query_vec, entry.embedding)
-            scored.append((score, entry))
-        scored.sort(key=lambda item: item[0], reverse=True)
-        min_score = settings.memory_min_similarity
-        results = []
-        for score, entry in scored:
-            if score < min_score:
-                continue
-            results.append(
-                {
-                    "score": round(score, 4),
-                    "summary": entry.summary,
-                    "tags": entry.tags,
-                    "created_at": entry.created_at.isoformat(),
-                }
-            )
-            if len(results) >= max(1, min(top_k, 10)):
-                break
         output = {"query": query, "results": results}
         await _complete_tool_run(tool_run_id, "completed", output)
         return json.dumps(output)

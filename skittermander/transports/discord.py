@@ -117,6 +117,15 @@ class DiscordTransport(TransportAdapter):
         async def memory_reindex(interaction: discord.Interaction) -> None:
             await self._handle_command(interaction, "memory_reindex")
 
+        @self.tree.command(name="memory_search", description="Search indexed memory by semantic similarity")
+        async def memory_search(interaction: discord.Interaction, query: str) -> None:
+            await self._handle_command(
+                interaction,
+                "memory_search",
+                extra={"query": query},
+                ephemeral=True,
+            )
+
         @self.tree.command(name="schedule_list", description="List scheduled jobs")
         async def schedule_list(interaction: discord.Interaction) -> None:
             await self._handle_command(interaction, "schedule_list")
@@ -241,11 +250,17 @@ class DiscordTransport(TransportAdapter):
         message = await channel.send(content, view=view)
         view.message = message
 
-    async def _handle_command(self, interaction: discord.Interaction, command: str, extra: dict | None = None) -> None:
+    async def _handle_command(
+        self,
+        interaction: discord.Interaction,
+        command: str,
+        extra: dict | None = None,
+        ephemeral: bool = False,
+    ) -> None:
         if self._handler is None:
             await interaction.response.send_message("Handler is not configured.")
             return
-        await interaction.response.defer(thinking=True)
+        await interaction.response.defer(thinking=True, ephemeral=ephemeral)
         await self._record_interaction(interaction)
         envelope = MessageEnvelope(
             message_id=str(interaction.id),
@@ -259,6 +274,10 @@ class DiscordTransport(TransportAdapter):
             metadata=extra or {},
         )
         await self._handler(envelope)
+        ephemeral_response = envelope.metadata.get("ephemeral_response")
+        if ephemeral_response:
+            await interaction.followup.send(str(ephemeral_response), ephemeral=True)
+            return
         if envelope.metadata.get("suppress_ack"):
             return
         if interaction.response.is_done():
@@ -327,6 +346,23 @@ async def _run() -> None:
 
     session_manager = SessionManager(runtime, settings.workspace_root)
 
+    def _format_memory_search_results(query: str, results: list[dict]) -> str:
+        if not results:
+            return f"No memory results found for query: `{query}`"
+        lines = [f"Memory search results for `{query}`:"]
+        for idx, item in enumerate(results, start=1):
+            score = float(item.get("score", 0.0))
+            source = str(item.get("source") or "(unknown)")
+            summary = str(item.get("summary") or "").strip().replace("\n", " ")
+            if len(summary) > 260:
+                summary = summary[:257] + "..."
+            lines.append(f"{idx}. similarity={score:.4f} | source={source}")
+            lines.append(f"   {summary}")
+        text = "\n".join(lines)
+        if len(text) > 1900:
+            text = text[:1897] + "..."
+        return text
+
     async def handler(envelope: MessageEnvelope) -> None:
         async with SessionLocal() as session:
             repo = Repository(session)
@@ -364,6 +400,21 @@ async def _run() -> None:
                 envelope.channel_id,
                 f"Memory reindex complete. Indexed: {stats['indexed']}, skipped: {stats['skipped']}, removed: {stats['removed']}.",
             )
+            return
+
+        if envelope.command == "memory_search":
+            query = str((envelope.metadata or {}).get("query") or "").strip()
+            if not query:
+                envelope.metadata["ephemeral_response"] = "Query is required."
+                envelope.metadata["suppress_ack"] = True
+                return
+            results = await session_manager.search_memories(
+                envelope.metadata.get("internal_user_id", envelope.user_id),
+                query,
+                top_k=5,
+            )
+            envelope.metadata["ephemeral_response"] = _format_memory_search_results(query, results)
+            envelope.metadata["suppress_ack"] = True
             return
 
         if envelope.command == "schedule_list":

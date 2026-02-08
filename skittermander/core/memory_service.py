@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import List
 import re
+import math
 
 import logging
 
@@ -246,3 +247,60 @@ class MemoryService:
                     removed += 1
 
         return {"indexed": indexed, "skipped": skipped, "removed": removed}
+
+    async def search(self, user_id: str, query: str, top_k: int = 5) -> list[dict]:
+        if not query.strip():
+            return []
+        try:
+            query_vec = await self.embedder.embed_query(query)
+        except Exception as exc:  # pragma: no cover - network errors
+            self._logger.exception("Memory search embedding failed: %s", exc)
+            return []
+
+        async with SessionLocal() as session:
+            repo = Repository(session)
+            entries = await repo.list_memory_entries(user_id)
+
+        scored: list[tuple[float, object]] = []
+        for entry in entries:
+            score = self._cosine_similarity(query_vec, entry.embedding)
+            scored.append((score, entry))
+        scored.sort(key=lambda item: item[0], reverse=True)
+
+        min_score = settings.memory_min_similarity
+        limit = max(1, min(top_k, 10))
+        results: list[dict] = []
+        for score, entry in scored:
+            if score < min_score:
+                continue
+            source = self._extract_tag_value(entry.tags or [], "file:") or "(unknown)"
+            results.append(
+                {
+                    "score": round(score, 4),
+                    "summary": entry.summary,
+                    "tags": entry.tags,
+                    "source": source,
+                    "created_at": entry.created_at.isoformat(),
+                }
+            )
+            if len(results) >= limit:
+                break
+        return results
+
+    def _extract_tag_value(self, tags: list, prefix: str) -> str:
+        for tag in tags:
+            if isinstance(tag, str) and tag.startswith(prefix):
+                return tag[len(prefix) :]
+        return ""
+
+    def _cosine_similarity(self, a: list[float], b: list[float]) -> float:
+        if not a or not b:
+            return 0.0
+        if len(a) != len(b):
+            return 0.0
+        dot = sum(x * y for x, y in zip(a, b))
+        norm_a = math.sqrt(sum(x * x for x in a))
+        norm_b = math.sqrt(sum(y * y for y in b))
+        if norm_a == 0.0 or norm_b == 0.0:
+            return 0.0
+        return dot / (norm_a * norm_b)
