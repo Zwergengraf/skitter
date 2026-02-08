@@ -4,8 +4,6 @@ from pathlib import Path
 from typing import List
 import re
 
-import hashlib
-import json
 import logging
 
 from .config import settings
@@ -177,7 +175,7 @@ class MemoryService:
         return sections
 
     def _is_hidden_or_internal(self, path: Path) -> bool:
-        return path.name.startswith(".") or path.name == ".index.json"
+        return path.name.startswith(".")
 
     def _is_indexable_file(self, path: Path) -> bool:
         if self._is_hidden_or_internal(path):
@@ -185,7 +183,6 @@ class MemoryService:
         return path.suffix.lower() in {".md", ".txt"}
 
     async def index_file(self, user_id: str, session_id: str | None, path: Path, force: bool = False) -> bool:
-        memory_root = path.parent
         async with SessionLocal() as session:
             repo = Repository(session)
             await repo.delete_memory_by_tag(user_id, f"file:{path.name}")
@@ -201,16 +198,10 @@ class MemoryService:
                 indexed += await self.index_text(user_id, section_session_id, path.name, section_text)
         else:
             indexed = await self.index_text(user_id, session_id, path.name, text)
-        if indexed > 0:
-            index = self._load_index(memory_root)
-            index[path.name] = self._hash_file(path)
-            self._save_index(memory_root, index)
         return indexed > 0
 
     async def reindex_all(self, user_id: str, memory_root: Path) -> dict:
         memory_root.mkdir(parents=True, exist_ok=True)
-        index = self._load_index(memory_root)
-        print(f"File names in index: {list(index.keys())}")
         current_files = {
             p.name: p
             for p in memory_root.iterdir()
@@ -228,32 +219,30 @@ class MemoryService:
             else:
                 skipped += 1
 
-        removed_files = [name for name in index.keys() if name not in current_files]
+        async with SessionLocal() as session:
+            repo = Repository(session)
+            entries = await repo.list_memory_entries(user_id)
+
+        db_files: set[str] = set()
+        for entry in entries:
+            tags = entry.tags or []
+            if not isinstance(tags, list):
+                continue
+            for tag in tags:
+                if isinstance(tag, str) and tag.startswith("file:") and len(tag) > 5:
+                    db_files.add(tag[5:])
+
+        removed_files = sorted(name for name in db_files if name not in current_files)
         if removed_files:
-            print(f"Removing {len(removed_files)} deleted files from memory index: {removed_files}")
+            self._logger.info(
+                "Removing %d stale memory file tag(s) missing on disk: %s",
+                len(removed_files),
+                removed_files,
+            )
             async with SessionLocal() as session:
                 repo = Repository(session)
                 for name in removed_files:
                     await repo.delete_memory_by_tag(user_id, f"file:{name}")
                     removed += 1
-                    index.pop(name, None)
-            self._save_index(memory_root, index)
 
         return {"indexed": indexed, "skipped": skipped, "removed": removed}
-
-    def _hash_file(self, path: Path) -> str:
-        data = path.read_bytes()
-        return hashlib.sha256(data).hexdigest()
-
-    def _load_index(self, memory_root: Path) -> dict:
-        index_path = memory_root / ".index.json"
-        if not index_path.exists():
-            return {}
-        try:
-            return json.loads(index_path.read_text(encoding="utf-8"))
-        except json.JSONDecodeError:
-            return {}
-
-    def _save_index(self, memory_root: Path, index: dict) -> None:
-        index_path = memory_root / ".index.json"
-        index_path.write_text(json.dumps(index, indent=2, ensure_ascii=True), encoding="utf-8")
