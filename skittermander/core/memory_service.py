@@ -210,6 +210,7 @@ class MemoryService:
     async def reindex_all(self, user_id: str, memory_root: Path) -> dict:
         memory_root.mkdir(parents=True, exist_ok=True)
         index = self._load_index(memory_root)
+        print(f"File names in index: {list(index.keys())}")
         current_files = {
             p.name: p
             for p in memory_root.iterdir()
@@ -229,6 +230,7 @@ class MemoryService:
 
         removed_files = [name for name in index.keys() if name not in current_files]
         if removed_files:
+            print(f"Removing {len(removed_files)} deleted files from memory index: {removed_files}")
             async with SessionLocal() as session:
                 repo = Repository(session)
                 for name in removed_files:

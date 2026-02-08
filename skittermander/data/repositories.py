@@ -8,16 +8,13 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from .models import (
-    Artifact,
     Channel,
     LlmUsage,
     MemoryEntry,
     Message,
     ScheduledJob,
     ScheduledRun,
-    SandboxTask,
     Session,
-    Skill,
     Secret,
     ToolRun,
     User,
@@ -408,23 +405,6 @@ class Repository:
         await self.session.commit()
         return tool_run
 
-    async def list_skills(self) -> List[Skill]:
-        result = await self.session.execute(select(Skill))
-        return list(result.scalars().all())
-
-    async def upsert_skill(self, name: str, path: str, description: str, metadata: dict | None = None) -> Skill:
-        result = await self.session.execute(select(Skill).where(Skill.name == name))
-        skill = result.scalar_one_or_none()
-        if skill is None:
-            skill = Skill(name=name, path=path, description=description, meta=metadata or {})
-            self.session.add(skill)
-        else:
-            skill.path = path
-            skill.description = description
-            skill.meta = metadata or {}
-        await self.session.commit()
-        return skill
-
     async def add_memory(self, user_id: str, summary: str, embedding: list, tags: list | None = None) -> MemoryEntry:
         entry = MemoryEntry(
             id=str(uuid.uuid4()),
@@ -456,16 +436,6 @@ class Repository:
             await self.session.delete(entry)
         await self.session.commit()
         return len(entries)
-
-    async def add_artifact(self, session_id: str, path: str, mime_type: str) -> Artifact:
-        artifact = Artifact(id=str(uuid.uuid4()), session_id=session_id, path=path, mime_type=mime_type)
-        self.session.add(artifact)
-        await self.session.commit()
-        return artifact
-
-    async def get_artifact(self, artifact_id: str) -> Optional[Artifact]:
-        result = await self.session.execute(select(Artifact).where(Artifact.id == artifact_id))
-        return result.scalar_one_or_none()
 
     async def create_scheduled_job(
         self,
@@ -603,41 +573,3 @@ class Repository:
         secret.last_used_at = datetime.utcnow()
         await self.session.commit()
         return secret
-
-    async def create_sandbox_task(
-        self,
-        user_id: str,
-        session_id: str,
-        pid: int,
-        command: str,
-        status: str = "running",
-    ) -> SandboxTask:
-        task = SandboxTask(
-            id=str(uuid.uuid4()),
-            user_id=user_id,
-            session_id=session_id,
-            pid=pid,
-            command=command,
-            status=status,
-        )
-        self.session.add(task)
-        await self.session.commit()
-        return task
-
-    async def list_active_sandbox_tasks(self, user_id: str) -> List[SandboxTask]:
-        result = await self.session.execute(
-            select(SandboxTask).where(SandboxTask.user_id == user_id, SandboxTask.status == "running")
-        )
-        return list(result.scalars().all())
-
-    async def update_sandbox_task(self, task_id: str, **fields) -> Optional[SandboxTask]:
-        result = await self.session.execute(select(SandboxTask).where(SandboxTask.id == task_id))
-        task = result.scalar_one_or_none()
-        if task is None:
-            return None
-        for key, value in fields.items():
-            if hasattr(task, key) and value is not None:
-                setattr(task, key, value)
-        task.updated_at = datetime.utcnow()
-        await self.session.commit()
-        return task

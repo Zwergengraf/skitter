@@ -90,15 +90,6 @@ class MemoryEntry(Base):
     created_at: Mapped[datetime] = mapped_column(default=datetime.utcnow)
 
 
-class Skill(Base):
-    __tablename__ = "skills"
-
-    name: Mapped[str] = mapped_column(String, primary_key=True)
-    path: Mapped[str] = mapped_column(String)
-    description: Mapped[str] = mapped_column(Text)
-    meta: Mapped[dict] = mapped_column(JSON, default=dict)
-
-
 class Secret(Base):
     __tablename__ = "secrets"
 
@@ -122,16 +113,6 @@ class Channel(Base):
     guild_name: Mapped[str | None] = mapped_column(String, nullable=True)
     meta: Mapped[dict] = mapped_column(JSON, default=dict)
     updated_at: Mapped[datetime] = mapped_column(default=datetime.utcnow)
-
-
-class Artifact(Base):
-    __tablename__ = "artifacts"
-
-    id: Mapped[str] = mapped_column(String, primary_key=True)
-    session_id: Mapped[str] = mapped_column(String, index=True)
-    path: Mapped[str] = mapped_column(String)
-    mime_type: Mapped[str] = mapped_column(String)
-    created_at: Mapped[datetime] = mapped_column(default=datetime.utcnow)
 
 
 class ScheduledJob(Base):
@@ -164,16 +145,3 @@ class ScheduledRun(Base):
     output: Mapped[str | None] = mapped_column(Text, nullable=True)
     attachments: Mapped[dict] = mapped_column(JSON, default=dict)
     created_at: Mapped[datetime] = mapped_column(default=datetime.utcnow)
-
-
-class SandboxTask(Base):
-    __tablename__ = "sandbox_tasks"
-
-    id: Mapped[str] = mapped_column(String, primary_key=True)
-    user_id: Mapped[str] = mapped_column(String, index=True)
-    session_id: Mapped[str] = mapped_column(String, index=True)
-    pid: Mapped[int] = mapped_column(Integer)
-    command: Mapped[str] = mapped_column(Text)
-    status: Mapped[str] = mapped_column(String, default="running")
-    created_at: Mapped[datetime] = mapped_column(default=datetime.utcnow)
-    updated_at: Mapped[datetime] = mapped_column(default=datetime.utcnow)

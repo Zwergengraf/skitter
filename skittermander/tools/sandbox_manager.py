@@ -15,8 +15,6 @@ import httpx
 
 from ..core.config import settings
 from ..core.workspace import ensure_user_workspace, host_user_workspace_root
-from ..data.db import SessionLocal
-from ..data.repositories import Repository
 
 
 @dataclass
@@ -280,13 +278,8 @@ class SandboxManager:
                 continue
             base_url = self._base_url_for_container(container, user_id)
             busy = await self._has_active_processes(base_url)
-            if busy is None:
-                # Backward compatibility with older sandbox images that don't expose /processes/active.
-                busy = await self._has_active_tasks(user_id, base_url)
-            else:
-                # Keep DB-tracked task checks in addition to live process checks.
-                busy = busy or await self._has_active_tasks(user_id, base_url)
-            if busy:
+            if busy is not False:
+                # Be conservative for unknown/error states; only stop when explicitly idle.
                 continue
             await asyncio.to_thread(container.stop)
             self._cache.pop(user_id, None)
@@ -303,30 +296,6 @@ class SandboxManager:
         except Exception:
             # Be conservative: if the sandbox cannot be queried, assume it may still be busy.
             return True
-
-    async def _has_active_tasks(self, user_id: str, base_url: str) -> bool:
-        async with SessionLocal() as session:
-            repo = Repository(session)
-            tasks = await repo.list_active_sandbox_tasks(user_id)
-        if not tasks:
-            return False
-        pids = [task.pid for task in tasks]
-        running = set()
-        try:
-            async with httpx.AsyncClient(timeout=10) as client:
-                resp = await client.post(f"{base_url}/tasks/status", json={"pids": pids})
-                resp.raise_for_status()
-                payload = resp.json()
-                running = set(payload.get("running", []))
-        except Exception:
-            return True
-        if running:
-            return True
-        async with SessionLocal() as session:
-            repo = Repository(session)
-            for task in tasks:
-                await repo.update_sandbox_task(task.id, status="completed")
-        return False
 
     async def list_containers(self) -> list[dict]:
         if not self._ready or self._client is None:

@@ -128,14 +128,6 @@ class MemoryForgetRequest(BaseModel):
     user_id: str
 
 
-class ArtifactOut(BaseModel):
-    id: str
-    session_id: str
-    path: str
-    mime_type: str
-    created_at: datetime
-
-
 class EventOut(BaseModel):
     type: str
     data: Dict[str, Any]

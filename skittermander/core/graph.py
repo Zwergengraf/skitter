@@ -534,15 +534,6 @@ def build_graph(
             await _complete_tool_run(decision.tool_run_id, "failed", {"error": exc.response.text})
             return f"shell error: {exc.response.text}"
         await _complete_tool_run(decision.tool_run_id, "completed", result if isinstance(result, dict) else {"result": result})
-        if payload.get("background") and isinstance(result, dict) and "pid" in result:
-            async with SessionLocal() as session:
-                repo = Repository(session)
-                await repo.create_sandbox_task(
-                    user_id=_user_id(),
-                    session_id=_session_id(),
-                    pid=int(result["pid"]),
-                    command=cmd,
-                )
         return json.dumps(result)
 
     @tool("create_secret")

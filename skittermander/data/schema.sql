@@ -96,13 +96,6 @@ CREATE TABLE IF NOT EXISTS memory_entries (
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
-CREATE TABLE IF NOT EXISTS skills (
-    name TEXT PRIMARY KEY,
-    path TEXT NOT NULL,
-    description TEXT NOT NULL,
-    meta JSONB NOT NULL DEFAULT '{}'::jsonb
-);
-
 CREATE TABLE IF NOT EXISTS secrets (
     id TEXT PRIMARY KEY,
     user_id TEXT NOT NULL,
@@ -135,14 +128,6 @@ CREATE TABLE IF NOT EXISTS channels (
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
-CREATE TABLE IF NOT EXISTS artifacts (
-    id TEXT PRIMARY KEY,
-    session_id TEXT NOT NULL,
-    path TEXT NOT NULL,
-    mime_type TEXT NOT NULL,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
-
 CREATE TABLE IF NOT EXISTS scheduled_jobs (
     id TEXT PRIMARY KEY,
     user_id TEXT NOT NULL,
@@ -169,15 +154,4 @@ CREATE TABLE IF NOT EXISTS scheduled_runs (
     output TEXT,
     attachments JSONB NOT NULL DEFAULT '{}'::jsonb,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
-
-CREATE TABLE IF NOT EXISTS sandbox_tasks (
-    id TEXT PRIMARY KEY,
-    user_id TEXT NOT NULL,
-    session_id TEXT NOT NULL,
-    pid INTEGER NOT NULL,
-    command TEXT NOT NULL,
-    status TEXT NOT NULL DEFAULT 'running',
-    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
