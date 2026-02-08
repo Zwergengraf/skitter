@@ -9,6 +9,8 @@ from typing import Any, Callable
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage, ToolMessage
 
 from .config import settings
+from .llm import resolve_model
+from .run_limits import RunBudgetUsageCallback
 from .usage import collect_usage, record_usage
 
 
@@ -98,12 +100,23 @@ class SubAgentService:
         worker_instruction = self._worker_instruction()
         worker_prompt = self._build_worker_prompt(spec)
         request_id = str(uuid.uuid4())
+        resolved_model = resolve_model(model_name, purpose="main")
         input_messages: list[BaseMessage] = []
         if system_prompt:
             input_messages.append(SystemMessage(content=system_prompt))
         input_messages.append(SystemMessage(content=worker_instruction))
         input_messages.append(HumanMessage(content=worker_prompt, additional_kwargs={"message_id": request_id}))
-        result = await graph.ainvoke({"messages": input_messages})
+        per_worker_tool_budget = max(1, int(settings.limits_max_tool_calls))
+        invoke_config = {
+            "callbacks": [
+                RunBudgetUsageCallback(
+                    input_cost_per_1m=float(resolved_model.input_cost_per_1m),
+                    output_cost_per_1m=float(resolved_model.output_cost_per_1m),
+                )
+            ],
+            "recursion_limit": max(16, per_worker_tool_budget * 2 + 8),
+        }
+        result = await graph.ainvoke({"messages": input_messages}, config=invoke_config)
         messages = result.get("messages", input_messages)
         final_text = self._extract_final_text(messages)
         usage = collect_usage(messages, request_id) or {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}

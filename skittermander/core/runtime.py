@@ -19,10 +19,6 @@ from .events import EventBus
 from .graph import (
     build_graph,
     current_user_id,
-    get_current_run_limits,
-    reset_current_run_limits,
-    set_current_run_limits,
-    RunLimitsState,
     reset_current_channel_id,
     reset_current_origin,
     reset_current_session_id,
@@ -36,44 +32,11 @@ from .models import AgentResponse, Attachment, MessageEnvelope, StreamEvent
 from .llm import build_llm, resolve_model, resolve_model_name
 from .prompting import build_system_prompt
 from .usage import collect_usage, record_usage
+from .run_limits import RunBudgetUsageCallback, RunLimitsState, reset_current_run_limits, set_current_run_limits
 from ..tools.approval_service import ToolApprovalService
 from ..core.embeddings import EmbeddingsClient
 from ..data.db import SessionLocal
 from ..data.repositories import Repository
-from langchain_core.callbacks import BaseCallbackHandler
-
-
-class _RunUsageCallback(BaseCallbackHandler):
-    @staticmethod
-    def _extract_tokens_from_dict(payload: dict) -> tuple[int, int]:
-        input_tokens = int(payload.get("prompt_tokens") or payload.get("input_tokens") or 0)
-        output_tokens = int(payload.get("completion_tokens") or payload.get("output_tokens") or 0)
-        return input_tokens, output_tokens
-
-    def on_llm_end(self, response, *, run_id, parent_run_id=None, tags=None, **kwargs):  # type: ignore[override]
-        limits = get_current_run_limits()
-        if limits is None:
-            return
-        input_tokens = 0
-        output_tokens = 0
-        llm_output = getattr(response, "llm_output", None) or {}
-        if not isinstance(llm_output, dict):
-            llm_output = {}
-        usage = llm_output.get("token_usage") or llm_output.get("usage") or {}
-        if isinstance(usage, dict):
-            input_tokens, output_tokens = self._extract_tokens_from_dict(usage)
-        if input_tokens == 0 and output_tokens == 0:
-            generations = getattr(response, "generations", None) or []
-            for generation_batch in generations:
-                for generation in generation_batch:
-                    message = getattr(generation, "message", None)
-                    usage_meta = getattr(message, "usage_metadata", None) if message is not None else None
-                    if isinstance(usage_meta, dict):
-                        delta_in, delta_out = self._extract_tokens_from_dict(usage_meta)
-                        input_tokens += delta_in
-                        output_tokens += delta_out
-        limits.spent_cost_usd += (input_tokens / 1_000_000.0) * limits.input_cost_per_1m
-        limits.spent_cost_usd += (output_tokens / 1_000_000.0) * limits.output_cost_per_1m
 
 _MEDIA_DIRECTIVE_RE = re.compile(r"^\s*MEDIA\s*:\s*(.+?)\s*$", re.IGNORECASE)
 _logger = logging.getLogger(__name__)
@@ -173,7 +136,12 @@ class AgentRuntime:
                 start_time=asyncio.get_running_loop().time(),
             )
             limit_token = set_current_run_limits(limits)
-            callbacks = [_RunUsageCallback()]
+            callbacks = [
+                RunBudgetUsageCallback(
+                    input_cost_per_1m=float(resolved_model.input_cost_per_1m),
+                    output_cost_per_1m=float(resolved_model.output_cost_per_1m),
+                )
+            ]
             invoke_config = {
                 "callbacks": callbacks,
                 "recursion_limit": max(32, int(settings.limits_max_tool_calls) * 4 + 16),

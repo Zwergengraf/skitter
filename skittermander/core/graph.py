@@ -6,7 +6,6 @@ from pathlib import Path
 from contextvars import ContextVar, Token
 from typing import Optional, Any
 import time
-from dataclasses import dataclass
 
 import httpx
 from bs4 import BeautifulSoup
@@ -20,6 +19,7 @@ from .llm import build_llm
 from .llm import resolve_model_name
 from .prompting import build_system_prompt
 from .subagents import SubAgentResult, SubAgentService, SubAgentTaskSpec
+from .run_limits import get_current_run_limits
 from ..tools.approval_service import ApprovalDecision, ToolApprovalService
 from ..core.scheduler import SchedulerService
 from ..tools.middleware import ToolApprovalPolicy
@@ -36,7 +36,6 @@ _CURRENT_SESSION_ID: ContextVar[str] = ContextVar("skitter_session_id", default=
 _CURRENT_CHANNEL_ID: ContextVar[str] = ContextVar("skitter_channel_id", default="default")
 _CURRENT_USER_ID: ContextVar[str] = ContextVar("skitter_user_id", default="default")
 _CURRENT_ORIGIN: ContextVar[str] = ContextVar("skitter_origin", default="unknown")
-_CURRENT_RUN_LIMITS: ContextVar["RunLimitsState | None"] = ContextVar("skitter_run_limits", default=None)
 
 
 def set_current_session_id(session_id: str) -> Token:
@@ -88,30 +87,6 @@ def _origin() -> str:
 
 def current_user_id() -> str:
     return _user_id()
-
-
-@dataclass
-class RunLimitsState:
-    max_tool_calls: int
-    max_runtime_seconds: int
-    max_cost_usd: float
-    input_cost_per_1m: float
-    output_cost_per_1m: float
-    start_time: float
-    tool_calls_used: int = 0
-    spent_cost_usd: float = 0.0
-
-
-def set_current_run_limits(limits: RunLimitsState | None) -> Token:
-    return _CURRENT_RUN_LIMITS.set(limits)
-
-
-def reset_current_run_limits(token: Token) -> None:
-    _CURRENT_RUN_LIMITS.reset(token)
-
-
-def get_current_run_limits() -> RunLimitsState | None:
-    return _CURRENT_RUN_LIMITS.get()
 
 
 async def _maybe_approve(
