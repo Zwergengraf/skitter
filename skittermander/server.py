@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import os
 import json
+import contextlib
 from datetime import datetime, UTC
 
 import uvicorn
@@ -85,6 +86,40 @@ async def main() -> None:
         await heartbeat_service.start()
 
     manager = TransportManager(transports)
+
+    async def _progress_status_text(session_id: str, started_at: datetime) -> str:
+        async with SessionLocal() as session:
+            repo = Repository(session)
+            tool_runs = await repo.list_tool_runs_by_session(session_id)
+        elapsed_seconds = max(0, int((datetime.now(UTC) - started_at).total_seconds()))
+        if tool_runs:
+            latest = tool_runs[-1]
+            return f"Working... {elapsed_seconds}s\nLast tool: `{latest.tool_name}` ({latest.status})"
+        return f"Working... {elapsed_seconds}s\nLast step: thinking"
+
+    async def _run_progress_loop(
+        transport: DiscordTransport,
+        channel_id: str,
+        session_id: str,
+        stop_event: asyncio.Event,
+    ) -> None:
+        if not settings.discord_progress_updates:
+            return
+        message = await transport.start_progress_message(channel_id, "Working...\nLast step: thinking")
+        if message is None:
+            return
+        interval = max(1, int(settings.discord_progress_interval_seconds))
+        started_at = datetime.now(UTC)
+        try:
+            while not stop_event.is_set():
+                content = await _progress_status_text(session_id, started_at)
+                await transport.update_progress_message(message, content)
+                try:
+                    await asyncio.wait_for(stop_event.wait(), timeout=interval)
+                except asyncio.TimeoutError:
+                    continue
+        finally:
+            await transport.stop_progress_message(message)
 
     async def handler(envelope):
         transport = transport_by_origin.get(envelope.origin)
@@ -235,6 +270,19 @@ async def main() -> None:
         if envelope.origin == "discord":
             session_id = await session_manager.get_or_create_session(internal_user_id, envelope.channel_id)
 
+        progress_stop: asyncio.Event | None = None
+        progress_task: asyncio.Task | None = None
+        if (
+            envelope.origin == "discord"
+            and isinstance(transport, DiscordTransport)
+            and not envelope.command
+            and settings.discord_progress_updates
+        ):
+            progress_stop = asyncio.Event()
+            progress_task = asyncio.create_task(
+                _run_progress_loop(transport, envelope.channel_id, session_id, progress_stop)
+            )
+
         async with SessionLocal() as session:
             repo = Repository(session)
             metadata = dict(envelope.metadata)
@@ -247,7 +295,14 @@ async def main() -> None:
                     envelope.metadata["attachments"] = attachments_meta
             await repo.add_message(session_id, role="user", content=envelope.text, metadata=metadata)
 
-        response = await runtime.handle_message(session_id, envelope)
+        try:
+            response = await runtime.handle_message(session_id, envelope)
+        finally:
+            if progress_stop is not None:
+                progress_stop.set()
+            if progress_task is not None:
+                with contextlib.suppress(Exception):
+                    await progress_task
         if response.text or response.attachments:
             await transport.send_message(envelope.channel_id, response.text, attachments=response.attachments)
             async with SessionLocal() as session:

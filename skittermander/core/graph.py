@@ -5,6 +5,8 @@ import base64
 from pathlib import Path
 from contextvars import ContextVar, Token
 from typing import Optional, Any
+import time
+from dataclasses import dataclass
 
 import httpx
 from bs4 import BeautifulSoup
@@ -34,6 +36,7 @@ _CURRENT_SESSION_ID: ContextVar[str] = ContextVar("skitter_session_id", default=
 _CURRENT_CHANNEL_ID: ContextVar[str] = ContextVar("skitter_channel_id", default="default")
 _CURRENT_USER_ID: ContextVar[str] = ContextVar("skitter_user_id", default="default")
 _CURRENT_ORIGIN: ContextVar[str] = ContextVar("skitter_origin", default="unknown")
+_CURRENT_RUN_LIMITS: ContextVar["RunLimitsState | None"] = ContextVar("skitter_run_limits", default=None)
 
 
 def set_current_session_id(session_id: str) -> Token:
@@ -85,6 +88,30 @@ def _origin() -> str:
 
 def current_user_id() -> str:
     return _user_id()
+
+
+@dataclass
+class RunLimitsState:
+    max_tool_calls: int
+    max_runtime_seconds: int
+    max_cost_usd: float
+    input_cost_per_1m: float
+    output_cost_per_1m: float
+    start_time: float
+    tool_calls_used: int = 0
+    spent_cost_usd: float = 0.0
+
+
+def set_current_run_limits(limits: RunLimitsState | None) -> Token:
+    return _CURRENT_RUN_LIMITS.set(limits)
+
+
+def reset_current_run_limits(token: Token) -> None:
+    _CURRENT_RUN_LIMITS.reset(token)
+
+
+def get_current_run_limits() -> RunLimitsState | None:
+    return _CURRENT_RUN_LIMITS.get()
 
 
 async def _maybe_approve(
@@ -196,6 +223,35 @@ def build_graph(
     def _denied_message(tool_name: str) -> str:
         return f"{tool_name} denied: Request was denied by the user, please ask them for clarification."
 
+    def _limit_message(reason: str, detail: str) -> str:
+        return (
+            f"LIMIT_REACHED ({reason}): {detail}. "
+            "Stop calling tools and provide the best possible final response from current context."
+        )
+
+    def _consume_tool_budget(tool_name: str) -> str | None:
+        limits = get_current_run_limits()
+        if limits is None:
+            return None
+        elapsed = time.monotonic() - limits.start_time
+        if elapsed > max(1, limits.max_runtime_seconds):
+            return _limit_message(
+                "runtime",
+                f"runtime exceeded ({limits.max_runtime_seconds}s) before tool `{tool_name}`",
+            )
+        if limits.max_cost_usd > 0 and limits.spent_cost_usd >= limits.max_cost_usd:
+            return _limit_message(
+                "cost",
+                f"run cost budget exceeded (${limits.max_cost_usd:.2f}) before tool `{tool_name}`",
+            )
+        if limits.max_tool_calls >= 0 and limits.tool_calls_used >= limits.max_tool_calls:
+            return _limit_message(
+                "tool_calls",
+                f"max tool calls reached ({limits.max_tool_calls}) before tool `{tool_name}`",
+            )
+        limits.tool_calls_used += 1
+        return None
+
     def _subagent_manager_result(result: SubAgentResult) -> dict[str, Any]:
         return {
             "name": result.name,
@@ -226,6 +282,18 @@ def build_graph(
             )
         return tool_run.id
 
+    async def _enforce_tool_budget(tool_name: str, payload: dict[str, Any]) -> str | None:
+        message = _consume_tool_budget(tool_name)
+        if message is None:
+            return None
+        tool_run_id = await _create_auto_tool_run(tool_name, payload)
+        await _complete_tool_run(
+            tool_run_id,
+            "denied",
+            {"error": message, "reason": "limit_reached"},
+        )
+        return message
+
     async def _complete_tool_run(tool_run_id: str | None, status: str, output: dict[str, Any]) -> None:
         if not tool_run_id:
             return
@@ -254,6 +322,10 @@ def build_graph(
             detail = str(exc)
             await _complete_tool_run(tool_run_id, "failed", {"error": detail})
             return None, f"{tool_name} error: {detail}"
+        except Exception as exc:
+            detail = str(exc)
+            await _complete_tool_run(tool_run_id, "failed", {"error": detail})
+            return None, f"{tool_name} unexpected error: {detail}"
         await _complete_tool_run(tool_run_id, "completed", result if isinstance(result, dict) else {"result": result})
         return result, None
 
@@ -273,6 +345,9 @@ def build_graph(
             payload["offset"] = offset
         if limit is not None:
             payload["limit"] = limit
+        budget_message = await _enforce_tool_budget("read", payload)
+        if budget_message:
+            return budget_message
         decision = await _maybe_approve("read", payload, approval_service, policy)
         if not decision.approved:
             return _denied_message("read")
@@ -305,6 +380,9 @@ def build_graph(
         if content is None:
             return await _fail_untracked_call("write", {"path": target}, "write error: content is required")
         payload = {"path": target, "content": content}
+        budget_message = await _enforce_tool_budget("write", payload)
+        if budget_message:
+            return budget_message
         decision = await _maybe_approve("write", payload, approval_service, policy)
         if not decision.approved:
             return _denied_message("write")
@@ -333,6 +411,9 @@ def build_graph(
         if new_value is None:
             return await _fail_untracked_call("edit", {"path": target}, "edit error: newText is required")
         payload = {"path": target, "oldText": old_value, "newText": new_value}
+        budget_message = await _enforce_tool_budget("edit", payload)
+        if budget_message:
+            return budget_message
         decision = await _maybe_approve("edit", payload, approval_service, policy)
         if not decision.approved:
             return _denied_message("edit")
@@ -352,6 +433,9 @@ def build_graph(
         if not target:
             return await _fail_untracked_call("list", {"path": path, "file_path": file_path}, "list error: path is required")
         payload = {"path": target, "show_hidden_files": bool(show_hidden_files)}
+        budget_message = await _enforce_tool_budget("list", payload)
+        if budget_message:
+            return budget_message
         decision = await _maybe_approve("list", payload, approval_service, policy)
         if not decision.approved:
             return _denied_message("list")
@@ -369,6 +453,9 @@ def build_graph(
         if not target:
             return await _fail_untracked_call("delete", {"path": path, "file_path": file_path}, "delete error: path is required")
         payload = {"path": target, "recursive": bool(recursive)}
+        budget_message = await _enforce_tool_budget("delete", payload)
+        if budget_message:
+            return budget_message
         if payload["recursive"] and approval_service is None:
             return await _fail_untracked_call("delete", payload, "delete error: recursive delete requires approval")
         decision = await _maybe_approve("delete", payload, approval_service, policy)
@@ -387,6 +474,9 @@ def build_graph(
         payload: dict[str, Any] = {"url": url}
         if path:
             payload["path"] = path
+        budget_message = await _enforce_tool_budget("download", payload)
+        if budget_message:
+            return budget_message
         decision = await _maybe_approve("download", payload, approval_service, policy)
         if not decision.approved:
             return _denied_message("download")
@@ -399,6 +489,9 @@ def build_graph(
     async def http_fetch(url: str) -> str:
         """Fetch a URL over HTTP."""
         payload = {"url": url}
+        budget_message = await _enforce_tool_budget("http_fetch", payload)
+        if budget_message:
+            return budget_message
         decision = await _maybe_approve("http_fetch", payload, approval_service, policy)
         if not decision.approved:
             return _denied_message("http_fetch")
@@ -427,6 +520,9 @@ def build_graph(
             "timeout_ms": timeout_ms,
             "wait_until": wait_until,
         }
+        budget_message = await _enforce_tool_budget("browser", payload)
+        if budget_message:
+            return budget_message
         decision = await _maybe_approve("browser", payload, approval_service, policy)
         if not decision.approved:
             return _denied_message("browser")
@@ -485,6 +581,9 @@ def build_graph(
             "include_elements": include_elements,
             "max_elements": max_elements,
         }
+        budget_message = await _enforce_tool_budget("browser_action", payload)
+        if budget_message:
+            return budget_message
         decision = await _maybe_approve("browser_action", payload, approval_service, policy)
         if not decision.approved:
             return _denied_message("browser_action")
@@ -510,6 +609,9 @@ def build_graph(
         payload = {"cmd": cmd, "background": bool(background)}
         if cwd:
             payload["cwd"] = cwd
+        budget_message = await _enforce_tool_budget("shell", payload)
+        if budget_message:
+            return budget_message
         secrets = _normalize_secret_refs(secret_refs)
         if secrets:
             if background:
@@ -578,6 +680,9 @@ def build_graph(
             return await _fail_untracked_call("create_secret", {"name": secret_name}, f"create_secret error: {exc}")
 
         approval_payload = {"name": secret_name, "value": "[REDACTED]", "value_length": len(value)}
+        budget_message = await _enforce_tool_budget("create_secret", approval_payload)
+        if budget_message:
+            return budget_message
         decision = await _maybe_approve("create_secret", approval_payload, approval_service, policy)
         if not decision.approved:
             return _denied_message("create_secret")
@@ -614,6 +719,9 @@ def build_graph(
             "ui_lang": ui_lang,
             "freshness": freshness,
         }
+        budget_message = await _enforce_tool_budget("web_search", payload)
+        if budget_message:
+            return budget_message
         tool_run_id = await _create_auto_tool_run("web_search", payload)
         if not query.strip():
             await _complete_tool_run(tool_run_id, "failed", {"error": "query is required"})
@@ -657,6 +765,9 @@ def build_graph(
     async def web_fetch(url: str, extractMode: str = "markdown", maxChars: int = 20000) -> str:
         """Fetch and extract readable content from a URL (HTML → markdown/text)."""
         payload: dict[str, Any] = {"url": url, "extractMode": extractMode, "maxChars": maxChars}
+        budget_message = await _enforce_tool_budget("web_fetch", payload)
+        if budget_message:
+            return budget_message
         tool_run_id = await _create_auto_tool_run("web_fetch", payload)
         if not url:
             await _complete_tool_run(tool_run_id, "failed", {"error": "url is required"})
@@ -702,6 +813,9 @@ def build_graph(
             "run_at": run_at,
             "channel_id": channel_id,
         }
+        budget_message = await _enforce_tool_budget("schedule_create", payload)
+        if budget_message:
+            return budget_message
         tool_run_id = await _create_auto_tool_run("schedule_create", payload)
         if scheduler_service is None:
             await _complete_tool_run(tool_run_id, "failed", {"error": "scheduler not configured"})
@@ -741,6 +855,9 @@ def build_graph(
             "prompt": prompt,
             "enabled": enabled,
         }
+        budget_message = await _enforce_tool_budget("schedule_update", payload)
+        if budget_message:
+            return budget_message
         tool_run_id = await _create_auto_tool_run("schedule_update", payload)
         if scheduler_service is None:
             await _complete_tool_run(tool_run_id, "failed", {"error": "scheduler not configured"})
@@ -764,6 +881,9 @@ def build_graph(
     async def schedule_delete(job_id: str) -> str:
         """Delete a scheduled job."""
         payload: dict[str, Any] = {"job_id": job_id}
+        budget_message = await _enforce_tool_budget("schedule_delete", payload)
+        if budget_message:
+            return budget_message
         tool_run_id = await _create_auto_tool_run("schedule_delete", payload)
         if scheduler_service is None:
             await _complete_tool_run(tool_run_id, "failed", {"error": "scheduler not configured"})
@@ -776,6 +896,9 @@ def build_graph(
     async def schedule_list() -> str:
         """List scheduled jobs for the current user."""
         payload: dict[str, Any] = {"user_id": _user_id()}
+        budget_message = await _enforce_tool_budget("schedule_list", payload)
+        if budget_message:
+            return budget_message
         tool_run_id = await _create_auto_tool_run("schedule_list", payload)
         if scheduler_service is None:
             await _complete_tool_run(tool_run_id, "failed", {"error": "scheduler not configured"})
@@ -795,6 +918,9 @@ def build_graph(
     async def memory_search(query: str, top_k: int = 5) -> str:
         """Search memories (content of the folder `memory`) by semantic similarity."""
         payload: dict[str, Any] = {"query": query, "top_k": top_k}
+        budget_message = await _enforce_tool_budget("memory_search", payload)
+        if budget_message:
+            return budget_message
         tool_run_id = await _create_auto_tool_run("memory_search", payload)
         if not query.strip():
             await _complete_tool_run(tool_run_id, "failed", {"error": "query is required"})
@@ -822,6 +948,9 @@ def build_graph(
             "context": context,
             "acceptance_criteria": acceptance_criteria,
         }
+        budget_message = await _enforce_tool_budget("sub_agent", payload)
+        if budget_message:
+            return budget_message
         if not task or not task.strip():
             return await _fail_untracked_call("sub_agent", payload, "sub_agent error: task is required")
         if subagent_service is None:
@@ -860,6 +989,9 @@ def build_graph(
     async def sub_agent_batch(tasks: list[dict[str, Any]]) -> str:
         """Delegate multiple focused tasks to sub-agents and run them concurrently."""
         payload: dict[str, Any] = {"tasks": tasks}
+        budget_message = await _enforce_tool_budget("sub_agent_batch", payload)
+        if budget_message:
+            return budget_message
         if subagent_service is None:
             return await _fail_untracked_call(
                 "sub_agent_batch",

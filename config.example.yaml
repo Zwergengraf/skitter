@@ -11,6 +11,10 @@ context:
   max_tool_messages: 10
   max_chat_messages: 32
   compact_every_messages: 8
+limits:
+  max_tool_calls: 12
+  max_runtime_seconds: 180
+  max_cost_usd: 0.10
 models:
   - name: main
     model_id: local-main
@@ -42,6 +46,8 @@ scheduler:
   timezone: UTC
 discord:
   token: ""
+  progress_updates: true
+  progress_interval_seconds: 3
 users:
   approved_message: Hey! I just came online. Who am I? Who are you?
 heartbeat:

@@ -93,6 +93,11 @@ class Settings(BaseSettings):
     context_max_tool_messages: int = Field(default=10)
     context_max_chat_messages: int = Field(default=80)
     context_compact_every_messages: int = Field(default=8)
+    limits_max_tool_calls: int = Field(default=12)
+    limits_max_runtime_seconds: int = Field(default=180)
+    limits_max_cost_usd: float = Field(default=2.0)
+    discord_progress_updates: bool = Field(default=True)
+    discord_progress_interval_seconds: int = Field(default=3)
 
     # Env-only: do not add to config schema or UI.
     secrets_master_key: str = Field(default="", exclude=True)

@@ -1,4 +1,5 @@
 from __future__ import annotations
+import asyncio
 import io
 import json
 from datetime import datetime
@@ -231,6 +232,40 @@ class DiscordTransport(TransportAdapter):
         if not isinstance(channel, (discord.DMChannel, discord.TextChannel, discord.Thread)):
             return
         await channel.typing()
+
+    async def start_progress_message(self, channel_id: str, content: str = "Working...") -> discord.Message | None:
+        try:
+            channel = await self.client.fetch_channel(int(channel_id))
+        except Exception:
+            return None
+        if not isinstance(channel, (discord.DMChannel, discord.TextChannel, discord.Thread)):
+            return None
+        try:
+            return await channel.send(content)
+        except Exception:
+            return None
+
+    async def update_progress_message(self, message: discord.Message | None, content: str) -> None:
+        if message is None:
+            return
+        try:
+            if message.content != content:
+                await message.edit(content=content)
+        except Exception:
+            return
+
+    async def stop_progress_message(self, message: discord.Message | None, keep_seconds: float = 1.5) -> None:
+        if message is None:
+            return
+        if keep_seconds > 0:
+            try:
+                await asyncio.sleep(keep_seconds)
+            except Exception:
+                pass
+        try:
+            await message.delete()
+        except Exception:
+            return
 
     async def send_approval_request(
         self, tool_run_id: str, channel_id: str, tool_name: str, payload: dict

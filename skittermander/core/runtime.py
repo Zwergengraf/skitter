@@ -5,6 +5,7 @@ import json
 import logging
 import mimetypes
 import re
+import asyncio
 import uuid
 from collections import defaultdict
 from datetime import datetime
@@ -18,6 +19,10 @@ from .events import EventBus
 from .graph import (
     build_graph,
     current_user_id,
+    get_current_run_limits,
+    reset_current_run_limits,
+    set_current_run_limits,
+    RunLimitsState,
     reset_current_channel_id,
     reset_current_origin,
     reset_current_session_id,
@@ -28,13 +33,47 @@ from .graph import (
     set_current_user_id,
 )
 from .models import AgentResponse, Attachment, MessageEnvelope, StreamEvent
-from .llm import build_llm, resolve_model_name
+from .llm import build_llm, resolve_model, resolve_model_name
 from .prompting import build_system_prompt
 from .usage import collect_usage, record_usage
 from ..tools.approval_service import ToolApprovalService
 from ..core.embeddings import EmbeddingsClient
 from ..data.db import SessionLocal
 from ..data.repositories import Repository
+from langchain_core.callbacks import BaseCallbackHandler
+
+
+class _RunUsageCallback(BaseCallbackHandler):
+    @staticmethod
+    def _extract_tokens_from_dict(payload: dict) -> tuple[int, int]:
+        input_tokens = int(payload.get("prompt_tokens") or payload.get("input_tokens") or 0)
+        output_tokens = int(payload.get("completion_tokens") or payload.get("output_tokens") or 0)
+        return input_tokens, output_tokens
+
+    def on_llm_end(self, response, *, run_id, parent_run_id=None, tags=None, **kwargs):  # type: ignore[override]
+        limits = get_current_run_limits()
+        if limits is None:
+            return
+        input_tokens = 0
+        output_tokens = 0
+        llm_output = getattr(response, "llm_output", None) or {}
+        if not isinstance(llm_output, dict):
+            llm_output = {}
+        usage = llm_output.get("token_usage") or llm_output.get("usage") or {}
+        if isinstance(usage, dict):
+            input_tokens, output_tokens = self._extract_tokens_from_dict(usage)
+        if input_tokens == 0 and output_tokens == 0:
+            generations = getattr(response, "generations", None) or []
+            for generation_batch in generations:
+                for generation in generation_batch:
+                    message = getattr(generation, "message", None)
+                    usage_meta = getattr(message, "usage_metadata", None) if message is not None else None
+                    if isinstance(usage_meta, dict):
+                        delta_in, delta_out = self._extract_tokens_from_dict(usage_meta)
+                        input_tokens += delta_in
+                        output_tokens += delta_out
+        limits.spent_cost_usd += (input_tokens / 1_000_000.0) * limits.input_cost_per_1m
+        limits.spent_cost_usd += (output_tokens / 1_000_000.0) * limits.output_cost_per_1m
 
 _MEDIA_DIRECTIVE_RE = re.compile(r"^\s*MEDIA\s*:\s*(.+?)\s*$", re.IGNORECASE)
 _logger = logging.getLogger(__name__)
@@ -98,6 +137,10 @@ class AgentRuntime:
         internal_user_id = envelope.metadata.get("internal_user_id", envelope.user_id)
         token_user = set_current_user_id(internal_user_id)
         token_origin = set_current_origin(envelope.origin)
+        response: object = ""
+        messages: list[BaseMessage] = []
+        model_name = resolve_model_name(None, purpose="main")
+        limit_token = None
         try:
             await self._ensure_history(session_id)
             history = self._history[session_id]
@@ -120,12 +163,43 @@ class AgentRuntime:
                         )
             model_name = await self._get_session_model(session_id, envelope)
             await self._compact_history_for_context(session_id, history, model_name)
+            resolved_model = resolve_model(model_name, purpose="heartbeat" if envelope.origin == "heartbeat" else "main")
+            limits = RunLimitsState(
+                max_tool_calls=max(0, int(settings.limits_max_tool_calls)),
+                max_runtime_seconds=max(1, int(settings.limits_max_runtime_seconds)),
+                max_cost_usd=max(0.0, float(settings.limits_max_cost_usd)),
+                input_cost_per_1m=float(resolved_model.input_cost_per_1m),
+                output_cost_per_1m=float(resolved_model.output_cost_per_1m),
+                start_time=asyncio.get_running_loop().time(),
+            )
+            limit_token = set_current_run_limits(limits)
+            callbacks = [_RunUsageCallback()]
+            invoke_config = {
+                "callbacks": callbacks,
+                "recursion_limit": max(32, int(settings.limits_max_tool_calls) * 4 + 16),
+            }
             graph = self._get_graph(model_name, purpose="heartbeat" if envelope.origin == "heartbeat" else "main")
-            result = await graph.ainvoke({"messages": history})
+            try:
+                result = await asyncio.wait_for(
+                    graph.ainvoke({"messages": history}, config=invoke_config),
+                    timeout=max(1, int(settings.limits_max_runtime_seconds) + 5),
+                )
+            except asyncio.TimeoutError:
+                timeout_text = await self._build_limit_fallback_response(
+                    model_name=model_name,
+                    history=history,
+                    reason="runtime",
+                    detail=f"max runtime exceeded ({int(settings.limits_max_runtime_seconds)}s)",
+                )
+                result = {
+                    "messages": history
+                    + [
+                        AIMessage(content=timeout_text)
+                    ]
+                }
             messages = result.get("messages", history)
             self._history[session_id] = list(messages)
 
-            response: object = ""
             for msg in reversed(messages):
                 if isinstance(msg, AIMessage):
                     response = msg.content
@@ -134,7 +208,16 @@ class AgentRuntime:
             usage = collect_usage(messages, envelope.message_id)
             if usage is not None:
                 await record_usage(session_id, internal_user_id, model_name, usage)
+        except Exception as exc:
+            _logger.exception("Agent runtime failed for session=%s", session_id)
+            messages = self._history.get(session_id, [])
+            response = (
+                "I hit an internal error while processing your request. "
+                f"Details: {exc}. Please retry or simplify the task."
+            )
         finally:
+            if limit_token is not None:
+                reset_current_run_limits(limit_token)
             reset_current_origin(token_origin)
             reset_current_user_id(token_user)
             reset_current_channel_id(token_channel)
@@ -339,6 +422,53 @@ class AgentRuntime:
                 parts.append(str(item))
             return "\n".join(part for part in parts if part).strip()
         return str(content)
+
+    async def _build_limit_fallback_response(
+        self,
+        model_name: str,
+        history: list[BaseMessage],
+        reason: str,
+        detail: str,
+    ) -> str:
+        latest_user_text = ""
+        for msg in reversed(history):
+            if isinstance(msg, HumanMessage):
+                latest_user_text = self._message_content_to_text(msg.content)
+                if latest_user_text:
+                    break
+        if not settings.models:
+            return (
+                f"LIMIT_REACHED ({reason}): {detail}. "
+                "I stopped execution for safety. Please refine the request or split it into smaller steps."
+            )
+        llm = build_llm(model_name=model_name, purpose="main")
+        prompt = [
+            SystemMessage(
+                content=(
+                    "A run limit was reached while processing a user request. "
+                    "Produce a concise user-facing status update. "
+                    "Do not call tools. Include what was attempted and what the user should do next."
+                )
+            ),
+            HumanMessage(
+                content=(
+                    f"Limit reached: {reason}\n"
+                    f"Detail: {detail}\n"
+                    f"Latest user request: {latest_user_text or '(not available)'}"
+                )
+            ),
+        ]
+        try:
+            result = await asyncio.wait_for(llm.ainvoke(prompt), timeout=15)
+            text = self._message_content_to_text(getattr(result, "content", ""))
+            if text.strip():
+                return text.strip()
+        except Exception:
+            pass
+        return (
+            f"LIMIT_REACHED ({reason}): {detail}. "
+            "I stopped execution for safety. Please refine the request or split it into smaller steps."
+        )
 
     def _message_datetime(self, msg: BaseMessage) -> datetime | None:
         meta = getattr(msg, "additional_kwargs", None) or {}
