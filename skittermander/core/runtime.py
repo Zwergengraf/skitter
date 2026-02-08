@@ -392,8 +392,8 @@ class AgentRuntime:
         prompt = [
             SystemMessage(
                 content=(
-                    "You summarize older conversation context for a chat agent. "
-                    "Produce a short summary of only the most important facts, decisions, and events. Do not include unimportant details (e.g. IDs) or small talk. "
+                    "You distill older conversation context for a chat agent. "
+                    "Produce a short summary of only the most important facts, decisions, and events. Do not include unimportant details (e.g. IDs), small talk or intermediary steps."
                     "Avoid speculation and keep it compact."
                 )
             ),
