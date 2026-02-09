@@ -104,32 +104,26 @@ final class StatusItemController: NSObject {
         guard let button = statusItem.button else { return }
 
         let symbolName: String
-        let tint: NSColor
 
         switch state.health {
         case .checking:
-            symbolName = "ellipsis.circle.fill"
-            tint = .systemYellow
+            symbolName = "clock"
         case .healthy:
             switch state.activity {
             case .idle:
-                symbolName = "checkmark.circle.fill"
-                tint = .systemGreen
+                symbolName = "checkmark.circle"
             case .thinking:
-                symbolName = "brain.head.profile"
-                tint = .systemOrange
+                symbolName = "ellipsis.bubble"
             case .activeTasks:
-                symbolName = "bolt.circle.fill"
-                tint = .systemOrange
+                symbolName = "bolt.circle"
             }
         case .error:
-            symbolName = "exclamationmark.triangle.fill"
-            tint = .systemRed
+            symbolName = "exclamationmark.triangle"
         }
 
         button.image = NSImage(systemSymbolName: symbolName, accessibilityDescription: "Skittermander status")
-        button.image?.isTemplate = false
-        button.contentTintColor = tint
+        button.image?.isTemplate = true
+        button.contentTintColor = nil
         button.toolTip = "\(state.health.label), \(state.activity.label)"
     }
 }

@@ -98,28 +98,57 @@ final class AppState: ObservableObject {
     }
 
     func refreshStatus() async {
+        var lastError: Error?
+        var anySuccess = false
+
         do {
             let ok = try await api.health()
-            health = ok ? .healthy : .error("health check failed")
+            anySuccess = true
+            if ok {
+                health = .healthy
+            } else {
+                health = .error("health check failed")
+            }
+        } catch {
+            lastError = error
+        }
+
+        do {
             let id = try await ensureSession(forceNew: false)
             let snapshot = try await api.sessionSnapshot(sessionID: id)
             contextTokens = snapshot.contextTokens
             sessionCost = snapshot.totalCost
             let target = max(1, settings.contextTokenTarget)
             contextProgress = min(1.0, Double(contextTokens) / Double(target))
-            let pending = try await api.pendingToolCount()
-            if isSending {
-                activity = .thinking
-            } else if pending > 0 {
-                activity = .activeTasks(pending)
-            } else {
-                activity = .idle
+            anySuccess = true
+            if case .checking = health {
+                health = .healthy
+            }
+            if case .error = health {
+                health = .healthy
             }
         } catch {
-            health = .error(error.localizedDescription)
-            if !isSending {
-                activity = .idle
-            }
+            lastError = error
+        }
+
+        var pendingCount = 0
+        do {
+            pendingCount = try await api.pendingToolCount()
+            anySuccess = true
+        } catch {
+            lastError = error
+        }
+
+        if isSending {
+            activity = .thinking
+        } else if pendingCount > 0 {
+            activity = .activeTasks(pendingCount)
+        } else {
+            activity = .idle
+        }
+
+        if !anySuccess {
+            health = .error(lastError?.localizedDescription ?? "status check failed")
         }
     }
 }
