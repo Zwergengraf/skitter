@@ -880,8 +880,8 @@ export default function App() {
 
         {active === "overview" && (
           <div className="grid gap-8">
-            <div className="grid items-start gap-6 lg:grid-cols-[minmax(0,1.45fr)_minmax(0,0.8fr)]">
-              <Card className="min-w-0">
+            <div className="grid items-stretch gap-6 lg:grid-cols-[minmax(0,1.45fr)_minmax(0,0.8fr)]">
+              <Card className="min-w-0 h-full flex flex-col">
                 <CardHeader>
                   <div className="flex flex-wrap items-start justify-between gap-3">
                     <div>
@@ -911,7 +911,7 @@ export default function App() {
                     </Select>
                   </div>
                 </CardHeader>
-                <CardContent>
+                <CardContent className="flex-1">
                   {overviewLoading ? (
                     <div className="flex h-52 items-center justify-center rounded-2xl border border-dashed border-border bg-muted/40 text-sm text-mutedForeground">
                       Loading cost data...
@@ -922,12 +922,12 @@ export default function App() {
                 </CardContent>
               </Card>
 
-              <Card className="min-w-0">
+              <Card className="min-w-0 h-full flex flex-col">
                 <CardHeader>
                   <CardTitle>System health</CardTitle>
                   <CardDescription>Live signals from each core service.</CardDescription>
                 </CardHeader>
-                <CardContent className="min-w-0 space-y-3 overflow-hidden">
+                <CardContent className="min-w-0 flex-1 space-y-3 overflow-hidden">
                   {overviewError ? (
                     <div className="rounded-2xl border border-dashed border-border bg-muted/40 px-4 py-6 text-sm text-mutedForeground">
                       {overviewError}

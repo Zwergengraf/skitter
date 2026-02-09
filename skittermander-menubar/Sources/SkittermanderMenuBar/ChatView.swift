@@ -220,7 +220,7 @@ struct ChatView: View {
                 }
 
                 HStack {
-                    Text("Enter: send | Cmd+Enter: newline")
+                    Text("Enter: send | Shift+Enter: newline")
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                     Spacer()
@@ -334,6 +334,25 @@ struct ChatView: View {
             Text(approvalDetailLine(for: toolRun))
                 .font(.caption2)
                 .foregroundStyle(.secondary)
+            if !toolRun.secretRefs.isEmpty {
+                Text("Secrets: \(toolRun.secretRefs.joined(separator: ", "))")
+                    .font(.caption2.monospaced())
+                    .foregroundStyle(.secondary)
+            }
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Parameters")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                ScrollView {
+                    Text(toolRun.inputPrettyJSON())
+                        .font(.caption.monospaced())
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .textSelection(.enabled)
+                }
+                .frame(maxWidth: .infinity, minHeight: 70, maxHeight: 170)
+                .padding(6)
+                .background(RoundedRectangle(cornerRadius: 6).fill(Color.black.opacity(0.06)))
+            }
             HStack(spacing: 8) {
                 Button {
                     Task { await state.approveToolRun(id: toolRun.id) }

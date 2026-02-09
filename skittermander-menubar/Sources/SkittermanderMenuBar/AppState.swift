@@ -220,8 +220,11 @@ final class AppState: ObservableObject {
     }
 
     func send(text: String) async {
+        var sessionForRecovery: String?
+        var sentAt = Date()
         do {
             let id = try await ensureSession(forceNew: false)
+            sessionForRecovery = id
             let userMessage = ChatMessage(
                 id: UUID().uuidString,
                 role: .user,
@@ -229,6 +232,7 @@ final class AppState: ObservableObject {
                 createdAt: Date(),
                 attachments: []
             )
+            sentAt = userMessage.createdAt
             messages.append(userMessage)
             isSending = true
             requestStartedAt = Date()
@@ -242,6 +246,10 @@ final class AppState: ObservableObject {
             progressStatusText = ""
             await refreshStatus()
         } catch {
+            if isTimeoutError(error), let sessionID = sessionForRecovery {
+                await recoverTimedOutSend(sessionID: sessionID, sentAt: sentAt, timeoutError: error)
+                return
+            }
             isSending = false
             requestStartedAt = nil
             progressStatusText = ""
@@ -421,6 +429,49 @@ final class AppState: ObservableObject {
     private func decisionActor() -> String {
         let userID = settings.userID.trimmingCharacters(in: .whitespacesAndNewlines)
         return userID.isEmpty ? "menubar" : userID
+    }
+
+    private func isTimeoutError(_ error: Error) -> Bool {
+        if let urlError = error as? URLError {
+            return urlError.code == .timedOut
+        }
+        let nsError = error as NSError
+        if nsError.domain == NSURLErrorDomain && nsError.code == URLError.timedOut.rawValue {
+            return true
+        }
+        return nsError.localizedDescription.localizedCaseInsensitiveContains("timed out")
+    }
+
+    private func recoverTimedOutSend(sessionID: String, sentAt: Date, timeoutError: Error) async {
+        errorBanner = "The request timed out locally. Waiting for server result..."
+        let deadline = Date().addingTimeInterval(180)
+        while Date() < deadline {
+            do {
+                let syncedMessages = try await api.sessionDetail(sessionID: sessionID)
+                if !syncedMessages.isEmpty {
+                    messages = syncedMessages
+                }
+                let hasAssistantReply = syncedMessages.contains { message in
+                    message.role == .assistant && message.createdAt >= sentAt
+                }
+                if hasAssistantReply {
+                    isSending = false
+                    requestStartedAt = nil
+                    progressStatusText = ""
+                    errorBanner = nil
+                    await refreshStatus()
+                    return
+                }
+            } catch {
+                // Keep polling while the backend run is still in progress.
+            }
+            try? await Task.sleep(nanoseconds: 2_000_000_000)
+        }
+        isSending = false
+        requestStartedAt = nil
+        progressStatusText = ""
+        setError(timeoutError)
+        activity = .idle
     }
 
     private func uniqueURL(baseDir: URL, preferredName: String) -> URL {

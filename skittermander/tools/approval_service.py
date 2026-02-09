@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from dataclasses import dataclass
 from typing import Any, Awaitable, Callable, Dict, Optional
 
@@ -11,6 +12,14 @@ from ..data.repositories import Repository
 
 
 ApprovalNotifier = Callable[[str, str, str, Dict[str, Any]], Awaitable[None]]
+_logger = logging.getLogger(__name__)
+
+
+def _looks_like_discord_channel_id(channel_id: str) -> bool:
+    value = (channel_id or "").strip()
+    if not value:
+        return False
+    return value.isdigit()
 
 
 @dataclass
@@ -63,11 +72,34 @@ class ToolApprovalService:
             )
         )
 
-        if self._notifier is not None:
-            await self._notifier(tool_run.id, channel_id, tool_name, payload)
-        else:
-            # If no notifier is configured, auto-approve to avoid blocking.
+        should_notify = self._notifier is not None and _looks_like_discord_channel_id(channel_id)
+        if should_notify:
+            try:
+                await self._notifier(tool_run.id, channel_id, tool_name, payload)
+            except Exception:
+                _logger.exception(
+                    "Failed to deliver tool approval request (tool_run_id=%s, channel_id=%s, tool=%s)",
+                    tool_run.id,
+                    channel_id,
+                    tool_name,
+                )
+                async with SessionLocal() as session:
+                    repo = Repository(session)
+                    await repo.deny_tool_run(tool_run.id, "system")
+                pending = self._pending.pop(tool_run.id, None)
+                if pending is not None and not pending.done():
+                    pending.set_result(False)
+        elif self._notifier is None:
+            # If no notifier is configured at all, auto-approve to avoid blocking.
             future.set_result(True)
+        else:
+            # Non-discord channels (e.g. web/menubar): keep request pending for API-driven approval.
+            _logger.info(
+                "Queued tool approval without notifier (tool_run_id=%s, channel_id=%s, tool=%s)",
+                tool_run.id,
+                channel_id,
+                tool_name,
+            )
 
         approved = await future
         return ApprovalDecision(tool_run_id=tool_run.id, approved=approved)

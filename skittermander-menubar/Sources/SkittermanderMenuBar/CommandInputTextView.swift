@@ -12,7 +12,7 @@ struct CommandInputTextView: NSViewRepresentable {
 
         override func keyDown(with event: NSEvent) {
             if event.keyCode == 36 { // Return
-                if event.modifierFlags.contains(.command) {
+                if event.modifierFlags.contains(.shift) {
                     insertNewline(nil)
                 } else {
                     onSubmit?()

@@ -12,8 +12,8 @@ context:
   max_chat_messages: 32
   compact_every_messages: 16
 limits:
-  max_tool_calls: 12
-  max_runtime_seconds: 180
+  max_tool_calls: 16
+  max_runtime_seconds: 600
   max_cost_usd: 0.10
 models:
   - name: main

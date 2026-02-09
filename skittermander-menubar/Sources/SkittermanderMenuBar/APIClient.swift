@@ -35,9 +35,18 @@ struct APIClient {
         return formatter
     }()
 
-    init(settings: SettingsStore, session: URLSession = .shared) {
+    init(settings: SettingsStore, session: URLSession? = nil) {
         self.settings = settings
-        self.session = session
+        self.session = session ?? Self.makeDefaultSession()
+    }
+
+    private static func makeDefaultSession() -> URLSession {
+        let configuration = URLSessionConfiguration.default
+        // Long-running agent requests can exceed URLSession shared defaults.
+        configuration.timeoutIntervalForRequest = 900
+        configuration.timeoutIntervalForResource = 3600
+        configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
+        return URLSession(configuration: configuration)
     }
 
     func health() async throws -> Bool {
@@ -157,7 +166,8 @@ struct APIClient {
             tool: latest.tool,
             status: latest.status,
             createdAt: parseDate(latest.created_at),
-            requestedBy: latest.requested_by
+            requestedBy: latest.requested_by,
+            input: latest.input ?? [:]
         )
     }
 
@@ -178,7 +188,8 @@ struct APIClient {
                     tool: $0.tool,
                     status: $0.status,
                     createdAt: parseDate($0.created_at),
-                    requestedBy: $0.requested_by
+                    requestedBy: $0.requested_by,
+                    input: $0.input ?? [:]
                 )
             }
     }
@@ -244,6 +255,11 @@ struct APIClient {
         requiresAPIKey: Bool
     ) async throws -> T {
         var request = try buildRequest(path: path, method: method, requiresAPIKey: requiresAPIKey)
+        if path.hasPrefix("/v1/messages") && method.uppercased() == "POST" {
+            request.timeoutInterval = 900
+        } else {
+            request.timeoutInterval = 120
+        }
         if let body {
             request.httpBody = try JSONEncoder().encode(body)
             request.setValue("application/json", forHTTPHeaderField: "Content-Type")
@@ -371,6 +387,7 @@ private struct ToolRunPayload: Decodable {
     let status: String
     let created_at: String
     let requested_by: String?
+    let input: [String: JSONValue]?
 }
 
 private struct ModelPayload: Decodable {
