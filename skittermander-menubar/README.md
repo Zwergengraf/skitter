@@ -27,9 +27,24 @@ Native macOS menu bar companion for your Skittermander API server.
 ## Run
 
 ```bash
-cd /Users/gabriel/Code/Skittermander/skittermander-menubar
+cd ./skittermander-menubar
 swift build
 swift run
+```
+
+## Install locally + autostart on login
+
+```bash
+cd ./skittermander-menubar
+chmod +x ./install-menubar.sh
+./install-menubar.sh install
+```
+
+Useful commands:
+
+```bash
+./install-menubar.sh status
+./install-menubar.sh uninstall
 ```
 
 ## First-time setup
