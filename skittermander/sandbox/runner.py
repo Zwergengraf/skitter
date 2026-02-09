@@ -123,19 +123,22 @@ def create_app() -> FastAPI:
     app = FastAPI(title="Skittermander Sandbox", lifespan=lifespan)
 
     def safe_path(path: str) -> Path:
-        raw = Path(path)
+        value = str(path or "").strip()
+        if not value:
+            raise HTTPException(status_code=400, detail="path is required")
+        if value == "/workspace" or value.startswith("/workspace/"):
+            raise HTTPException(
+                status_code=400,
+                detail="Invalid path. Do not use '/workspace/...'. Use virtual root '/' (e.g. '/memory/file.md') or a relative path ('memory/file.md').",
+            )
+        if value == "workspace" or value.startswith("workspace/"):
+            raise HTTPException(
+                status_code=400,
+                detail="Invalid path. Do not use leading 'workspace/'. Use virtual root '/' (e.g. '/memory/file.md') or a relative path ('memory/file.md').",
+            )
+        raw = Path(value)
         if raw.is_absolute():
-            try:
-                candidate = raw.resolve()
-                try:
-                    root_resolved = workspace_root.resolve()
-                except OSError:
-                    root_resolved = workspace_root
-                if root_resolved in candidate.parents or candidate == root_resolved:
-                    return candidate
-            except OSError:
-                pass
-            # Treat absolute paths as workspace-relative (strip leading slash)
+            # Virtual absolute path: "/" maps to workspace root.
             raw = Path(str(raw).lstrip("/"))
         candidate = (workspace_root / raw).resolve()
         if workspace_root not in candidate.parents and candidate != workspace_root:
@@ -150,7 +153,10 @@ def create_app() -> FastAPI:
             rel = target.relative_to(workspace_root)
         except ValueError:
             rel = target.name
-        return str(Path("/workspace") / rel)
+        rel_str = str(rel).replace("\\", "/")
+        if rel_str in {"", "."}:
+            return "/"
+        return f"/{rel_str.lstrip('/')}"
 
     def _read_text_file(
         target: Path, offset: int | None, limit: int | None, max_lines: int = 2000, max_bytes: int = 50 * 1024

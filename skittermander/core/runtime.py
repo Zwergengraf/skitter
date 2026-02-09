@@ -839,16 +839,19 @@ class AgentRuntime:
             return None
         candidate_path = raw_path.strip()
         if candidate_path.startswith("sandbox:/workspace/"):
-            candidate_path = "/workspace/" + candidate_path.removeprefix("sandbox:/workspace/")
+            candidate_path = "/" + candidate_path.removeprefix("sandbox:/workspace/")
+        if candidate_path == "/workspace":
+            candidate_path = "/"
+        elif candidate_path.startswith("/workspace/"):
+            # Backward compatibility for older path formats.
+            candidate_path = "/" + str(Path(candidate_path).relative_to("/workspace"))
 
         from .workspace import user_workspace_root
 
         workspace = user_workspace_root(user_id).resolve()
         as_path = Path(candidate_path)
-        if candidate_path.startswith("/workspace/"):
-            candidate = workspace / Path(candidate_path).relative_to("/workspace")
-        elif as_path.is_absolute():
-            candidate = as_path
+        if as_path.is_absolute():
+            candidate = workspace / Path(str(as_path).lstrip("/"))
         else:
             candidate = workspace / as_path
         try:
