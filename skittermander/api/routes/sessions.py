@@ -14,6 +14,8 @@ from ..schemas import (
     SessionToolRunOut,
 )
 from ...core.llm import list_models
+from ...core.config import settings
+from ...core.sessions import SessionManager
 from ...data.repositories import Repository
 
 router = APIRouter(prefix="/v1/sessions", tags=["sessions"])
@@ -42,14 +44,28 @@ async def list_sessions(
 
 
 @router.post("", response_model=SessionOut)
-async def create_session(payload: SessionCreate, repo: Repository = Depends(get_repo)) -> SessionOut:
+async def create_session(
+    payload: SessionCreate,
+    request: Request,
+    repo: Repository = Depends(get_repo),
+) -> SessionOut:
     user = await repo.get_or_create_user(payload.user_id)
     origin = (payload.origin or "web").strip() or "web"
     session = None
     if payload.reuse_active:
         session = await repo.get_active_session(user.id, origin=origin)
     if session is None:
-        session = await repo.create_session(user.id, origin=origin)
+        if not payload.reuse_active:
+            runtime = getattr(request.app.state, "runtime", None)
+            if runtime is not None:
+                manager = SessionManager(runtime, settings.workspace_root)
+                _, new_session_id = await manager.start_new_session_for_origin(
+                    user_id=user.id,
+                    origin=origin,
+                )
+                session = await repo.get_session(new_session_id)
+        if session is None:
+            session = await repo.create_session(user.id, origin=origin)
     return SessionOut(
         id=session.id,
         user_id=session.user_id,

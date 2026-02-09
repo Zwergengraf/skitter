@@ -36,11 +36,23 @@ class SessionManager:
     async def start_new_session(
         self, user_id: str, channel_id: str
     ) -> tuple[Optional[Path], str]:
+        return await self.start_new_session_for_origin(
+            user_id=user_id,
+            origin="discord",
+            channel_id=channel_id,
+        )
+
+    async def start_new_session_for_origin(
+        self,
+        user_id: str,
+        origin: str,
+        channel_id: str | None = None,
+    ) -> tuple[Optional[Path], str]:
         summary_path: Optional[Path] = None
         ensure_user_workspace(user_id)
         async with SessionLocal() as session:
             repo = Repository(session)
-            active = await repo.get_active_session(user_id, origin="discord")
+            active = await repo.get_active_session(user_id, origin=origin)
             if active is not None:
                 summary = await self.runtime.summarize_session(active.id)
                 summary_path, _ = self._write_summary(user_id, summary, active.id)
@@ -49,8 +61,9 @@ class SessionManager:
                 await repo.end_session(active.id, status="ended")
                 self.runtime.clear_history(active.id)
             model_name = resolve_model_name(None, purpose="main")
-            new_session = await repo.create_session(user_id, model=model_name, origin="discord")
-        self._channel_session[channel_id] = new_session.id
+            new_session = await repo.create_session(user_id, model=model_name, origin=origin)
+        if channel_id:
+            self._channel_session[channel_id] = new_session.id
         return summary_path, new_session.id
 
     async def reindex_memories(self, user_id: str) -> dict:
