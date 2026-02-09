@@ -6,13 +6,24 @@ from pathlib import Path
 from .config import settings
 
 
+def _project_root() -> Path:
+    # workspace.py lives at <repo>/skittermander/core/workspace.py
+    return Path(__file__).resolve().parents[2]
+
+
 def _base_workspace_root() -> Path:
-    return Path(settings.workspace_root)
+    root = Path(settings.workspace_root)
+    if root.is_absolute():
+        return root
+    return (_project_root() / root).resolve()
 
 
 def _host_workspace_root() -> Path:
-    root = settings.host_workspace_root or settings.workspace_root
-    return Path(root).resolve()
+    root_value = settings.host_workspace_root or settings.workspace_root
+    root = Path(root_value)
+    if root.is_absolute():
+        return root
+    return (_project_root() / root).resolve()
 
 
 def users_root() -> Path:

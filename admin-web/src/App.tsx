@@ -1806,7 +1806,7 @@ export default function App() {
                           <TableCell>
                             <Button
                               size="sm"
-                              variant="destructive"
+                              variant="danger"
                               onClick={() => handleSecretDelete(secret.name)}
                             >
                               Delete

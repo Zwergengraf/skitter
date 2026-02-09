@@ -135,6 +135,11 @@ def apply_settings_update(values: dict[str, Any]) -> Settings:
 
 
 settings = Settings()
+_env_overrides = {
+    field_name: getattr(settings, field_name)
+    for field_name in settings.model_fields_set
+    if field_name in Settings.model_fields
+}
 _yaml_config = _load_yaml_config(_config_path())
 if _yaml_config:
     flat = flatten_config(_yaml_config)
@@ -145,6 +150,9 @@ if _yaml_config:
     if "heartbeat_model" in _yaml_config:
         flat["heartbeat_model"] = _yaml_config.get("heartbeat_model")
     apply_settings_update(flat)
+    # Keep explicit SKITTER_* env vars authoritative over YAML values.
+    if _env_overrides:
+        apply_settings_update(_env_overrides)
 else:
     try:
         _write_yaml_config(_config_path(), build_config_from_settings(settings))

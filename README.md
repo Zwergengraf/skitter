@@ -136,6 +136,40 @@ To disable Discord:
 SKITTER_ENABLE_DISCORD=false python -m skittermander.server
 ```
 
+## Docker Compose (DB + API + Admin Web)
+
+Use this when you want core components fully containerized.
+
+### 1) Prepare env/config
+
+- Ensure `.env` contains at least:
+  - `SKITTER_API_KEY=...`
+  - `SKITTER_CONFIG_PATH=config.yaml`
+- Ensure `config.yaml` exists and has your model configuration.
+
+### 2) Build all required images (API, Admin Web, Sandbox)
+
+```bash
+docker compose --profile sandbox build
+```
+
+### 3) Start core services
+
+```bash
+docker compose up -d postgres api admin-web
+```
+
+Endpoints:
+
+- API: `http://localhost:8000`
+- Admin Web UI: `http://localhost:5173`
+
+Notes:
+
+- `api` auto-runs DB initialization on startup (`python -m skittermander.data.init_db`).
+- `sandbox` image is built but not started as a long-running service. The API spawns per-user sandbox containers on demand via Docker socket access.
+- The admin web image is built with `VITE_API_KEY`; this key is embedded in client-side assets. Do not expose this UI publicly without additional auth controls.
+
 ## Run Client Apps
 
 ### Admin Web UI (React/Vite)

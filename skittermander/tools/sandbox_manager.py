@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import shutil
 import time
 from dataclasses import dataclass
@@ -112,7 +113,7 @@ class SandboxManager:
         if self._client is None:
             raise RuntimeError("Docker is not available.")
         ensure_user_workspace(user_id)
-        host_workspace = host_user_workspace_root(user_id)
+        host_workspace = self._resolve_host_workspace_root(user_id)
         host_workspace.mkdir(parents=True, exist_ok=True)
         legacy_browser_root = host_workspace / "browser"
         browser_root = host_workspace / ".browser"
@@ -201,6 +202,32 @@ class SandboxManager:
         )
         self._cache[user_id] = info
         return info
+
+    def _resolve_host_workspace_root(self, user_id: str) -> Path:
+        """Resolve the host path used for sandbox bind mounts.
+
+        When running inside Docker, prefer deriving the real host source path from
+        this API container's `/workspace` bind mount. This avoids brittle CWD-based
+        path construction and prevents accidental mounts from package subfolders.
+        """
+        fallback = host_user_workspace_root(user_id)
+        if not self._inside_docker or self._client is None:
+            return fallback
+        try:
+            current_container_id = os.environ.get("HOSTNAME", "").strip()
+            if not current_container_id:
+                return fallback
+            current = self._client.containers.get(current_container_id)
+            current.reload()
+            mounts = current.attrs.get("Mounts", [])
+            for mount in mounts:
+                if mount.get("Destination") == settings.workspace_root:
+                    source = mount.get("Source")
+                    if source:
+                        return Path(source).resolve() / "users" / user_id
+        except Exception:
+            return fallback
+        return fallback
 
     def _wait_ready(self, base_url: str) -> None:
         retries = max(1, settings.sandbox_connect_retries)

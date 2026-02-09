@@ -9,29 +9,53 @@ services:
       - "5432:5432"
     volumes:
       - skitter_pg:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d skittermander"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
 
   api:
     build:
       context: .
       dockerfile: Dockerfile
     environment:
+      SKITTER_CONFIG_PATH: ${SKITTER_CONFIG_PATH:-config.yaml}
+      SKITTER_API_KEY: ${SKITTER_API_KEY:-}
+      SKITTER_SECRETS_MASTER_KEY: ${SKITTER_SECRETS_MASTER_KEY:-}
+      SKITTER_ENABLE_DISCORD: ${SKITTER_ENABLE_DISCORD:-false}
       SKITTER_DB_URL: postgresql+asyncpg://postgres:postgres@postgres:5432/skittermander
       SKITTER_WORKSPACE_ROOT: /workspace
-      SKITTER_HOST_WORKSPACE_ROOT: ${PWD}/workspace
+      SKITTER_HOST_WORKSPACE_ROOT: ${SKITTER_HOST_WORKSPACE_ROOT:-}
       SKITTER_SANDBOX_IMAGE: skittermander-sandbox
-      SKITTER_SANDBOX_NETWORK: skittermander_default
+      SKITTER_SANDBOX_NETWORK: ${COMPOSE_PROJECT_NAME:-skittermander}_default
       SKITTER_SANDBOX_PORT: 9080
-      SKITTER_SECRETS_MASTER_KEY: ""
     depends_on:
-      - postgres
+      postgres:
+        condition: service_healthy
     ports:
       - "8000:8000"
     volumes:
-      - ./:/app
       - ./workspace:/workspace
-      - ./browser-data:/browser-data
+      - ./workspace-skeleton:/app/workspace-skeleton:ro
+      - ./config.yaml:/app/config.yaml
+      - ./system_prompt.md:/app/system_prompt.md
       - /var/run/docker.sock:/var/run/docker.sock
-    command: ["python", "-m", "skittermander.server"]
+    command: ["sh", "-c", "python -m skittermander.data.init_db && python -m skittermander.server"]
+    restart: unless-stopped
+
+  admin-web:
+    build:
+      context: ./admin-web
+      dockerfile: Dockerfile
+      args:
+        VITE_API_BASE_URL: ${ADMIN_WEB_API_BASE_URL:-http://localhost:8000}
+        VITE_API_KEY: ${SKITTER_API_KEY:-}
+    depends_on:
+      - api
+    ports:
+      - "5173:80"
+    restart: unless-stopped
 
   sandbox:
     build:
