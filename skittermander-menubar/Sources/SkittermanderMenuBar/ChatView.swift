@@ -4,6 +4,7 @@ import SwiftUI
 struct ChatView: View {
     @ObservedObject var state: AppState
     @State private var visibleLimit: Int = 160
+    private static let progressMessageID = "temporary-progress-message"
     private static let relativeTimeFormatter: RelativeDateTimeFormatter = {
         let formatter = RelativeDateTimeFormatter()
         formatter.unitsStyle = .abbreviated
@@ -50,21 +51,6 @@ struct ChatView: View {
                 .background(Color.red.opacity(0.08))
             }
 
-            if !state.progressStatusText.isEmpty {
-                Divider()
-                VStack(alignment: .leading, spacing: 4) {
-                    ForEach(state.progressStatusText.split(separator: "\n"), id: \.self) { line in
-                        Text(String(line))
-                            .font(.caption.monospaced())
-                            .foregroundStyle(.secondary)
-                    }
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.horizontal, 12)
-                .padding(.vertical, 8)
-                .background(Color.secondary.opacity(0.08))
-            }
-
             if !state.pendingToolApprovals.isEmpty {
                 Divider()
                 VStack(alignment: .leading, spacing: 8) {
@@ -101,6 +87,9 @@ struct ChatView: View {
                         ForEach(displayedMessages) { message in
                             messageRow(message)
                         }
+                        if !state.progressStatusText.isEmpty {
+                            progressMessageRow()
+                        }
                     }
                     .padding(12)
                 }
@@ -108,6 +97,9 @@ struct ChatView: View {
                     scrollToBottom(proxy)
                 }
                 .onChange(of: state.chatOpenSignal) { _, _ in
+                    scrollToBottom(proxy)
+                }
+                .onChange(of: state.progressStatusText) { _, _ in
                     scrollToBottom(proxy)
                 }
             }
@@ -379,11 +371,49 @@ struct ChatView: View {
         .background(RoundedRectangle(cornerRadius: 8).fill(Color.white.opacity(0.65)))
     }
 
+    @ViewBuilder
+    private func progressMessageRow() -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                Text("Skittermander")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Spacer()
+                HStack(spacing: 5) {
+                    ProgressView()
+                        .controlSize(.small)
+                    Text("temporary")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            VStack(alignment: .leading, spacing: 4) {
+                ForEach(state.progressStatusText.split(separator: "\n"), id: \.self) { line in
+                    Text(String(line))
+                        .font(.caption.monospaced())
+                        .foregroundStyle(.secondary)
+                }
+            }
+        }
+        .padding(11)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            RoundedRectangle(cornerRadius: 10)
+                .fill(Color.secondary.opacity(0.08))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 10)
+                        .stroke(Color.secondary.opacity(0.35), style: StrokeStyle(lineWidth: 1, dash: [5, 3]))
+                )
+        )
+        .id(Self.progressMessageID)
+    }
+
     private func scrollToBottom(_ proxy: ScrollViewProxy) {
-        guard let lastID = state.messages.last?.id else { return }
+        let targetID = !state.progressStatusText.isEmpty ? Self.progressMessageID : state.messages.last?.id
+        guard let targetID else { return }
         DispatchQueue.main.async {
             withAnimation(.easeOut(duration: 0.15)) {
-                proxy.scrollTo(lastID, anchor: .bottom)
+                proxy.scrollTo(targetID, anchor: .bottom)
             }
         }
     }
