@@ -46,7 +46,7 @@ struct CommandInputTextView: NSViewRepresentable {
 
     func makeNSView(context: Context) -> NSScrollView {
         let scroll = NSScrollView()
-        scroll.borderType = .bezelBorder
+        scroll.borderType = .noBorder
         scroll.hasVerticalScroller = true
         scroll.autohidesScrollers = true
         scroll.drawsBackground = false
@@ -60,6 +60,7 @@ struct CommandInputTextView: NSViewRepresentable {
         textView.isContinuousSpellCheckingEnabled = false
         textView.font = NSFont.systemFont(ofSize: NSFont.systemFontSize)
         textView.backgroundColor = .clear
+        textView.textContainerInset = NSSize(width: 8, height: 8)
         textView.onSubmit = onSubmit
         textView.onEscape = onEscape
         textView.string = text

@@ -17,6 +17,7 @@ class SessionOut(BaseModel):
     user_id: str
     created_at: datetime
     status: str
+    model: str | None = None
     input_tokens: int = 0
     output_tokens: int = 0
     total_tokens: int = 0
@@ -27,6 +28,15 @@ class SessionOut(BaseModel):
     last_cost: float = 0.0
     last_model: str | None = None
     last_usage_at: datetime | None = None
+
+
+class SessionModelUpdate(BaseModel):
+    model_name: str
+
+
+class SessionModelSetOut(BaseModel):
+    session_id: str
+    model: str
 
 
 class SessionListItem(BaseModel):
@@ -119,6 +129,11 @@ class SkillOut(BaseModel):
     name: str
     description: str
     path: str
+
+
+class ModelOut(BaseModel):
+    name: str
+    model: str
 
 
 class SecretCreate(BaseModel):

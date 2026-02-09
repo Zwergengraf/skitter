@@ -22,23 +22,38 @@ struct ChatView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            HStack {
-                Text(state.health.label)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                Spacer()
-                Text(state.activity.label)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 8)
-
-            Divider()
-
             HStack(spacing: 10) {
+                Text("Model:")
+                    .lineLimit(1)
+                Menu {
+                    if state.availableModels.isEmpty {
+                        Text("No models available")
+                    } else {
+                        ForEach(state.availableModels, id: \.self) { model in
+                            Button {
+                                Task { await state.switchModel(to: model) }
+                            } label: {
+                                if model == state.modelName {
+                                    Label(model, systemImage: "checkmark")
+                                } else {
+                                    Text(model)
+                                }
+                            }
+                        }
+                    }
+                } label: {
+                    Text(state.modelName)
+                        .lineLimit(1)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 3)
+                    .background(
+                        RoundedRectangle(cornerRadius: 6)
+                            .fill(Color.secondary.opacity(0.10))
+                    )
+                }
+                .menuStyle(.borderlessButton)
                 Text(
-                    "Model: \(state.modelName)  |  Tokens: \(state.totalTokens)  |  Context: \(state.contextTokens)  |  Cost: $\(String(format: "%.2f", state.sessionCost))"
+                    "Tokens: \(state.totalTokens)  |  Context: \(state.contextTokens)  |  Cost: $\(String(format: "%.2f", state.sessionCost))"
                 )
                 .lineLimit(1)
                 .truncationMode(.middle)
@@ -143,14 +158,31 @@ struct ChatView: View {
                 }
 
                 HStack(alignment: .bottom, spacing: 8) {
-                    CommandInputTextView(
-                        text: $state.draft,
-                        onSubmit: { Task { await state.sendCurrentDraft() } },
-                        onEscape: {
-                            state.draft = ""
+                    ZStack(alignment: .topLeading) {
+                        if state.draft.isEmpty {
+                            Text("Message")
+                                .foregroundStyle(.secondary)
+                                .padding(.leading, 12)
+                                .padding(.top, 11)
                         }
-                    )
+                        CommandInputTextView(
+                            text: $state.draft,
+                            onSubmit: { Task { await state.sendCurrentDraft() } },
+                            onEscape: {
+                                state.draft = ""
+                            }
+                        )
+                    }
                     .frame(minHeight: 54, idealHeight: 96, maxHeight: 130)
+                    .background(
+                        RoundedRectangle(cornerRadius: 10)
+                            .fill(Color.secondary.opacity(0.09))
+                    )
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 10)
+                            .stroke(Color.secondary.opacity(0.18), lineWidth: 1)
+                    )
+                    .clipShape(RoundedRectangle(cornerRadius: 10))
 
                     Button(action: {
                         Task { await state.sendCurrentDraft() }
@@ -217,9 +249,7 @@ struct ChatView: View {
                 }
             }
 
-            Text(message.content.isEmpty ? "(empty)" : message.content)
-                .font(.body)
-                .textSelection(.enabled)
+            MarkdownMessageText(message.content.isEmpty ? "(empty)" : message.content)
 
             if !message.attachments.isEmpty {
                 VStack(alignment: .leading, spacing: 8) {
@@ -251,30 +281,19 @@ struct ChatView: View {
                 Spacer()
                 if let url {
                     Button("Open") {
-                        NSWorkspace.shared.open(url)
+                        Task { await state.openAttachment(url: url, preferredName: attachment.filename) }
                     }
                     .buttonStyle(.bordered)
                     .font(.caption)
                     Button("Download") {
-                        Task { await downloadAttachment(url: url, preferredName: attachment.filename) }
+                        Task { await state.downloadAttachment(url: url, preferredName: attachment.filename) }
                     }
                     .buttonStyle(.bordered)
                     .font(.caption)
                 }
             }
             if let url, isImageAttachment(attachment) {
-                AsyncImage(url: url) { image in
-                    image
-                        .resizable()
-                        .scaledToFit()
-                        .frame(maxWidth: 320)
-                        .clipShape(RoundedRectangle(cornerRadius: 8))
-                } placeholder: {
-                    RoundedRectangle(cornerRadius: 8)
-                        .fill(Color.secondary.opacity(0.15))
-                        .frame(width: 320, height: 120)
-                        .overlay(ProgressView())
-                }
+                AttachmentThumbnailView(state: state, url: url, maxWidth: 320)
             }
         }
         .padding(8)
@@ -358,23 +377,41 @@ struct ChatView: View {
         let base = state.settings.apiURL.trimmingCharacters(in: .whitespacesAndNewlines)
         return URL(string: base) ?? URL(string: "http://localhost:8000")!
     }
+}
 
-    private func downloadAttachment(url: URL, preferredName: String) async {
-        do {
-            let (data, _) = try await URLSession.shared.data(from: url)
-            let downloadsDir = FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask).first
-                ?? FileManager.default.temporaryDirectory
-            var destination = downloadsDir.appendingPathComponent(preferredName)
-            if FileManager.default.fileExists(atPath: destination.path) {
-                let ext = destination.pathExtension
-                let stem = destination.deletingPathExtension().lastPathComponent
-                let stamped = "\(stem)-\(Int(Date().timeIntervalSince1970))"
-                destination = downloadsDir.appendingPathComponent(stamped).appendingPathExtension(ext)
+private struct AttachmentThumbnailView: View {
+    @ObservedObject var state: AppState
+    let url: URL
+    let maxWidth: CGFloat
+
+    @State private var image: NSImage?
+    @State private var loading = false
+
+    var body: some View {
+        Group {
+            if let image {
+                Image(nsImage: image)
+                    .resizable()
+                    .scaledToFit()
+                    .frame(maxWidth: maxWidth)
+                    .clipShape(RoundedRectangle(cornerRadius: 8))
+            } else {
+                RoundedRectangle(cornerRadius: 8)
+                    .fill(Color.secondary.opacity(0.15))
+                    .frame(width: maxWidth, height: 120)
+                    .overlay(loading ? AnyView(ProgressView()) : AnyView(EmptyView()))
             }
-            try data.write(to: destination)
-            NSWorkspace.shared.activateFileViewerSelecting([destination])
-        } catch {
-            state.errorBanner = "Download failed: \(error.localizedDescription)"
         }
+        .task(id: url.absoluteString) {
+            await load()
+        }
+    }
+
+    private func load() async {
+        loading = true
+        defer { loading = false }
+        guard let data = await state.fetchAttachmentData(url: url) else { return }
+        guard let image = NSImage(data: data) else { return }
+        self.image = image
     }
 }

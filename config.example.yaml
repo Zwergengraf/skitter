@@ -8,9 +8,9 @@ prompt:
   - IDENTITY.md
   - USER.md
 context:
-  max_tool_messages: 10
+  max_tool_messages: 8
   max_chat_messages: 32
-  compact_every_messages: 8
+  compact_every_messages: 16
 limits:
   max_tool_calls: 12
   max_runtime_seconds: 180

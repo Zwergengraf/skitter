@@ -1,4 +1,5 @@
 import Foundation
+import AppKit
 
 struct LocalCommand: Identifiable {
     let id: String
@@ -16,6 +17,7 @@ final class AppState: ObservableObject {
     @Published private(set) var sessionCost: Double = 0
     @Published private(set) var totalTokens: Int = 0
     @Published private(set) var modelName: String = "default"
+    @Published private(set) var availableModels: [String] = []
     @Published private(set) var sessionID: String?
     @Published private(set) var messages: [ChatMessage] = []
     @Published private(set) var chatOpenSignal: Int = 0
@@ -28,6 +30,7 @@ final class AppState: ObservableObject {
     private let api: APIClient
     private var pollTask: Task<Void, Never>?
     private var requestStartedAt: Date?
+    private var lastModelFetchAt: Date?
 
     static let commands: [LocalCommand] = [
         LocalCommand(id: "help", name: "/help", usage: "/help", description: "Show available commands"),
@@ -92,6 +95,55 @@ final class AppState: ObservableObject {
 
     func dismissErrorBanner() {
         errorBanner = nil
+    }
+
+    func switchModel(to model: String) async {
+        do {
+            let id = try await ensureSession(forceNew: false)
+            let selected = try await api.setSessionModel(sessionID: id, modelName: model)
+            modelName = selected
+            if !availableModels.contains(selected) {
+                availableModels.append(selected)
+                availableModels.sort()
+            }
+            await refreshStatus()
+        } catch {
+            setError(error)
+        }
+    }
+
+    func fetchAttachmentData(url: URL) async -> Data? {
+        do {
+            return try await api.fetchData(from: url.absoluteString)
+        } catch {
+            setError(error)
+            return nil
+        }
+    }
+
+    func openAttachment(url: URL, preferredName: String) async {
+        guard let data = await fetchAttachmentData(url: url) else { return }
+        do {
+            let tmpDir = FileManager.default.temporaryDirectory
+            let fileURL = uniqueURL(baseDir: tmpDir, preferredName: preferredName)
+            try data.write(to: fileURL, options: .atomic)
+            NSWorkspace.shared.open(fileURL)
+        } catch {
+            setError(error)
+        }
+    }
+
+    func downloadAttachment(url: URL, preferredName: String) async {
+        guard let data = await fetchAttachmentData(url: url) else { return }
+        do {
+            let downloadsDir = FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask).first
+                ?? FileManager.default.temporaryDirectory
+            let destination = uniqueURL(baseDir: downloadsDir, preferredName: preferredName)
+            try data.write(to: destination, options: .atomic)
+            NSWorkspace.shared.activateFileViewerSelecting([destination])
+        } catch {
+            setError(error)
+        }
     }
 
     func sendCurrentDraft() async {
@@ -266,6 +318,22 @@ final class AppState: ObservableObject {
         if !anySuccess {
             health = .error(lastError?.localizedDescription ?? "status check failed")
             setError(lastError)
+        } else if case .healthy = health {
+            errorBanner = nil
+        }
+
+        if shouldRefreshModels() {
+            do {
+                let models = try await api.listModelNames()
+                availableModels = models.sorted()
+                lastModelFetchAt = Date()
+            } catch {
+                lastError = error
+            }
+        }
+        if !modelName.isEmpty && !availableModels.contains(modelName) {
+            availableModels.append(modelName)
+            availableModels.sort()
         }
     }
 
@@ -292,5 +360,32 @@ final class AppState: ObservableObject {
             return
         }
         errorBanner = text
+    }
+
+    private func shouldRefreshModels() -> Bool {
+        if availableModels.isEmpty || lastModelFetchAt == nil {
+            return true
+        }
+        guard let last = lastModelFetchAt else { return true }
+        return Date().timeIntervalSince(last) >= 60
+    }
+
+    private func uniqueURL(baseDir: URL, preferredName: String) -> URL {
+        let cleanName = preferredName.trimmingCharacters(in: .whitespacesAndNewlines)
+        let raw = cleanName.isEmpty ? "attachment" : cleanName
+        let safe = raw.replacingOccurrences(of: "/", with: "_").replacingOccurrences(of: ":", with: "_")
+        var url = baseDir.appendingPathComponent(safe)
+        if !FileManager.default.fileExists(atPath: url.path) {
+            return url
+        }
+        let ext = url.pathExtension
+        let stem = url.deletingPathExtension().lastPathComponent
+        let stamp = Int(Date().timeIntervalSince1970)
+        if ext.isEmpty {
+            url = baseDir.appendingPathComponent("\(stem)-\(stamp)")
+        } else {
+            url = baseDir.appendingPathComponent("\(stem)-\(stamp)").appendingPathExtension(ext)
+        }
+        return url
     }
 }

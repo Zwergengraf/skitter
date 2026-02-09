@@ -129,6 +129,7 @@ class Repository:
         if session is None:
             return None
         session.model = model
+        session.last_model = model
         await self.session.commit()
         return session
 

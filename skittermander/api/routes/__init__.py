@@ -1,4 +1,4 @@
-from . import channels, events, memory, messages, overview, schedules, sessions, skills, tools, users, sandbox, config, secrets
+from . import channels, events, memory, messages, overview, schedules, sessions, skills, tools, users, sandbox, config, secrets, models
 
 __all__ = [
     "channels",
@@ -14,4 +14,5 @@ __all__ = [
     "users",
     "sandbox",
     "config",
+    "models",
 ]

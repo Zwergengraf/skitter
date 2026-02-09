@@ -63,7 +63,7 @@ struct APIClient {
             contextTokens: payload.last_input_tokens ?? 0,
             totalTokens: payload.total_tokens ?? 0,
             totalCost: payload.total_cost ?? 0,
-            modelName: payload.last_model ?? "default"
+            modelName: payload.last_model ?? payload.model ?? "default"
         )
     }
 
@@ -150,6 +150,40 @@ struct APIClient {
         )
     }
 
+    func listModelNames() async throws -> [String] {
+        let payload: [ModelPayload] = try await requestJSON(
+            path: "/v1/models",
+            method: "GET",
+            body: Optional<Int>.none,
+            requiresAPIKey: true
+        )
+        return payload.map { $0.name }
+    }
+
+    func setSessionModel(sessionID: String, modelName: String) async throws -> String {
+        let body = SessionModelSetBody(model_name: modelName)
+        let payload: SessionModelSetPayload = try await requestJSON(
+            path: "/v1/sessions/\(sessionID)/model",
+            method: "POST",
+            body: body,
+            requiresAPIKey: true
+        )
+        return payload.model
+    }
+
+    func fetchData(from rawURL: String) async throws -> Data {
+        let url = try resolveURL(from: rawURL)
+        var request = URLRequest(url: url)
+        request.httpMethod = "GET"
+        let key = settings.apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !key.isEmpty {
+            request.setValue(key, forHTTPHeaderField: "X-API-Key")
+        }
+        let (data, response) = try await session.data(for: request)
+        try ensureHTTP200(response: response, data: data)
+        return data
+    }
+
     private func requestJSON<T: Decodable, B: Encodable>(
         path: String,
         method: String,
@@ -200,6 +234,14 @@ struct APIClient {
         return finalURL
     }
 
+    private func resolveURL(from rawURL: String) throws -> URL {
+        let trimmed = rawURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let url = URL(string: trimmed), url.scheme != nil {
+            return url
+        }
+        return try url(path: trimmed)
+    }
+
     private func ensureHTTP200(response: URLResponse, data: Data) throws {
         guard let http = response as? HTTPURLResponse else {
             throw APIError.http(-1, "Invalid response")
@@ -231,6 +273,7 @@ private struct SessionCreateBody: Encodable {
 
 private struct SessionPayload: Decodable {
     let id: String
+    let model: String?
     let total_cost: Double?
     let total_tokens: Int?
     let last_input_tokens: Int?
@@ -264,6 +307,19 @@ private struct ToolRunPayload: Decodable {
     let tool: String
     let status: String
     let created_at: String
+}
+
+private struct ModelPayload: Decodable {
+    let name: String
+}
+
+private struct SessionModelSetBody: Encodable {
+    let model_name: String
+}
+
+private struct SessionModelSetPayload: Decodable {
+    let session_id: String
+    let model: String
 }
 
 private struct SessionDetailPayload: Decodable {
