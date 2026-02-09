@@ -1,5 +1,5 @@
 import asyncio
-from datetime import datetime
+from datetime import UTC, datetime
 
 import pytest
 
@@ -17,6 +17,14 @@ async def test_event_bus_publish_subscribe() -> None:
             return event
 
     task = asyncio.create_task(reader())
-    await bus.publish(StreamEvent(session_id=session_id, type="test", data={}, created_at=datetime.utcnow()))
-    result = await task
+    # Ensure the subscriber queue is registered before publishing,
+    # otherwise publish can race and drop the event.
+    for _ in range(100):
+        if bus._queues.get(session_id):
+            break
+        await asyncio.sleep(0)
+    assert bus._queues.get(session_id)
+
+    await bus.publish(StreamEvent(session_id=session_id, type="test", data={}, created_at=datetime.now(UTC)))
+    result = await asyncio.wait_for(task, timeout=1.0)
     assert result.type == "test"

@@ -2,6 +2,7 @@ from __future__ import annotations
 import asyncio
 import io
 import json
+import re
 from datetime import datetime
 from typing import Iterable, Optional
 
@@ -14,6 +15,111 @@ from ..data.repositories import Repository
 from ..tools.approval_service import ToolApprovalService
 from ..core.models import Attachment, MessageEnvelope
 from .base import EventHandler, TransportAdapter
+
+DISCORD_MESSAGE_CHAR_LIMIT = 2000
+LINK_WRAP_THRESHOLD = 3
+URL_PATTERN = re.compile(r"https?://[^\s<>]+")
+UNWRAPPED_URL_PATTERN = re.compile(r"(?<!<)(https?://[^\s<>]+)(?!>)")
+PARAGRAPH_BREAK_PATTERN = re.compile(r"\n{2,}")
+SENTENCE_BREAK_PATTERN = re.compile(r"[.!?](?:[\"')\]]+)?\s+")
+
+
+def _count_links(content: str) -> int:
+    return len(URL_PATTERN.findall(content))
+
+
+def _split_trailing_url_punctuation(url: str) -> tuple[str, str]:
+    suffix = ""
+    while url:
+        last = url[-1]
+        if last in ",.!?;:":
+            suffix = last + suffix
+            url = url[:-1]
+            continue
+        if last == ")" and url.count("(") < url.count(")"):
+            suffix = last + suffix
+            url = url[:-1]
+            continue
+        if last == "]" and url.count("[") < url.count("]"):
+            suffix = last + suffix
+            url = url[:-1]
+            continue
+        break
+    return url, suffix
+
+
+def _wrap_links_for_discord(content: str) -> str:
+    def _replace(match: re.Match[str]) -> str:
+        raw = match.group(1)
+        clean_url, suffix = _split_trailing_url_punctuation(raw)
+        if not clean_url:
+            return raw
+        return f"<{clean_url}>{suffix}"
+
+    return UNWRAPPED_URL_PATTERN.sub(_replace, content)
+
+
+def _prepare_discord_content(content: str) -> str:
+    if _count_links(content) < LINK_WRAP_THRESHOLD:
+        return content
+    return _wrap_links_for_discord(content)
+
+
+def _find_last_regex_break(pattern: re.Pattern[str], content: str, min_index: int) -> int:
+    last_end = -1
+    for match in pattern.finditer(content):
+        if match.end() >= min_index:
+            last_end = match.end()
+    return last_end
+
+
+def _find_best_split_index(content: str, max_len: int) -> int:
+    if len(content) <= max_len:
+        return len(content)
+
+    search = content[:max_len]
+    preferred_min = max(1, int(max_len * 0.6))
+
+    for min_index in (preferred_min, 1):
+        paragraph_break = _find_last_regex_break(PARAGRAPH_BREAK_PATTERN, search, min_index)
+        if paragraph_break != -1:
+            return paragraph_break
+
+        line_break = search.rfind("\n", min_index)
+        if line_break != -1:
+            return line_break + 1
+
+        sentence_break = _find_last_regex_break(SENTENCE_BREAK_PATTERN, search, min_index)
+        if sentence_break != -1:
+            return sentence_break
+
+        for separator in ("; ", ": ", ", "):
+            separator_index = search.rfind(separator, min_index)
+            if separator_index != -1:
+                return separator_index + len(separator)
+
+        space_index = search.rfind(" ", min_index)
+        if space_index != -1:
+            return space_index + 1
+
+    return max_len
+
+
+def _split_discord_content(content: str, max_len: int = DISCORD_MESSAGE_CHAR_LIMIT) -> list[str]:
+    if len(content) <= max_len:
+        return [content]
+
+    chunks: list[str] = []
+    remaining = content
+    while len(remaining) > max_len:
+        split_index = _find_best_split_index(remaining, max_len)
+        if split_index <= 0:
+            split_index = max_len
+        chunks.append(remaining[:split_index])
+        remaining = remaining[split_index:]
+    if remaining:
+        chunks.append(remaining)
+    return chunks
 
 
 class ApprovalView(discord.ui.View):
@@ -169,13 +275,11 @@ class DiscordTransport(TransportAdapter):
         content: str,
         files: list[discord.File] | None = None,
     ) -> None:
-        # Content must be 2000 or less characters, split into chunks and send multiple messages if needed.
+        # Discord messages are capped at 2000 chars.
         # Files (if any) are attached only to the first chunk.
         files = files or []
-        if len(content) <= 2000:
-            await channel.send(content, files=files)
-            return
-        chunks = [content[i : i + 1990] for i in range(0, len(content), 1990)]
+        prepared = _prepare_discord_content(content)
+        chunks = _split_discord_content(prepared, DISCORD_MESSAGE_CHAR_LIMIT)
         for i, chunk in enumerate(chunks):
             if i == 0:
                 await channel.send(chunk, files=files)
