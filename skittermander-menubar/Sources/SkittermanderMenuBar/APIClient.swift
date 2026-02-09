@@ -61,7 +61,9 @@ struct APIClient {
         return SessionSnapshot(
             id: payload.id,
             contextTokens: payload.last_input_tokens ?? 0,
-            totalCost: payload.total_cost ?? 0
+            totalTokens: payload.total_tokens ?? 0,
+            totalCost: payload.total_cost ?? 0,
+            modelName: payload.last_model ?? "default"
         )
     }
 
@@ -85,12 +87,13 @@ struct APIClient {
                 role = .other
             }
             let date = ISO8601DateFormatter().date(from: item.created_at) ?? Date()
-            let attachments = (item.meta.attachments ?? []).map {
-                MessageAttachment(
-                    filename: $0.filename,
-                    contentType: $0.content_type,
-                    downloadURL: $0.download_url,
-                    sourceURL: $0.url
+            let attachments = (item.meta.attachments ?? []).enumerated().map { idx, payload in
+                let resolvedDownload = payload.download_url ?? "/v1/messages/\(item.id)/attachments/\(idx)"
+                return MessageAttachment(
+                    filename: payload.filename,
+                    contentType: payload.content_type,
+                    downloadURL: resolvedDownload,
+                    sourceURL: payload.url
                 )
             }
             return ChatMessage(id: item.id, role: role, content: item.content, createdAt: date, attachments: attachments)
@@ -125,6 +128,26 @@ struct APIClient {
             requiresAPIKey: true
         )
         return payload.count
+    }
+
+    func latestToolRun(sessionID: String) async throws -> ToolRunStatus? {
+        let payload: [ToolRunPayload] = try await requestJSON(
+            path: "/v1/tools?limit=200",
+            method: "GET",
+            body: Optional<Int>.none,
+            requiresAPIKey: true
+        )
+        let filtered = payload.filter { $0.session_id == sessionID }
+        guard let latest = filtered.max(by: { $0.created_at < $1.created_at }) else {
+            return nil
+        }
+        return ToolRunStatus(
+            id: latest.id,
+            sessionID: latest.session_id,
+            tool: latest.tool,
+            status: latest.status,
+            createdAt: latest.created_at
+        )
     }
 
     private func requestJSON<T: Decodable, B: Encodable>(
@@ -209,7 +232,9 @@ private struct SessionCreateBody: Encodable {
 private struct SessionPayload: Decodable {
     let id: String
     let total_cost: Double?
+    let total_tokens: Int?
     let last_input_tokens: Int?
+    let last_model: String?
 }
 
 private struct MessageCreateBody: Encodable {
@@ -235,6 +260,10 @@ private struct MessagePayload: Decodable {
 
 private struct ToolRunPayload: Decodable {
     let id: String
+    let session_id: String
+    let tool: String
+    let status: String
+    let created_at: String
 }
 
 private struct SessionDetailPayload: Decodable {

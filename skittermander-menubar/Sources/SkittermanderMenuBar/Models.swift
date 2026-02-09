@@ -60,5 +60,15 @@ struct ChatMessage: Identifiable {
 struct SessionSnapshot {
     let id: String
     let contextTokens: Int
+    let totalTokens: Int
     let totalCost: Double
+    let modelName: String
+}
+
+struct ToolRunStatus {
+    let id: String
+    let sessionID: String
+    let tool: String
+    let status: String
+    let createdAt: String
 }
