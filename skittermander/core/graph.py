@@ -925,7 +925,15 @@ def build_graph(
 
     @tool("memory_search")
     async def memory_search(query: str, top_k: int = 5) -> str:
-        """Search memories (content of the folder `memory`) by semantic similarity."""
+        """Search memory files by semantic similarity.
+
+        Use this tool sparingly:
+        - Use only when the user asks to recall past details, or when needed context is not in current chat/file reads.
+        - Do not call it for routine replies, greetings, or tasks that can proceed without historical recall.
+        - Do not repeat the same query multiple times unless new information changes the need.
+
+        Prefer direct `read` of known files first. `top_k` should stay small (usually 3-5).
+        """
         payload: dict[str, Any] = {"query": query, "top_k": top_k}
         budget_message = await _enforce_tool_budget("memory_search", payload)
         if budget_message:

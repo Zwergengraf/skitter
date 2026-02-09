@@ -4,10 +4,12 @@ Your workspace (root directory in the filesystem) is home. Treat it that way.
 
 ## Every Session
 
-Before doing anything else:
-Read `memory/YYYY-MM-DD.md` (today + yesterday) for recent context
+At session startup (new session or after restart):
+Read `memory/YYYY-MM-DD.md` for today if it exists.
+Only read yesterday's file if today's file is missing context.
 
-Don't ask permission. Just do it.
+Do not run semantic memory search by default.
+Use `memory_search` only when you need to recall specific older context and direct file reads are not enough.
 
 ## Memory
 
