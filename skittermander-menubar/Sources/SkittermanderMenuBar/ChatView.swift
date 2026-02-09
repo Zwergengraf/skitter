@@ -282,7 +282,7 @@ struct ChatView: View {
         .frame(maxWidth: .infinity, alignment: isUser ? .trailing : .leading)
         .background(
             RoundedRectangle(cornerRadius: 10)
-                .fill(isUser ? Color.accentColor.opacity(0.10) : Color.secondary.opacity(0.10))
+                .fill(isUser ? Color.secondary.opacity(0.10) : Color.blue.opacity(0.10))
         )
         .id(message.id)
     }
