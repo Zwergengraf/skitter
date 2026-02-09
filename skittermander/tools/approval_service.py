@@ -72,16 +72,18 @@ class ToolApprovalService:
         approved = await future
         return ApprovalDecision(tool_run_id=tool_run.id, approved=approved)
 
-    async def resolve(self, tool_run_id: str, approved: bool, decided_by: str) -> None:
+    async def resolve(self, tool_run_id: str, approved: bool, decided_by: str) -> bool:
         future = self._pending.pop(tool_run_id, None)
+        tool_run = None
         async with SessionLocal() as session:
             repo = Repository(session)
             if approved:
-                await repo.approve_tool_run(tool_run_id, decided_by)
+                tool_run = await repo.approve_tool_run(tool_run_id, decided_by)
             else:
-                await repo.deny_tool_run(tool_run_id, decided_by)
+                tool_run = await repo.deny_tool_run(tool_run_id, decided_by)
         if future and not future.done():
             future.set_result(approved)
+        return tool_run is not None
 
     async def complete(self, tool_run_id: str, status: str, output: Dict[str, Any]) -> None:
         async with SessionLocal() as session:

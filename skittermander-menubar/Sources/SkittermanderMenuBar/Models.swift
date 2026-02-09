@@ -70,5 +70,6 @@ struct ToolRunStatus {
     let sessionID: String
     let tool: String
     let status: String
-    let createdAt: String
+    let createdAt: Date
+    let requestedBy: String?
 }

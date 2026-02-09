@@ -180,6 +180,7 @@ class OverviewSessionOut(BaseModel):
     transport: str
     status: str
     last_active_at: datetime | None = None
+    total_tokens: int = 0
 
 
 class OverviewToolRunOut(BaseModel):

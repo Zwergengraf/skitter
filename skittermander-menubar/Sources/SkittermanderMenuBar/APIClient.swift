@@ -24,6 +24,16 @@ struct APIClient {
 
     private let settings: SettingsStore
     private let session: URLSession
+    private static let iso8601FormatterWithFractionalSeconds: ISO8601DateFormatter = {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return formatter
+    }()
+    private static let iso8601Formatter: ISO8601DateFormatter = {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime]
+        return formatter
+    }()
 
     init(settings: SettingsStore, session: URLSession = .shared) {
         self.settings = settings
@@ -86,7 +96,7 @@ struct APIClient {
             default:
                 role = .other
             }
-            let date = ISO8601DateFormatter().date(from: item.created_at) ?? Date()
+            let date = parseDate(item.created_at)
             let attachments = (item.meta.attachments ?? []).enumerated().map { idx, payload in
                 let resolvedDownload = payload.download_url ?? "/v1/messages/\(item.id)/attachments/\(idx)"
                 return MessageAttachment(
@@ -108,7 +118,7 @@ struct APIClient {
             body: body,
             requiresAPIKey: true
         )
-        let date = ISO8601DateFormatter().date(from: payload.created_at) ?? Date()
+        let date = parseDate(payload.created_at)
         let attachments = payload.attachments.map {
             MessageAttachment(
                 filename: $0.filename,
@@ -146,7 +156,50 @@ struct APIClient {
             sessionID: latest.session_id,
             tool: latest.tool,
             status: latest.status,
-            createdAt: latest.created_at
+            createdAt: parseDate(latest.created_at),
+            requestedBy: latest.requested_by
+        )
+    }
+
+    func pendingToolRuns(sessionID: String) async throws -> [ToolRunStatus] {
+        let payload: [ToolRunPayload] = try await requestJSON(
+            path: "/v1/tools?status=pending&limit=200",
+            method: "GET",
+            body: Optional<Int>.none,
+            requiresAPIKey: true
+        )
+        return payload
+            .filter { $0.session_id == sessionID }
+            .sorted(by: { $0.created_at > $1.created_at })
+            .map {
+                ToolRunStatus(
+                    id: $0.id,
+                    sessionID: $0.session_id,
+                    tool: $0.tool,
+                    status: $0.status,
+                    createdAt: parseDate($0.created_at),
+                    requestedBy: $0.requested_by
+                )
+            }
+    }
+
+    func approveToolRun(toolRunID: String, decidedBy: String) async throws {
+        let body = ToolApprovalBody(approved_by: decidedBy)
+        let _: ToolApprovalResult = try await requestJSON(
+            path: "/v1/tools/\(toolRunID)/approve",
+            method: "POST",
+            body: body,
+            requiresAPIKey: true
+        )
+    }
+
+    func denyToolRun(toolRunID: String, decidedBy: String) async throws {
+        let body = ToolApprovalBody(approved_by: decidedBy)
+        let _: ToolApprovalResult = try await requestJSON(
+            path: "/v1/tools/\(toolRunID)/deny",
+            method: "POST",
+            body: body,
+            requiresAPIKey: true
         )
     }
 
@@ -259,6 +312,16 @@ struct APIClient {
             throw APIError.decoding(error.localizedDescription)
         }
     }
+
+    private func parseDate(_ raw: String) -> Date {
+        if let date = Self.iso8601FormatterWithFractionalSeconds.date(from: raw) {
+            return date
+        }
+        if let date = Self.iso8601Formatter.date(from: raw) {
+            return date
+        }
+        return Date()
+    }
 }
 
 private struct HealthPayload: Decodable {
@@ -307,6 +370,7 @@ private struct ToolRunPayload: Decodable {
     let tool: String
     let status: String
     let created_at: String
+    let requested_by: String?
 }
 
 private struct ModelPayload: Decodable {
@@ -336,4 +400,14 @@ private struct SessionMessagePayload: Decodable {
 
 private struct SessionMessageMeta: Decodable {
     let attachments: [AttachmentPayload]?
+}
+
+private struct ToolApprovalBody: Encodable {
+    let approved_by: String
+}
+
+private struct ToolApprovalResult: Decodable {
+    let id: String
+    let status: String
+    let approved_by: String?
 }

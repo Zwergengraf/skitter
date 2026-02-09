@@ -3,8 +3,6 @@ import {
   Activity,
   AlertTriangle,
   CheckCircle2,
-  CloudCog,
-  FolderKanban,
   RefreshCcw,
 } from "lucide-react";
 
@@ -63,12 +61,15 @@ const views: Record<NavItemId, string> = {
   activity: "Activity",
 };
 
+type OverviewRange = "today" | "24h" | "week" | "month" | "year";
+
 export default function App() {
   const [active, setActive] = useState<NavItemId>("overview");
   const [filter, setFilter] = useState("all");
   const [overview, setOverview] = useState<OverviewResponse | null>(null);
   const [overviewError, setOverviewError] = useState<string | null>(null);
   const [overviewLoading, setOverviewLoading] = useState<boolean>(false);
+  const [overviewRange, setOverviewRange] = useState<OverviewRange>("week");
   const [sessionsData, setSessionsData] = useState<SessionListItem[]>([]);
   const [sessionsError, setSessionsError] = useState<string | null>(null);
   const [sessionsLoading, setSessionsLoading] = useState<boolean>(false);
@@ -152,7 +153,7 @@ export default function App() {
     setOverviewLoading(true);
     setOverviewError(null);
     api
-      .getOverview()
+      .getOverview(overviewRange)
       .then((data) => {
         if (!isMounted) return;
         setOverview(data);
@@ -168,7 +169,7 @@ export default function App() {
     return () => {
       isMounted = false;
     };
-  }, [active]);
+  }, [active, overviewRange]);
 
   const overviewSessions = overview?.live_sessions ?? [];
   const overviewToolRuns = overview?.tool_approvals ?? [];
@@ -486,7 +487,7 @@ export default function App() {
     setOverviewLoading(true);
     setOverviewError(null);
     api
-      .getOverview()
+      .getOverview(overviewRange)
       .then((data) => {
         setOverview(data);
       })
@@ -879,11 +880,36 @@ export default function App() {
 
         {active === "overview" && (
           <div className="grid gap-8">
-            <div className="grid gap-6 lg:grid-cols-[1.4fr_1fr]">
-              <Card>
+            <div className="grid items-start gap-6 lg:grid-cols-[minmax(0,1.45fr)_minmax(0,0.8fr)]">
+              <Card className="min-w-0">
                 <CardHeader>
-                  <CardTitle>Cost trajectory</CardTitle>
-                  <CardDescription>Token spend across the last 7 days.</CardDescription>
+                  <div className="flex flex-wrap items-start justify-between gap-3">
+                    <div>
+                      <CardTitle>Cost trajectory</CardTitle>
+                      <CardDescription>
+                        {overviewRange === "today" && "Token spend per hour (today)."}
+                        {overviewRange === "24h" && "Token spend per hour (last 24 hours)."}
+                        {overviewRange === "week" && "Token spend per day (last week)."}
+                        {overviewRange === "month" && "Token spend per day (last month)."}
+                        {overviewRange === "year" && "Token spend per month (last year)."}
+                      </CardDescription>
+                    </div>
+                    <Select
+                      value={overviewRange}
+                      onValueChange={(value) => setOverviewRange(value as OverviewRange)}
+                    >
+                      <SelectTrigger className="w-44">
+                        <SelectValue placeholder="Time range" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="today">Today</SelectItem>
+                        <SelectItem value="24h">Last 24 hours</SelectItem>
+                        <SelectItem value="week">Last week</SelectItem>
+                        <SelectItem value="month">Last month</SelectItem>
+                        <SelectItem value="year">Last year</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
                 </CardHeader>
                 <CardContent>
                   {overviewLoading ? (
@@ -896,12 +922,12 @@ export default function App() {
                 </CardContent>
               </Card>
 
-              <Card>
+              <Card className="min-w-0">
                 <CardHeader>
                   <CardTitle>System health</CardTitle>
                   <CardDescription>Live signals from each core service.</CardDescription>
                 </CardHeader>
-                <CardContent className="space-y-3">
+                <CardContent className="min-w-0 space-y-3 overflow-hidden">
                   {overviewError ? (
                     <div className="rounded-2xl border border-dashed border-border bg-muted/40 px-4 py-6 text-sm text-mutedForeground">
                       {overviewError}
@@ -924,8 +950,8 @@ export default function App() {
               </Card>
             </div>
 
-            <div className="grid gap-6 lg:grid-cols-[1.2fr_1fr]">
-              <Card>
+            <div className="grid gap-6 lg:grid-cols-[minmax(0,1.45fr)_minmax(0,0.8fr)]">
+              <Card className="min-w-0">
                 <CardHeader>
                   <SectionHeader
                     title="Live sessions"
@@ -975,7 +1001,7 @@ export default function App() {
                                 {session.status}
                               </Badge>
                             </TableCell>
-                            <TableCell>—</TableCell>
+                            <TableCell>{formatNumber(session.total_tokens ?? 0)}</TableCell>
                             <TableCell className="text-mutedForeground">
                               {formatRelativeTime(session.last_active_at)}
                             </TableCell>
@@ -993,7 +1019,7 @@ export default function App() {
                 </CardContent>
               </Card>
 
-              <Card>
+              <Card className="min-w-0">
                 <CardHeader>
                   <SectionHeader
                     title="Tool approvals"
@@ -2142,53 +2168,6 @@ export default function App() {
               </CardContent>
             </Card>
           </div>
-        )}
-
-        {active === "overview" && (
-          <Card>
-            <CardHeader>
-              <SectionHeader
-                title="Ready for the next run"
-                subtitle="Quick launch common tasks without leaving the panel."
-              />
-            </CardHeader>
-            <CardContent className="grid gap-4 md:grid-cols-3">
-              <Dialog>
-                <DialogTrigger asChild>
-                  <button className="panel-card flex flex-col gap-2 text-left">
-                    <div className="flex items-center gap-3 text-primary">
-                      <CloudCog className="h-5 w-5" />
-                      <p className="text-sm font-semibold">Reindex memory</p>
-                    </div>
-                    <p className="text-xs text-mutedForeground">
-                      Build embeddings from the latest session summaries.
-                    </p>
-                  </button>
-                </DialogTrigger>
-                <DialogContent>
-                  <DialogHeader>
-                    <DialogTitle>Reindex memory</DialogTitle>
-                    <DialogDescription>
-                      This will reprocess files in workspace/memory.
-                    </DialogDescription>
-                  </DialogHeader>
-                  <div className="flex justify-end gap-2">
-                    <Button variant="outline">Cancel</Button>
-                    <Button>Run now</Button>
-                  </div>
-                </DialogContent>
-              </Dialog>
-              <button className="panel-card flex flex-col gap-2 text-left">
-                <div className="flex items-center gap-3 text-primary">
-                  <FolderKanban className="h-5 w-5" />
-                  <p className="text-sm font-semibold">Snapshot workspace</p>
-                </div>
-                <p className="text-xs text-mutedForeground">
-                  Archive current workspace state for audit or restore.
-                </p>
-              </button>
-            </CardContent>
-          </Card>
         )}
 
         {active !== "overview" && active !== "sessions" && active !== "tools" && active !== "jobs" && active !== "memory" && active !== "secrets" && active !== "users" && active !== "sandbox" && active !== "settings" && active !== "activity" && (

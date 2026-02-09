@@ -25,6 +25,8 @@ final class AppState: ObservableObject {
     @Published var errorBanner: String?
     @Published var draft: String = ""
     @Published private(set) var isSending: Bool = false
+    @Published private(set) var pendingToolApprovals: [ToolRunStatus] = []
+    @Published private(set) var decidingToolRunIDs: Set<String> = []
 
     let settings: SettingsStore
     private let api: APIClient
@@ -68,7 +70,21 @@ final class AppState: ObservableObject {
         health = .checking
         activity = .idle
         progressStatusText = ""
+        pendingToolApprovals = []
+        decidingToolRunIDs = []
         await refreshStatus()
+    }
+
+    func isDecidingToolRun(id: String) -> Bool {
+        decidingToolRunIDs.contains(id)
+    }
+
+    func approveToolRun(id: String) async {
+        await decideToolRun(id: id, approved: true)
+    }
+
+    func denyToolRun(id: String) async {
+        await decideToolRun(id: id, approved: false)
     }
 
     func ensureSession(forceNew: Bool = false) async throws -> String {
@@ -292,6 +308,18 @@ final class AppState: ObservableObject {
             lastError = error
         }
 
+        if let activeSessionID {
+            do {
+                pendingToolApprovals = try await api.pendingToolRuns(sessionID: activeSessionID)
+                anySuccess = true
+            } catch {
+                lastError = error
+                pendingToolApprovals = []
+            }
+        } else {
+            pendingToolApprovals = []
+        }
+
         if isSending {
             activity = .thinking
         } else if pendingCount > 0 {
@@ -368,6 +396,31 @@ final class AppState: ObservableObject {
         }
         guard let last = lastModelFetchAt else { return true }
         return Date().timeIntervalSince(last) >= 60
+    }
+
+    private func decideToolRun(id: String, approved: Bool) async {
+        guard !decidingToolRunIDs.contains(id) else { return }
+        decidingToolRunIDs.insert(id)
+        defer {
+            decidingToolRunIDs.remove(id)
+        }
+        let decidedBy = decisionActor()
+        do {
+            if approved {
+                try await api.approveToolRun(toolRunID: id, decidedBy: decidedBy)
+            } else {
+                try await api.denyToolRun(toolRunID: id, decidedBy: decidedBy)
+            }
+            pendingToolApprovals.removeAll { $0.id == id }
+            await refreshStatus()
+        } catch {
+            setError(error)
+        }
+    }
+
+    private func decisionActor() -> String {
+        let userID = settings.userID.trimmingCharacters(in: .whitespacesAndNewlines)
+        return userID.isEmpty ? "menubar" : userID
     }
 
     private func uniqueURL(baseDir: URL, preferredName: String) -> URL {

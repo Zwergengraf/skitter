@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 
 from ..deps import get_repo
 from ..schemas import ToolApprovalRequest, ToolRunListItem
@@ -34,9 +34,39 @@ async def list_tool_runs(
 
 @router.post("/{tool_run_id}/approve")
 async def approve_tool_run(
-    tool_run_id: str, payload: ToolApprovalRequest, repo: Repository = Depends(get_repo)
+    tool_run_id: str,
+    payload: ToolApprovalRequest,
+    request: Request,
+    repo: Repository = Depends(get_repo),
 ) -> dict:
+    approval_service = getattr(request.app.state, "approval_service", None)
+    if approval_service is not None:
+        resolved = await approval_service.resolve(tool_run_id, approved=True, decided_by=payload.approved_by)
+        if not resolved:
+            raise HTTPException(status_code=404, detail="Tool run not found")
+        return {"id": tool_run_id, "status": "approved", "approved_by": payload.approved_by}
+
     tool_run = await repo.approve_tool_run(tool_run_id, payload.approved_by)
+    if tool_run is None:
+        raise HTTPException(status_code=404, detail="Tool run not found")
+    return {"id": tool_run.id, "status": tool_run.status, "approved_by": tool_run.approved_by}
+
+
+@router.post("/{tool_run_id}/deny")
+async def deny_tool_run(
+    tool_run_id: str,
+    payload: ToolApprovalRequest,
+    request: Request,
+    repo: Repository = Depends(get_repo),
+) -> dict:
+    approval_service = getattr(request.app.state, "approval_service", None)
+    if approval_service is not None:
+        resolved = await approval_service.resolve(tool_run_id, approved=False, decided_by=payload.approved_by)
+        if not resolved:
+            raise HTTPException(status_code=404, detail="Tool run not found")
+        return {"id": tool_run_id, "status": "denied", "approved_by": payload.approved_by}
+
+    tool_run = await repo.deny_tool_run(tool_run_id, payload.approved_by)
     if tool_run is None:
         raise HTTPException(status_code=404, detail="Tool run not found")
     return {"id": tool_run.id, "status": tool_run.status, "approved_by": tool_run.approved_by}

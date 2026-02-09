@@ -15,10 +15,10 @@ export function StatusPill({ status, label, detail }: StatusPillProps) {
   };
 
   return (
-    <div className="flex items-center justify-between rounded-2xl border border-border bg-card px-4 py-3">
-      <div>
+    <div className="flex min-w-0 items-center justify-between rounded-2xl border border-border bg-card px-4 py-3">
+      <div className="min-w-0">
         <p className="text-sm font-semibold">{label}</p>
-        {detail ? <p className="text-xs text-mutedForeground">{detail}</p> : null}
+        {detail ? <p className="break-words text-xs text-mutedForeground">{detail}</p> : null}
       </div>
       <span className={cn("rounded-full px-3 py-1 text-xs font-semibold", styles[status])}>
         {status}

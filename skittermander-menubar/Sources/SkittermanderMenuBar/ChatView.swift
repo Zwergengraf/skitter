@@ -4,6 +4,11 @@ import SwiftUI
 struct ChatView: View {
     @ObservedObject var state: AppState
     @State private var visibleLimit: Int = 160
+    private static let relativeTimeFormatter: RelativeDateTimeFormatter = {
+        let formatter = RelativeDateTimeFormatter()
+        formatter.unitsStyle = .abbreviated
+        return formatter
+    }()
 
     private var hiddenCount: Int {
         max(0, state.messages.count - visibleLimit)
@@ -100,6 +105,26 @@ struct ChatView: View {
                 .padding(.horizontal, 12)
                 .padding(.vertical, 8)
                 .background(Color.secondary.opacity(0.08))
+            }
+
+            if !state.pendingToolApprovals.isEmpty {
+                Divider()
+                VStack(alignment: .leading, spacing: 8) {
+                    HStack {
+                        Label("Tool approval required", systemImage: "hand.raised.fill")
+                            .font(.caption.bold())
+                        Spacer()
+                        Text("\(state.pendingToolApprovals.count)")
+                            .font(.caption.monospaced())
+                            .foregroundStyle(.secondary)
+                    }
+                    ForEach(state.pendingToolApprovals, id: \.id) { toolRun in
+                        toolApprovalCard(toolRun)
+                    }
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 8)
+                .background(Color.orange.opacity(0.08))
             }
 
             Divider()
@@ -300,6 +325,39 @@ struct ChatView: View {
         .background(RoundedRectangle(cornerRadius: 8).fill(Color.secondary.opacity(0.08)))
     }
 
+    @ViewBuilder
+    private func toolApprovalCard(_ toolRun: ToolRunStatus) -> some View {
+        let isBusy = state.isDecidingToolRun(id: toolRun.id)
+        VStack(alignment: .leading, spacing: 6) {
+            Text(toolRun.tool)
+                .font(.caption.monospaced())
+            Text(approvalDetailLine(for: toolRun))
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+            HStack(spacing: 8) {
+                Button {
+                    Task { await state.approveToolRun(id: toolRun.id) }
+                } label: {
+                    Text(isBusy ? "Working..." : "Approve")
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(isBusy)
+
+                Button {
+                    Task { await state.denyToolRun(id: toolRun.id) }
+                } label: {
+                    Text("Deny")
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.bordered)
+                .disabled(isBusy)
+            }
+        }
+        .padding(9)
+        .background(RoundedRectangle(cornerRadius: 8).fill(Color.white.opacity(0.65)))
+    }
+
     private func scrollToBottom(_ proxy: ScrollViewProxy) {
         guard let lastID = state.messages.last?.id else { return }
         DispatchQueue.main.async {
@@ -320,6 +378,17 @@ struct ChatView: View {
         case .other:
             return "Message"
         }
+    }
+
+    private func approvalDetailLine(for toolRun: ToolRunStatus) -> String {
+        let who: String
+        if let requestedBy = toolRun.requestedBy?.trimmingCharacters(in: .whitespacesAndNewlines), !requestedBy.isEmpty {
+            who = " by \(requestedBy)"
+        } else {
+            who = ""
+        }
+        let relative = Self.relativeTimeFormatter.localizedString(for: toolRun.createdAt, relativeTo: Date())
+        return "Requested\(who) \(relative)"
     }
 
     private func copyToPasteboard(_ text: String) {

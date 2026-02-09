@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import secrets as stdlib_secrets
+from datetime import datetime
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -34,6 +35,7 @@ def create_app() -> FastAPI:
     app.state.scheduler_service = SchedulerService(app.state.runtime)
     app.state.runtime.set_scheduler_service(app.state.scheduler_service)
     app.state.user_notifier = None
+    app.state.started_at = datetime.utcnow()
 
     app.state.runtime.ready = True
 

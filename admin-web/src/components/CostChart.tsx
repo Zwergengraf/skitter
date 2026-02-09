@@ -18,7 +18,7 @@ export function CostChart({ data }: CostChartProps) {
   }
 
   return (
-    <div className="h-52 w-full">
+    <div className="h-64 w-full">
       <ResponsiveContainer width="100%" height="100%">
         <AreaChart data={data}>
           <defs>
@@ -38,9 +38,13 @@ export function CostChart({ data }: CostChartProps) {
           <Tooltip
             contentStyle={{
               borderRadius: 12,
-              border: "1px solid rgba(15,23,42,0.1)",
-              boxShadow: "0 8px 24px rgba(15,23,42,0.12)",
+              border: "1px solid hsl(var(--border))",
+              boxShadow: "0 10px 30px hsl(var(--foreground) / 0.15)",
+              backgroundColor: "hsl(var(--card))",
+              color: "hsl(var(--foreground))",
             }}
+            labelStyle={{ color: "hsl(var(--foreground))" }}
+            itemStyle={{ color: "hsl(var(--foreground))" }}
             formatter={(value: number | string) => toTwoDecimals(value)}
           />
           <Area type="monotone" dataKey="cost" stroke="#0e7490" fill="url(#cost)" strokeWidth={2} />
