@@ -27,6 +27,8 @@ final class AppState: ObservableObject {
     @Published private(set) var isSending: Bool = false
     @Published private(set) var pendingToolApprovals: [ToolRunStatus] = []
     @Published private(set) var decidingToolRunIDs: Set<String> = []
+    @Published private(set) var unreadMessageCount: Int = 0
+    @Published private(set) var isChatWindowVisible: Bool = false
 
     let settings: SettingsStore
     private let api: APIClient
@@ -72,7 +74,13 @@ final class AppState: ObservableObject {
         progressStatusText = ""
         pendingToolApprovals = []
         decidingToolRunIDs = []
+        unreadMessageCount = 0
+        isChatWindowVisible = false
         await refreshStatus()
+    }
+
+    var hasUnreadMessages: Bool {
+        unreadMessageCount > 0
     }
 
     func isDecidingToolRun(id: String) -> Bool {
@@ -241,6 +249,9 @@ final class AppState: ObservableObject {
             errorBanner = nil
             let assistantMessage = try await api.sendMessage(sessionID: id, text: text)
             messages.append(assistantMessage)
+            if !isChatWindowVisible {
+                unreadMessageCount += 1
+            }
             isSending = false
             requestStartedAt = nil
             progressStatusText = ""
@@ -259,7 +270,15 @@ final class AppState: ObservableObject {
     }
 
     func markChatOpened() {
+        unreadMessageCount = 0
         chatOpenSignal += 1
+    }
+
+    func setChatWindowVisible(_ visible: Bool) {
+        isChatWindowVisible = visible
+        if visible {
+            unreadMessageCount = 0
+        }
     }
 
     private func pollLoop() async {
@@ -449,6 +468,11 @@ final class AppState: ObservableObject {
             do {
                 let syncedMessages = try await api.sessionDetail(sessionID: sessionID)
                 if !syncedMessages.isEmpty {
+                    if !isChatWindowVisible {
+                        let knownAssistantIDs = Set(messages.filter { $0.role == .assistant }.map(\.id))
+                        let newAssistantMessages = syncedMessages.filter { $0.role == .assistant && !knownAssistantIDs.contains($0.id) }
+                        unreadMessageCount += newAssistantMessages.count
+                    }
                     messages = syncedMessages
                 }
                 let hasAssistantReply = syncedMessages.contains { message in

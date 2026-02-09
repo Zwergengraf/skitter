@@ -101,8 +101,9 @@ struct MarkdownMessageText: View {
                 continue
             }
 
+            let displayLine = rewriteListPrefixIfNeeded(line)
             if let rendered = try? AttributedString(
-                markdown: line,
+                markdown: displayLine,
                 options: AttributedString.MarkdownParsingOptions(
                     interpretedSyntax: .full,
                     failurePolicy: .returnPartiallyParsedIfPossible
@@ -110,7 +111,7 @@ struct MarkdownMessageText: View {
             ) {
                 out.append(.markdown(id: UUID(), text: rendered))
             } else {
-                out.append(.markdown(id: UUID(), text: AttributedString(line)))
+                out.append(.markdown(id: UUID(), text: AttributedString(displayLine)))
             }
         }
 
@@ -122,5 +123,31 @@ struct MarkdownMessageText: View {
             return [.markdown(id: UUID(), text: AttributedString(""))]
         }
         return out
+    }
+
+    private static func rewriteListPrefixIfNeeded(_ line: String) -> String {
+        let indentEnd = line.firstIndex(where: { $0 != " " && $0 != "\t" }) ?? line.endIndex
+        let indent = String(line[..<indentEnd])
+        var remainder = String(line[indentEnd...])
+
+        let uncheckedPrefixes = ["- [ ] ", "* [ ] ", "+ [ ] "]
+        if let prefix = uncheckedPrefixes.first(where: { remainder.hasPrefix($0) }) {
+            remainder.removeFirst(prefix.count)
+            return "\(indent)☐ \(remainder)"
+        }
+
+        let checkedPrefixes = ["- [x] ", "- [X] ", "* [x] ", "* [X] ", "+ [x] ", "+ [X] "]
+        if let prefix = checkedPrefixes.first(where: { remainder.hasPrefix($0) }) {
+            remainder.removeFirst(prefix.count)
+            return "\(indent)☑ \(remainder)"
+        }
+
+        let bulletPrefixes = ["- ", "* ", "+ "]
+        if let prefix = bulletPrefixes.first(where: { remainder.hasPrefix($0) }) {
+            remainder.removeFirst(prefix.count)
+            return "\(indent)• \(remainder)"
+        }
+
+        return line
     }
 }

@@ -10,6 +10,7 @@ final class StatusItemController: NSObject {
     private let openSettings: () -> Void
     private let openAbout: () -> Void
     private let statusPopover = NSPopover()
+    private let unreadBadgeView = NSView(frame: .zero)
     private var refreshTimer: Timer?
 
     init(
@@ -45,6 +46,24 @@ final class StatusItemController: NSObject {
         button.sendAction(on: [.leftMouseUp, .rightMouseUp])
         button.imagePosition = .imageOnly
         button.toolTip = "Skittermander"
+        configureUnreadBadge(for: button)
+    }
+
+    private func configureUnreadBadge(for button: NSStatusBarButton) {
+        unreadBadgeView.translatesAutoresizingMaskIntoConstraints = false
+        unreadBadgeView.wantsLayer = true
+        unreadBadgeView.layer?.backgroundColor = NSColor.systemRed.cgColor
+        unreadBadgeView.layer?.cornerRadius = 4
+        unreadBadgeView.layer?.borderWidth = 1
+        unreadBadgeView.layer?.borderColor = NSColor.windowBackgroundColor.cgColor
+        unreadBadgeView.isHidden = true
+        button.addSubview(unreadBadgeView)
+        NSLayoutConstraint.activate([
+            unreadBadgeView.widthAnchor.constraint(equalToConstant: 8),
+            unreadBadgeView.heightAnchor.constraint(equalToConstant: 8),
+            unreadBadgeView.trailingAnchor.constraint(equalTo: button.trailingAnchor, constant: -2),
+            unreadBadgeView.topAnchor.constraint(equalTo: button.topAnchor, constant: 2),
+        ])
     }
 
     @objc
@@ -124,6 +143,12 @@ final class StatusItemController: NSObject {
         button.image = NSImage(systemSymbolName: symbolName, accessibilityDescription: "Skittermander status")
         button.image?.isTemplate = true
         button.contentTintColor = nil
-        button.toolTip = "\(state.health.label), \(state.activity.label)"
+        if state.hasUnreadMessages {
+            unreadBadgeView.isHidden = false
+            button.toolTip = "\(state.health.label), \(state.activity.label) · \(state.unreadMessageCount) unread"
+        } else {
+            unreadBadgeView.isHidden = true
+            button.toolTip = "\(state.health.label), \(state.activity.label)"
+        }
     }
 }

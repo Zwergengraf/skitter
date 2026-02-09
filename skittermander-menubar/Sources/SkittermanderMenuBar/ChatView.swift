@@ -27,48 +27,6 @@ struct ChatView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            HStack(spacing: 10) {
-                Text("Model:")
-                    .lineLimit(1)
-                Menu {
-                    if state.availableModels.isEmpty {
-                        Text("No models available")
-                    } else {
-                        ForEach(state.availableModels, id: \.self) { model in
-                            Button {
-                                Task { await state.switchModel(to: model) }
-                            } label: {
-                                if model == state.modelName {
-                                    Label(model, systemImage: "checkmark")
-                                } else {
-                                    Text(model)
-                                }
-                            }
-                        }
-                    }
-                } label: {
-                    Text(state.modelName)
-                        .lineLimit(1)
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 3)
-                    .background(
-                        RoundedRectangle(cornerRadius: 6)
-                            .fill(Color.secondary.opacity(0.10))
-                    )
-                }
-                .menuStyle(.borderlessButton)
-                Text(
-                    "Tokens: \(state.totalTokens)  |  Context: \(state.contextTokens)  |  Cost: $\(String(format: "%.2f", state.sessionCost))"
-                )
-                .lineLimit(1)
-                .truncationMode(.middle)
-                .minimumScaleFactor(0.85)
-                Spacer()
-            }
-            .font(.caption.monospaced())
-            .padding(.horizontal, 12)
-            .padding(.vertical, 6)
-
             if let banner = state.errorBanner {
                 Divider()
                 HStack(spacing: 8) {
@@ -227,6 +185,50 @@ struct ChatView: View {
                 }
             }
             .padding(12)
+
+            Divider()
+
+            HStack(spacing: 10) {
+                Text("Model:")
+                    .lineLimit(1)
+                Menu {
+                    if state.availableModels.isEmpty {
+                        Text("No models available")
+                    } else {
+                        ForEach(state.availableModels, id: \.self) { model in
+                            Button {
+                                Task { await state.switchModel(to: model) }
+                            } label: {
+                                if model == state.modelName {
+                                    Label(model, systemImage: "checkmark")
+                                } else {
+                                    Text(model)
+                                }
+                            }
+                        }
+                    }
+                } label: {
+                    Text(state.modelName)
+                        .lineLimit(1)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 3)
+                    .background(
+                        RoundedRectangle(cornerRadius: 6)
+                            .fill(Color.secondary.opacity(0.10))
+                    )
+                }
+                .menuStyle(.borderlessButton)
+                Text(
+                    "Tokens: \(state.totalTokens)  |  Context: \(state.contextTokens)  |  Cost: $\(String(format: "%.2f", state.sessionCost))"
+                )
+                .lineLimit(1)
+                .truncationMode(.middle)
+                .minimumScaleFactor(0.85)
+                Spacer()
+            }
+            .font(.caption.monospaced())
+            .padding(.horizontal, 12)
+            .padding(.vertical, 6)
         }
         .frame(
             minWidth: 500,
