@@ -38,7 +38,10 @@ from ..core.embeddings import EmbeddingsClient
 from ..data.db import SessionLocal
 from ..data.repositories import Repository
 
-_MEDIA_DIRECTIVE_RE = re.compile(r"^\s*MEDIA\s*:\s*(.+?)\s*$", re.IGNORECASE)
+_MEDIA_DIRECTIVE_RE = re.compile(
+    r"MEDIA\s*:\s*(?P<path>`[^`\n]+`|'[^'\n]+'|\"[^\"\n]+\"|[^\s]+)",
+    re.IGNORECASE,
+)
 _logger = logging.getLogger(__name__)
 
 
@@ -780,28 +783,49 @@ class AgentRuntime:
         seen: set[str] = set()
         kept_lines: list[str] = []
         for line in text.splitlines():
-            match = _MEDIA_DIRECTIVE_RE.match(line)
-            if not match:
+            matches = list(_MEDIA_DIRECTIVE_RE.finditer(line))
+            if not matches:
                 kept_lines.append(line)
                 continue
-            raw_path = self._normalize_media_path(match.group(1))
-            if not raw_path:
-                continue
-            resolved = self._resolve_user_workspace_file(user_id, raw_path)
-            if not resolved or not resolved.exists() or not resolved.is_file():
-                continue
-            path_key = str(resolved)
-            if path_key in seen:
-                continue
-            seen.add(path_key)
-            mime_type, _ = mimetypes.guess_type(resolved.name)
-            attachments.append(
-                Attachment(
-                    filename=resolved.name,
-                    content_type=mime_type or "application/octet-stream",
-                    path=path_key,
+
+            cursor = 0
+            rebuilt_parts: list[str] = []
+            removed_any_directive = False
+
+            for match in matches:
+                raw_path = self._normalize_media_path(match.group("path"))
+                if not raw_path:
+                    continue
+                resolved = self._resolve_user_workspace_file(user_id, raw_path)
+                if not resolved or not resolved.exists() or not resolved.is_file():
+                    continue
+                path_key = str(resolved)
+                rebuilt_parts.append(line[cursor : match.start()])
+                cursor = match.end()
+                removed_any_directive = True
+                if path_key in seen:
+                    continue
+                seen.add(path_key)
+                mime_type, _ = mimetypes.guess_type(resolved.name)
+                attachments.append(
+                    Attachment(
+                        filename=resolved.name,
+                        content_type=mime_type or "application/octet-stream",
+                        path=path_key,
+                    )
                 )
-            )
+
+            if not removed_any_directive:
+                kept_lines.append(line)
+                continue
+
+            rebuilt_parts.append(line[cursor:])
+            cleaned_line = "".join(rebuilt_parts)
+            cleaned_line = re.sub(r"\s{2,}", " ", cleaned_line)
+            cleaned_line = re.sub(r"\s+([,.;:!?])", r"\1", cleaned_line)
+            cleaned_line = cleaned_line.strip()
+            if cleaned_line:
+                kept_lines.append(cleaned_line)
         cleaned = "\n".join(kept_lines).strip()
         return cleaned, attachments
 
