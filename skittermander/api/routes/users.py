@@ -10,6 +10,7 @@ from ...data.repositories import Repository
 from ...core.config import settings
 
 router = APIRouter(prefix="/v1/users", tags=["users"])
+PENDING_REQUEST_TTL_MINUTES = 15
 
 
 @router.get("", response_model=list[UserListItem])
@@ -17,6 +18,7 @@ async def list_users(
     repo: Repository = Depends(get_repo),
     limit: int = Query(default=200, ge=1, le=500),
 ) -> list[UserListItem]:
+    await repo.delete_stale_pending_users(PENDING_REQUEST_TTL_MINUTES)
     users = await repo.list_users(limit=limit)
     return [
         UserListItem(
@@ -54,3 +56,19 @@ async def update_user(
             except Exception:
                 pass
     return {"id": user.id, "approved": user.approved}
+
+
+@router.delete("/{user_id}")
+async def deny_user(
+    user_id: str,
+    repo: Repository = Depends(get_repo),
+) -> dict:
+    existing = await repo.get_user_by_id(user_id)
+    if existing is None:
+        raise HTTPException(status_code=404, detail="User not found")
+    if existing.approved:
+        raise HTTPException(status_code=400, detail="Approved users cannot be denied")
+    deleted = await repo.delete_pending_user(user_id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail="User not found")
+    return {"id": user_id, "deleted": True}

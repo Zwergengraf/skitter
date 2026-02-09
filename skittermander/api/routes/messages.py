@@ -15,6 +15,14 @@ from ...data.repositories import Repository
 
 router = APIRouter(prefix="/v1/messages", tags=["messages"])
 
+
+def _require_approved_user(approved: bool) -> None:
+    if not approved:
+        raise HTTPException(
+            status_code=403,
+            detail="Your account is not yet approved. An admin has to approve it first.",
+        )
+
 def _serialize_runtime_attachments(attachments: list[Attachment]) -> list[dict]:
     items: list[dict] = []
     for attachment in attachments:
@@ -52,6 +60,10 @@ async def send_message(
     session = await repo.get_session(payload.session_id)
     if session is None:
         raise HTTPException(status_code=404, detail="Session not found")
+    user = await repo.get_user_by_id(session.user_id)
+    if user is None:
+        raise HTTPException(status_code=404, detail="User not found")
+    _require_approved_user(user.approved)
 
     envelope = MessageEnvelope(
         message_id=str(uuid.uuid4()),

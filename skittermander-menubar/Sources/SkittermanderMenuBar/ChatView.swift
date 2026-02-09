@@ -4,6 +4,8 @@ import SwiftUI
 struct ChatView: View {
     @ObservedObject var state: AppState
     @State private var visibleLimit: Int = 160
+    @State private var onboardingChecking: Bool = false
+    @State private var onboardingStatusText: String?
     private static let progressMessageID = "temporary-progress-message"
     private static let relativeTimeFormatter: RelativeDateTimeFormatter = {
         let formatter = RelativeDateTimeFormatter()
@@ -69,6 +71,11 @@ struct ChatView: View {
                 .padding(.horizontal, 12)
                 .padding(.vertical, 8)
                 .background(Color.orange.opacity(0.08))
+            }
+
+            if state.shouldShowOnboarding {
+                Divider()
+                onboardingCard()
             }
 
             Divider()
@@ -236,6 +243,93 @@ struct ChatView: View {
                 // Status strip already shows health errors.
             }
         }
+    }
+
+    @ViewBuilder
+    private func onboardingCard() -> some View {
+        let apiURLBinding = Binding<String>(
+            get: { state.settings.apiURL },
+            set: { state.settings.apiURL = $0 }
+        )
+        let apiKeyBinding = Binding<String>(
+            get: { state.settings.apiKey },
+            set: { state.settings.apiKey = $0 }
+        )
+        let userIDBinding = Binding<String>(
+            get: { state.settings.userID },
+            set: { state.settings.userID = $0 }
+        )
+        VStack(alignment: .leading, spacing: 10) {
+            Text("Welcome to Skittermander")
+                .font(.headline)
+            Text("Set API connection details, then test and reconnect.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
+            Grid(alignment: .leading, horizontalSpacing: 10, verticalSpacing: 8) {
+                GridRow {
+                    Text("API URL")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .frame(width: 86, alignment: .leading)
+                    TextField("http://localhost:8000", text: apiURLBinding)
+                        .textFieldStyle(.roundedBorder)
+                }
+                GridRow {
+                    Text("API Key")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .frame(width: 86, alignment: .leading)
+                    SecureField("Required", text: apiKeyBinding)
+                        .textFieldStyle(.roundedBorder)
+                }
+                GridRow {
+                    Text("User ID")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .frame(width: 86, alignment: .leading)
+                    TextField("menubar.local", text: userIDBinding)
+                        .textFieldStyle(.roundedBorder)
+                }
+            }
+
+            HStack(spacing: 8) {
+                Button(onboardingChecking ? "Testing..." : "Test Connection") {
+                    Task {
+                        onboardingChecking = true
+                        onboardingStatusText = nil
+                        await state.reconnect()
+                        onboardingChecking = false
+                        if state.hasWorkingConnection {
+                            onboardingStatusText = "Connected."
+                        } else {
+                            onboardingStatusText = state.errorBanner ?? "Connection failed. Check URL and API key."
+                        }
+                    }
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(onboardingChecking)
+
+                if state.hasWorkingConnection {
+                    Label("Connected", systemImage: "checkmark.circle.fill")
+                        .font(.caption)
+                        .foregroundStyle(.green)
+                } else {
+                    Label("Not connected", systemImage: "exclamationmark.triangle.fill")
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                }
+            }
+
+            if let onboardingStatusText, !onboardingStatusText.isEmpty {
+                Text(onboardingStatusText)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 10)
+        .background(Color.secondary.opacity(0.08))
     }
 
     @ViewBuilder

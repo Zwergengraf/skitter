@@ -16,6 +16,7 @@ class User(Base):
 
     id: Mapped[str] = mapped_column(String, primary_key=True)
     transport_user_id: Mapped[str] = mapped_column(String, index=True)
+    created_at: Mapped[datetime] = mapped_column(default=datetime.utcnow)
     meta: Mapped[dict] = mapped_column(JSON, default=dict)
     approved: Mapped[bool] = mapped_column(default=False)
 

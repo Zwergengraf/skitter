@@ -29,6 +29,8 @@ final class AppState: ObservableObject {
     @Published private(set) var decidingToolRunIDs: Set<String> = []
     @Published private(set) var unreadMessageCount: Int = 0
     @Published private(set) var isChatWindowVisible: Bool = false
+    @Published private(set) var didInitialStatusCheck: Bool = false
+    @Published private(set) var hasWorkingConnection: Bool = false
 
     let settings: SettingsStore
     private let api: APIClient
@@ -81,6 +83,16 @@ final class AppState: ObservableObject {
 
     var hasUnreadMessages: Bool {
         unreadMessageCount > 0
+    }
+
+    var shouldShowOnboarding: Bool {
+        let missingAPIURL = settings.apiURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        let missingAPIKey = settings.apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        let missingUserID = settings.userID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        if missingAPIURL || missingAPIKey || missingUserID {
+            return true
+        }
+        return didInitialStatusCheck && !hasWorkingConnection
     }
 
     func isDecidingToolRun(id: String) -> Bool {
@@ -292,6 +304,8 @@ final class AppState: ObservableObject {
     func refreshStatus() async {
         var lastError: Error?
         var anySuccess = false
+        var sessionCheckSucceeded = false
+        var sessionError: Error?
 
         do {
             let ok = try await api.health()
@@ -303,6 +317,7 @@ final class AppState: ObservableObject {
             }
         } catch {
             lastError = error
+            sessionError = error
         }
 
         var activeSessionID: String?
@@ -323,6 +338,7 @@ final class AppState: ObservableObject {
             if case .error = health {
                 health = .healthy
             }
+            sessionCheckSucceeded = true
         } catch {
             lastError = error
         }
@@ -370,7 +386,9 @@ final class AppState: ObservableObject {
             progressStatusText = ""
         }
 
-        if !anySuccess {
+        if !sessionCheckSucceeded {
+            setError(sessionError ?? lastError)
+        } else if !anySuccess {
             health = .error(lastError?.localizedDescription ?? "status check failed")
             setError(lastError)
         } else if case .healthy = health {
@@ -390,6 +408,8 @@ final class AppState: ObservableObject {
             availableModels.append(modelName)
             availableModels.sort()
         }
+        hasWorkingConnection = sessionCheckSucceeded
+        didInitialStatusCheck = true
     }
 
     private func appendLocalMessage(_ content: String) {
@@ -406,6 +426,11 @@ final class AppState: ObservableObject {
     private func setError(_ error: Error?) {
         let text = (error?.localizedDescription ?? "Unknown error")
         health = .error(text)
+        let lower = text.lowercased()
+        if lower.contains("not yet approved") || lower.contains("admin has to approve it first") {
+            errorBanner = "Your account is not yet approved. An admin has to approve it first."
+            return
+        }
         if text.contains("HTTP 401") || text.localizedCaseInsensitiveContains("Invalid API key") {
             errorBanner = "Invalid API key. Update Settings and reconnect."
             return

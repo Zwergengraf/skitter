@@ -22,6 +22,8 @@ from .models import (
 
 
 class Repository:
+    PENDING_USER_TTL_MINUTES = 15
+
     def __init__(self, session: AsyncSession) -> None:
         self.session = session
 
@@ -29,7 +31,15 @@ class Repository:
         result = await self.session.execute(select(User).where(User.transport_user_id == transport_user_id))
         user = result.scalar_one_or_none()
         if user:
-            return user
+            if not user.approved:
+                cutoff = datetime.utcnow() - timedelta(minutes=self.PENDING_USER_TTL_MINUTES)
+                if user.created_at < cutoff:
+                    await self.session.delete(user)
+                    await self.session.commit()
+                else:
+                    return user
+            else:
+                return user
         user = User(id=str(uuid.uuid4()), transport_user_id=transport_user_id, meta={}, approved=False)
         self.session.add(user)
         await self.session.commit()
@@ -371,6 +381,31 @@ class Repository:
     async def list_users(self, limit: int = 200) -> List[User]:
         result = await self.session.execute(select(User).order_by(User.transport_user_id.asc()).limit(limit))
         return list(result.scalars().all())
+
+    async def delete_pending_user(self, user_id: str) -> bool:
+        result = await self.session.execute(select(User).where(User.id == user_id))
+        user = result.scalar_one_or_none()
+        if user is None or user.approved:
+            return False
+        await self.session.delete(user)
+        await self.session.commit()
+        return True
+
+    async def delete_stale_pending_users(self, older_than_minutes: int) -> int:
+        cutoff = datetime.utcnow() - timedelta(minutes=max(1, int(older_than_minutes)))
+        result = await self.session.execute(
+            select(User).where(
+                User.approved == False,  # noqa: E712
+                User.created_at < cutoff,
+            )
+        )
+        stale_users = list(result.scalars().all())
+        if not stale_users:
+            return 0
+        for user in stale_users:
+            await self.session.delete(user)
+        await self.session.commit()
+        return len(stale_users)
 
     async def list_approved_users(self) -> List[User]:
         result = await self.session.execute(select(User).where(User.approved == True))  # noqa: E712

@@ -423,6 +423,19 @@ export default function App() {
     }
   };
 
+  const handleUserDeny = async (userId: string) => {
+    setUserUpdating((prev) => ({ ...prev, [userId]: true }));
+    setUsersError(null);
+    try {
+      await api.deleteUser(userId);
+      setUsersData((prev) => prev.filter((user) => user.id !== userId));
+    } catch (error) {
+      setUsersError((error as Error).message);
+    } finally {
+      setUserUpdating((prev) => ({ ...prev, [userId]: false }));
+    }
+  };
+
   const refreshJobs = () => {
     setJobsLoading(true);
     setJobsError(null);
@@ -1871,13 +1884,23 @@ export default function App() {
                           <TableCell>
                             <div className="flex items-center gap-2">
                               {!user.approved ? (
-                                <Button
-                                  size="sm"
-                                  onClick={() => handleUserApproval(user.id, true)}
-                                  disabled={userUpdating[user.id]}
-                                >
-                                  {userUpdating[user.id] ? "Approving..." : "Approve"}
-                                </Button>
+                                <>
+                                  <Button
+                                    size="sm"
+                                    onClick={() => handleUserApproval(user.id, true)}
+                                    disabled={userUpdating[user.id]}
+                                  >
+                                    {userUpdating[user.id] ? "Approving..." : "Approve"}
+                                  </Button>
+                                  <Button
+                                    size="sm"
+                                    variant="danger"
+                                    onClick={() => handleUserDeny(user.id)}
+                                    disabled={userUpdating[user.id]}
+                                  >
+                                    {userUpdating[user.id] ? "Denying..." : "Deny"}
+                                  </Button>
+                                </>
                               ) : (
                                 <span className="text-xs text-mutedForeground">—</span>
                               )}

@@ -21,6 +21,14 @@ from ...data.repositories import Repository
 router = APIRouter(prefix="/v1/sessions", tags=["sessions"])
 
 
+def _require_approved_user(approved: bool) -> None:
+    if not approved:
+        raise HTTPException(
+            status_code=403,
+            detail="Your account is not yet approved. An admin has to approve it first.",
+        )
+
+
 @router.get("", response_model=list[SessionListItem])
 async def list_sessions(
     repo: Repository = Depends(get_repo),
@@ -50,6 +58,7 @@ async def create_session(
     repo: Repository = Depends(get_repo),
 ) -> SessionOut:
     user = await repo.get_or_create_user(payload.user_id)
+    _require_approved_user(user.approved)
     origin = (payload.origin or "web").strip() or "web"
     session = None
     if payload.reuse_active:
