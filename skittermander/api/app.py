@@ -14,7 +14,7 @@ from ..core.config import settings
 from ..observability.logging import configure_logging
 from ..tools.approval_service import ToolApprovalService
 from ..tools.sandbox_manager import sandbox_manager
-from .routes import channels, events, memory, messages, overview, schedules, sessions, skills, tools, users, sandbox, config, secrets, models
+from .routes import channels, events, memory, messages, overview, schedules, sessions, skills, tools, users, sandbox, config, secrets, models, runs
 
 
 def create_app() -> FastAPI:
@@ -68,6 +68,7 @@ def create_app() -> FastAPI:
     app.include_router(messages.router)
     app.include_router(events.router)
     app.include_router(tools.router)
+    app.include_router(runs.router)
     app.include_router(skills.router)
     app.include_router(models.router)
     app.include_router(secrets.router)

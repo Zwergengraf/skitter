@@ -38,6 +38,8 @@ _CURRENT_USER_ID: ContextVar[str] = ContextVar("skitter_user_id", default="defau
 _CURRENT_ORIGIN: ContextVar[str] = ContextVar("skitter_origin", default="unknown")
 _CURRENT_SCOPE_TYPE: ContextVar[str] = ContextVar("skitter_scope_type", default="private")
 _CURRENT_SCOPE_ID: ContextVar[str] = ContextVar("skitter_scope_id", default="default")
+_CURRENT_RUN_ID: ContextVar[str] = ContextVar("skitter_run_id", default="")
+_CURRENT_MESSAGE_ID: ContextVar[str] = ContextVar("skitter_message_id", default="")
 
 
 def set_current_session_id(session_id: str) -> Token:
@@ -88,6 +90,22 @@ def reset_current_scope_id(token: Token) -> None:
     _CURRENT_SCOPE_ID.reset(token)
 
 
+def set_current_run_id(run_id: str) -> Token:
+    return _CURRENT_RUN_ID.set(run_id)
+
+
+def reset_current_run_id(token: Token) -> None:
+    _CURRENT_RUN_ID.reset(token)
+
+
+def set_current_message_id(message_id: str) -> Token:
+    return _CURRENT_MESSAGE_ID.set(message_id)
+
+
+def reset_current_message_id(token: Token) -> None:
+    _CURRENT_MESSAGE_ID.reset(token)
+
+
 def _session_id() -> str:
     return _CURRENT_SESSION_ID.get()
 
@@ -111,6 +129,14 @@ def _scope_id() -> str:
     return _CURRENT_SCOPE_ID.get()
 
 
+def _run_id() -> str:
+    return _CURRENT_RUN_ID.get()
+
+
+def _message_id() -> str:
+    return _CURRENT_MESSAGE_ID.get()
+
+
 def current_user_id() -> str:
     return _user_id()
 
@@ -130,6 +156,8 @@ async def _maybe_approve(
                 status="approved",
                 input_payload=payload,
                 approved_by="auto",
+                run_id=_run_id() or None,
+                message_id=_message_id() or None,
             )
         return ApprovalDecision(tool_run_id=tool_run.id, approved=True)
     if approval_service is None:
@@ -141,6 +169,8 @@ async def _maybe_approve(
                 status="denied",
                 input_payload=payload,
                 approved_by="system",
+                run_id=_run_id() or None,
+                message_id=_message_id() or None,
             )
         return ApprovalDecision(tool_run_id=tool_run.id, approved=False)
     return await approval_service.request(
@@ -149,6 +179,8 @@ async def _maybe_approve(
         tool_name=tool_name,
         payload=payload,
         requested_by=_user_id(),
+        run_id=_run_id() or None,
+        message_id=_message_id() or None,
     )
 
 
@@ -296,6 +328,8 @@ def build_graph(
                 status="approved",
                 input_payload=payload,
                 approved_by="auto",
+                run_id=_run_id() or None,
+                message_id=_message_id() or None,
             )
         return tool_run.id
 

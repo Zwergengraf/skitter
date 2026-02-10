@@ -80,11 +80,49 @@ class ToolRun(Base):
 
     id: Mapped[str] = mapped_column(String, primary_key=True)
     session_id: Mapped[str] = mapped_column(String, index=True)
+    run_id: Mapped[str | None] = mapped_column(String, index=True, nullable=True)
+    message_id: Mapped[str | None] = mapped_column(String, nullable=True)
     tool_name: Mapped[str] = mapped_column(String)
     status: Mapped[str] = mapped_column(String)
     input: Mapped[dict] = mapped_column(JSON, default=dict)
     output: Mapped[dict] = mapped_column(JSON, default=dict)
     approved_by: Mapped[str | None] = mapped_column(String, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class RunTrace(Base):
+    __tablename__ = "run_traces"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    session_id: Mapped[str] = mapped_column(String, index=True)
+    user_id: Mapped[str] = mapped_column(String, index=True)
+    message_id: Mapped[str] = mapped_column(String, index=True)
+    origin: Mapped[str] = mapped_column(String, default="unknown")
+    status: Mapped[str] = mapped_column(String, default="running")
+    model: Mapped[str | None] = mapped_column(String, nullable=True)
+    input_text: Mapped[str] = mapped_column(Text, default="")
+    output_text: Mapped[str] = mapped_column(Text, default="")
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    limit_reason: Mapped[str | None] = mapped_column(String, nullable=True)
+    limit_detail: Mapped[str | None] = mapped_column(Text, nullable=True)
+    tool_calls: Mapped[int] = mapped_column(Integer, default=0)
+    input_tokens: Mapped[int] = mapped_column(Integer, default=0)
+    output_tokens: Mapped[int] = mapped_column(Integer, default=0)
+    total_tokens: Mapped[int] = mapped_column(Integer, default=0)
+    cost: Mapped[float] = mapped_column(Float, default=0.0)
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    duration_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
+
+class RunTraceEvent(Base):
+    __tablename__ = "run_trace_events"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    run_id: Mapped[str] = mapped_column(String, index=True)
+    session_id: Mapped[str] = mapped_column(String, index=True)
+    event_type: Mapped[str] = mapped_column(String, index=True)
+    payload: Mapped[dict] = mapped_column(JSON, default=dict)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 

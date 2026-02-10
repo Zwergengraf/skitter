@@ -208,6 +208,7 @@ class OverviewOut(BaseModel):
 
 class ToolRunListItem(BaseModel):
     id: str
+    run_id: str | None = None
     tool: str
     status: str
     requested_by: str
@@ -216,6 +217,42 @@ class ToolRunListItem(BaseModel):
     approved_by: str | None = None
     input: dict
     output: dict
+
+
+class RunTraceListItem(BaseModel):
+    id: str
+    session_id: str
+    user_id: str
+    message_id: str
+    origin: str
+    status: str
+    model: str | None = None
+    started_at: datetime
+    finished_at: datetime | None = None
+    duration_ms: int | None = None
+    tool_calls: int = 0
+    input_tokens: int = 0
+    output_tokens: int = 0
+    total_tokens: int = 0
+    cost: float = 0.0
+    error: str | None = None
+    limit_reason: str | None = None
+
+
+class RunTraceEventOut(BaseModel):
+    id: str
+    event_type: str
+    payload: dict
+    created_at: datetime
+
+
+class RunTraceDetailOut(BaseModel):
+    run: RunTraceListItem
+    input_text: str
+    output_text: str
+    limit_detail: str | None = None
+    tool_runs: list[SessionToolRunOut]
+    events: list[RunTraceEventOut]
 
 
 class ScheduledJobCreate(BaseModel):

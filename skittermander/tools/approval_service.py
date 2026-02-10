@@ -44,6 +44,8 @@ class ToolApprovalService:
         tool_name: str,
         payload: Dict[str, Any],
         requested_by: str,
+        run_id: str | None = None,
+        message_id: str | None = None,
     ) -> ApprovalDecision:
         async with SessionLocal() as session:
             repo = Repository(session)
@@ -53,6 +55,8 @@ class ToolApprovalService:
                 status="pending",
                 input_payload=payload,
                 approved_by=None,
+                run_id=run_id,
+                message_id=message_id,
             )
 
         future: asyncio.Future[bool] = asyncio.get_event_loop().create_future()

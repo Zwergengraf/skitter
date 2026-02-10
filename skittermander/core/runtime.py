@@ -8,7 +8,7 @@ import re
 import asyncio
 import uuid
 from collections import defaultdict
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Optional
 
@@ -25,8 +25,12 @@ from .graph import (
     reset_current_scope_type,
     reset_current_session_id,
     reset_current_user_id,
+    reset_current_message_id,
+    reset_current_run_id,
     set_current_channel_id,
+    set_current_message_id,
     set_current_origin,
+    set_current_run_id,
     set_current_scope_id,
     set_current_scope_type,
     set_current_session_id,
@@ -94,12 +98,21 @@ class AgentRuntime:
             attachments_meta = self._serialize_attachments(envelope.attachments)
 
         run_id = str(uuid.uuid4())
+        run_started_at = datetime.now(UTC)
+        run_status = "running"
+        run_error: str | None = None
+        run_limit_reason: str | None = None
+        run_limit_detail: str | None = None
+        run_input_tokens = 0
+        run_output_tokens = 0
+        run_total_tokens = 0
+        run_cost = 0.0
         await self.event_bus.publish(
             StreamEvent(
                 session_id=session_id,
                 type="message_received",
                 data={"run_id": run_id, "message_id": envelope.message_id, "user_id": envelope.user_id},
-                created_at=datetime.utcnow(),
+                created_at=datetime.now(UTC),
             )
         )
         token_session = set_current_session_id(session_id)
@@ -107,6 +120,8 @@ class AgentRuntime:
         internal_user_id = envelope.metadata.get("internal_user_id", envelope.user_id)
         token_user = set_current_user_id(internal_user_id)
         token_origin = set_current_origin(envelope.origin)
+        token_run_id = set_current_run_id(run_id)
+        token_message_id = set_current_message_id(envelope.message_id)
         scope_type = str(envelope.metadata.get("scope_type") or "private")
         scope_id = str(envelope.metadata.get("scope_id") or f"private:{internal_user_id}")
         token_scope_type = set_current_scope_type(scope_type)
@@ -114,6 +129,27 @@ class AgentRuntime:
         response: object = ""
         messages: list[BaseMessage] = []
         model_name = resolve_model_name(None, purpose="main")
+        await self._trace_create(
+            run_id=run_id,
+            session_id=session_id,
+            user_id=internal_user_id,
+            message_id=envelope.message_id,
+            origin=envelope.origin,
+            model=model_name,
+            input_text=content or "",
+        )
+        await self._trace_event(
+            run_id=run_id,
+            session_id=session_id,
+            event_type="message_received",
+            payload={
+                "origin": envelope.origin,
+                "channel_id": envelope.channel_id,
+                "message_id": envelope.message_id,
+                "has_attachments": bool(attachments_meta),
+                "is_command": bool(is_command),
+            },
+        )
         limit_token = None
         try:
             await self._ensure_history(session_id)
@@ -136,6 +172,7 @@ class AgentRuntime:
                             HumanMessage(content=content, additional_kwargs={"message_id": envelope.message_id})
                         )
             model_name = await self._get_session_model(session_id, envelope)
+            await self._trace_update(run_id, model=model_name)
             await self._compact_history_for_context(session_id, history, model_name)
             resolved_model = resolve_model(model_name, purpose="heartbeat" if envelope.origin == "heartbeat" else "main")
             limits = RunLimitsState(
@@ -170,6 +207,14 @@ class AgentRuntime:
                     reason="runtime",
                     detail=f"max runtime exceeded ({int(settings.limits_max_runtime_seconds)}s)",
                 )
+                run_limit_reason = "runtime"
+                run_limit_detail = f"max runtime exceeded ({int(settings.limits_max_runtime_seconds)}s)"
+                await self._trace_event(
+                    run_id=run_id,
+                    session_id=session_id,
+                    event_type="limit_reached",
+                    payload={"reason": run_limit_reason, "detail": run_limit_detail},
+                )
                 result = {
                     "messages": history
                     + [
@@ -187,12 +232,42 @@ class AgentRuntime:
             usage = collect_usage(messages, envelope.message_id)
             if usage is not None:
                 await record_usage(session_id, internal_user_id, model_name, usage)
+                run_input_tokens = int(usage.get("input_tokens") or 0)
+                run_output_tokens = int(usage.get("output_tokens") or 0)
+                run_total_tokens = int(usage.get("total_tokens") or 0)
+                resolved_for_cost = resolve_model(
+                    model_name,
+                    purpose="heartbeat" if envelope.origin == "heartbeat" else "main",
+                )
+                run_cost = (run_input_tokens / 1_000_000.0) * float(resolved_for_cost.input_cost_per_1m) + (
+                    run_output_tokens / 1_000_000.0
+                ) * float(resolved_for_cost.output_cost_per_1m)
+                await self._trace_event(
+                    run_id=run_id,
+                    session_id=session_id,
+                    event_type="llm_usage",
+                    payload={
+                        "input_tokens": run_input_tokens,
+                        "output_tokens": run_output_tokens,
+                        "total_tokens": run_total_tokens,
+                        "cost": run_cost,
+                        "model": model_name,
+                    },
+                )
         except Exception as exc:
             _logger.exception("Agent runtime failed for session=%s", session_id)
             messages = self._history.get(session_id, [])
+            run_status = "failed"
+            run_error = str(exc)
             response = (
                 "I hit an internal error while processing your request. "
                 f"Details: {exc}. Please retry or simplify the task."
+            )
+            await self._trace_event(
+                run_id=run_id,
+                session_id=session_id,
+                event_type="error",
+                payload={"error": run_error},
             )
         finally:
             if limit_token is not None:
@@ -201,6 +276,8 @@ class AgentRuntime:
             reset_current_scope_type(token_scope_type)
             reset_current_origin(token_origin)
             reset_current_user_id(token_user)
+            reset_current_message_id(token_message_id)
+            reset_current_run_id(token_run_id)
             reset_current_channel_id(token_channel)
             reset_current_session_id(token_session)
         await self.event_bus.publish(
@@ -208,7 +285,7 @@ class AgentRuntime:
                 session_id=session_id,
                 type="message_response",
                 data={"run_id": run_id, "response": response},
-                created_at=datetime.utcnow(),
+                created_at=datetime.now(UTC),
             )
         )
         response_text = self._message_content_to_text(response)
@@ -231,6 +308,39 @@ class AgentRuntime:
                 envelope.message_id,
             )
         cleaned = self._strip_attachment_paths(response_text) if attachments else response_text
+        if run_limit_reason is None:
+            match = re.match(r"^LIMIT_REACHED \(([^)]+)\):\s*(.+)$", cleaned.strip())
+            if match:
+                run_limit_reason = match.group(1).strip()
+                run_limit_detail = match.group(2).strip()
+        if run_status == "running":
+            run_status = "limited" if run_limit_reason else "completed"
+        finished_at = datetime.now(UTC)
+        duration_ms = max(0, int((finished_at - run_started_at).total_seconds() * 1000))
+        await self._trace_update(
+            run_id,
+            status=run_status,
+            output_text=cleaned,
+            error=run_error,
+            limit_reason=run_limit_reason,
+            limit_detail=run_limit_detail,
+            input_tokens=run_input_tokens,
+            output_tokens=run_output_tokens,
+            total_tokens=run_total_tokens,
+            cost=run_cost,
+            finished_at=finished_at,
+            duration_ms=duration_ms,
+        )
+        await self._trace_event(
+            run_id=run_id,
+            session_id=session_id,
+            event_type="message_response",
+            payload={
+                "status": run_status,
+                "response_preview": cleaned[:600],
+                "duration_ms": duration_ms,
+            },
+        )
         return AgentResponse(text=cleaned, attachments=attachments)
 
     def clear_history(self, session_id: str) -> None:
@@ -239,6 +349,66 @@ class AgentRuntime:
     def set_session_model(self, session_id: str, model_name: str) -> None:
         if model_name:
             self._session_models[session_id] = model_name
+
+    async def _trace_create(
+        self,
+        *,
+        run_id: str,
+        session_id: str,
+        user_id: str,
+        message_id: str,
+        origin: str,
+        model: str | None,
+        input_text: str,
+    ) -> None:
+        try:
+            async with SessionLocal() as session:
+                repo = Repository(session)
+                await repo.create_run_trace(
+                    run_id=run_id,
+                    session_id=session_id,
+                    user_id=user_id,
+                    message_id=message_id,
+                    origin=origin,
+                    model=model,
+                    input_text=input_text,
+                    status="running",
+                )
+        except Exception:
+            _logger.debug("run trace create failed (run_id=%s)", run_id, exc_info=True)
+
+    async def _trace_update(self, run_id: str, **fields) -> None:
+        try:
+            async with SessionLocal() as session:
+                repo = Repository(session)
+                await repo.update_run_trace(run_id, **fields)
+        except Exception:
+            _logger.debug("run trace update failed (run_id=%s)", run_id, exc_info=True)
+
+    async def _trace_event(
+        self,
+        *,
+        run_id: str,
+        session_id: str,
+        event_type: str,
+        payload: dict | None = None,
+    ) -> None:
+        try:
+            async with SessionLocal() as session:
+                repo = Repository(session)
+                await repo.append_run_trace_event(
+                    run_id=run_id,
+                    session_id=session_id,
+                    event_type=event_type,
+                    payload=payload or {},
+                )
+        except Exception:
+            _logger.debug(
+                "run trace event failed (run_id=%s, event_type=%s)",
+                run_id,
+                event_type,
+                exc_info=True,
+            )
 
     async def _get_session_model(self, session_id: str, envelope: MessageEnvelope) -> str:
         if envelope.origin == "heartbeat":

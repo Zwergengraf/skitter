@@ -12,6 +12,8 @@ from .models import (
     LlmUsage,
     MemoryEntry,
     Message,
+    RunTrace,
+    RunTraceEvent,
     ScheduledJob,
     ScheduledRun,
     Session,
@@ -390,6 +392,110 @@ class Repository:
         )
         return list(result.scalars().all())
 
+    async def list_tool_runs_by_run(self, run_id: str) -> List[ToolRun]:
+        result = await self.session.execute(
+            select(ToolRun).where(ToolRun.run_id == run_id).order_by(ToolRun.created_at.asc())
+        )
+        return list(result.scalars().all())
+
+    async def create_run_trace(
+        self,
+        *,
+        run_id: str,
+        session_id: str,
+        user_id: str,
+        message_id: str,
+        origin: str,
+        model: str | None,
+        input_text: str,
+        status: str = "running",
+    ) -> RunTrace:
+        trace = RunTrace(
+            id=run_id,
+            session_id=session_id,
+            user_id=user_id,
+            message_id=message_id,
+            origin=origin,
+            status=status,
+            model=model,
+            input_text=input_text,
+            started_at=self._utcnow(),
+        )
+        self.session.add(trace)
+        await self.session.commit()
+        return trace
+
+    async def get_run_trace(self, run_id: str) -> RunTrace | None:
+        result = await self.session.execute(select(RunTrace).where(RunTrace.id == run_id))
+        return result.scalar_one_or_none()
+
+    async def list_run_traces(
+        self,
+        limit: int = 100,
+        status: str | None = None,
+        user_id: str | None = None,
+        session_id: str | None = None,
+    ) -> List[RunTrace]:
+        stmt = select(RunTrace).order_by(RunTrace.started_at.desc()).limit(limit)
+        if status:
+            stmt = stmt.where(RunTrace.status == status)
+        if user_id:
+            stmt = stmt.where(RunTrace.user_id == user_id)
+        if session_id:
+            stmt = stmt.where(RunTrace.session_id == session_id)
+        result = await self.session.execute(stmt)
+        return list(result.scalars().all())
+
+    async def update_run_trace(self, run_id: str, **fields) -> RunTrace | None:
+        result = await self.session.execute(select(RunTrace).where(RunTrace.id == run_id))
+        trace = result.scalar_one_or_none()
+        if trace is None:
+            return None
+        for key, value in fields.items():
+            if hasattr(trace, key) and value is not None:
+                setattr(trace, key, value)
+        await self.session.commit()
+        return trace
+
+    async def increment_run_trace_tool_calls(self, run_id: str, by: int = 1) -> RunTrace | None:
+        result = await self.session.execute(select(RunTrace).where(RunTrace.id == run_id))
+        trace = result.scalar_one_or_none()
+        if trace is None:
+            return None
+        trace.tool_calls = max(0, int(trace.tool_calls or 0) + int(by))
+        await self.session.commit()
+        return trace
+
+    async def append_run_trace_event(
+        self,
+        *,
+        run_id: str,
+        session_id: str,
+        event_type: str,
+        payload: dict | None = None,
+    ) -> RunTraceEvent:
+        event = RunTraceEvent(
+            id=str(uuid.uuid4()),
+            run_id=run_id,
+            session_id=session_id,
+            event_type=event_type,
+            payload=payload or {},
+            created_at=self._utcnow(),
+        )
+        self.session.add(event)
+        await self.session.commit()
+        return event
+
+    async def list_run_trace_events(self, run_id: str, limit: int = 1000) -> List[RunTraceEvent]:
+        stmt = (
+            select(RunTraceEvent)
+            .where(RunTraceEvent.run_id == run_id)
+            .order_by(RunTraceEvent.created_at.asc())
+            .limit(limit)
+        )
+        result = await self.session.execute(stmt)
+        return list(result.scalars().all())
+
     async def upsert_channel(
         self,
         transport_channel_id: str,
@@ -470,10 +576,14 @@ class Repository:
         input_payload: dict,
         output_payload: dict | None = None,
         approved_by: str | None = None,
+        run_id: str | None = None,
+        message_id: str | None = None,
     ) -> ToolRun:
         tool_run = ToolRun(
             id=str(uuid.uuid4()),
             session_id=session_id,
+            run_id=run_id,
+            message_id=message_id,
             tool_name=tool_name,
             status=status,
             input=input_payload,
@@ -482,6 +592,19 @@ class Repository:
         )
         self.session.add(tool_run)
         await self.session.commit()
+        if run_id:
+            await self.increment_run_trace_tool_calls(run_id, by=1)
+            await self.append_run_trace_event(
+                run_id=run_id,
+                session_id=session_id,
+                event_type="tool_created",
+                payload={
+                    "tool_run_id": tool_run.id,
+                    "tool": tool_name,
+                    "status": status,
+                    "input": input_payload,
+                },
+            )
         return tool_run
 
     async def approve_tool_run(self, tool_run_id: str, approved_by: str) -> Optional[ToolRun]:
@@ -492,6 +615,13 @@ class Repository:
         tool_run.status = "approved"
         tool_run.approved_by = approved_by
         await self.session.commit()
+        if tool_run.run_id:
+            await self.append_run_trace_event(
+                run_id=tool_run.run_id,
+                session_id=tool_run.session_id,
+                event_type="tool_approved",
+                payload={"tool_run_id": tool_run.id, "approved_by": approved_by},
+            )
         return tool_run
 
     async def deny_tool_run(self, tool_run_id: str, decided_by: str) -> Optional[ToolRun]:
@@ -502,6 +632,13 @@ class Repository:
         tool_run.status = "denied"
         tool_run.approved_by = decided_by
         await self.session.commit()
+        if tool_run.run_id:
+            await self.append_run_trace_event(
+                run_id=tool_run.run_id,
+                session_id=tool_run.session_id,
+                event_type="tool_denied",
+                payload={"tool_run_id": tool_run.id, "denied_by": decided_by},
+            )
         return tool_run
 
     async def complete_tool_run(self, tool_run_id: str, status: str, output_payload: dict | None = None) -> Optional[ToolRun]:
@@ -512,6 +649,17 @@ class Repository:
         tool_run.status = status
         tool_run.output = output_payload or {}
         await self.session.commit()
+        if tool_run.run_id:
+            await self.append_run_trace_event(
+                run_id=tool_run.run_id,
+                session_id=tool_run.session_id,
+                event_type="tool_completed",
+                payload={
+                    "tool_run_id": tool_run.id,
+                    "status": status,
+                    "output": output_payload or {},
+                },
+            )
         return tool_run
 
     async def add_memory(self, user_id: str, summary: str, embedding: list, tags: list | None = None) -> MemoryEntry:

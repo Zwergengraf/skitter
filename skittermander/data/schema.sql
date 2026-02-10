@@ -125,6 +125,8 @@ CREATE TABLE IF NOT EXISTS llm_usage (
 CREATE TABLE IF NOT EXISTS tool_runs (
     id TEXT PRIMARY KEY,
     session_id TEXT NOT NULL,
+    run_id TEXT,
+    message_id TEXT,
     tool_name TEXT NOT NULL,
     status TEXT NOT NULL,
     input JSONB NOT NULL DEFAULT '{}'::jsonb,
@@ -132,6 +134,62 @@ CREATE TABLE IF NOT EXISTS tool_runs (
     approved_by TEXT,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+
+ALTER TABLE tool_runs
+    ADD COLUMN IF NOT EXISTS run_id TEXT;
+
+ALTER TABLE tool_runs
+    ADD COLUMN IF NOT EXISTS message_id TEXT;
+
+CREATE INDEX IF NOT EXISTS tool_runs_run_id_idx
+    ON tool_runs (run_id);
+
+CREATE INDEX IF NOT EXISTS tool_runs_session_created_idx
+    ON tool_runs (session_id, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS run_traces (
+    id TEXT PRIMARY KEY,
+    session_id TEXT NOT NULL,
+    user_id TEXT NOT NULL,
+    message_id TEXT NOT NULL,
+    origin TEXT NOT NULL DEFAULT 'unknown',
+    status TEXT NOT NULL DEFAULT 'running',
+    model TEXT,
+    input_text TEXT NOT NULL DEFAULT '',
+    output_text TEXT NOT NULL DEFAULT '',
+    error TEXT,
+    limit_reason TEXT,
+    limit_detail TEXT,
+    tool_calls INTEGER NOT NULL DEFAULT 0,
+    input_tokens INTEGER NOT NULL DEFAULT 0,
+    output_tokens INTEGER NOT NULL DEFAULT 0,
+    total_tokens INTEGER NOT NULL DEFAULT 0,
+    cost DOUBLE PRECISION NOT NULL DEFAULT 0,
+    started_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    finished_at TIMESTAMPTZ,
+    duration_ms INTEGER
+);
+
+CREATE INDEX IF NOT EXISTS run_traces_session_started_idx
+    ON run_traces (session_id, started_at DESC);
+
+CREATE INDEX IF NOT EXISTS run_traces_user_started_idx
+    ON run_traces (user_id, started_at DESC);
+
+CREATE INDEX IF NOT EXISTS run_traces_status_started_idx
+    ON run_traces (status, started_at DESC);
+
+CREATE TABLE IF NOT EXISTS run_trace_events (
+    id TEXT PRIMARY KEY,
+    run_id TEXT NOT NULL,
+    session_id TEXT NOT NULL,
+    event_type TEXT NOT NULL,
+    payload JSONB NOT NULL DEFAULT '{}'::jsonb,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS run_trace_events_run_created_idx
+    ON run_trace_events (run_id, created_at ASC);
 
 CREATE TABLE IF NOT EXISTS memory_entries (
     id TEXT PRIMARY KEY,

@@ -38,6 +38,7 @@ import type {
   ChannelListItem,
   MemoryEntry,
   OverviewResponse,
+  RunTraceDetail,
   SandboxStatus,
   ConfigResponse,
   ScheduledJobItem,
@@ -77,6 +78,10 @@ export default function App() {
   const [toolRunsError, setToolRunsError] = useState<string | null>(null);
   const [toolRunsLoading, setToolRunsLoading] = useState<boolean>(false);
   const [selectedToolRun, setSelectedToolRun] = useState<ToolRunListItem | null>(null);
+  const [selectedRunId, setSelectedRunId] = useState<string | null>(null);
+  const [runDetail, setRunDetail] = useState<RunTraceDetail | null>(null);
+  const [runDetailLoading, setRunDetailLoading] = useState<boolean>(false);
+  const [runDetailError, setRunDetailError] = useState<string | null>(null);
   const [toolRunToolFilter, setToolRunToolFilter] = useState<string>("all");
   const [toolRunUserFilter, setToolRunUserFilter] = useState<string>("all");
   const [memoryData, setMemoryData] = useState<MemoryEntry[]>([]);
@@ -267,10 +272,32 @@ export default function App() {
   useEffect(() => {
     if (active !== "tools") {
       setSelectedToolRun(null);
+      setSelectedRunId(null);
       return;
     }
     refreshToolRuns();
   }, [active]);
+
+  useEffect(() => {
+    if (!selectedRunId) {
+      setRunDetail(null);
+      setRunDetailError(null);
+      return;
+    }
+    setRunDetailLoading(true);
+    setRunDetailError(null);
+    api
+      .getRunDetail(selectedRunId)
+      .then((data) => {
+        setRunDetail(data);
+      })
+      .catch((error: Error) => {
+        setRunDetailError(error.message);
+      })
+      .finally(() => {
+        setRunDetailLoading(false);
+      });
+  }, [selectedRunId]);
 
   useEffect(() => {
     if (active !== "memory") {
@@ -769,6 +796,22 @@ export default function App() {
     } catch {
       return String(value ?? "");
     }
+  };
+
+  const formatDuration = (durationMs?: number | null) => {
+    if (!durationMs || durationMs <= 0) {
+      return "—";
+    }
+    if (durationMs < 1000) {
+      return `${durationMs} ms`;
+    }
+    const seconds = durationMs / 1000;
+    if (seconds < 60) {
+      return `${seconds.toFixed(1)} s`;
+    }
+    const minutes = Math.floor(seconds / 60);
+    const rem = Math.round(seconds % 60);
+    return `${minutes}m ${rem}s`;
   };
 
   useEffect(() => {
@@ -1299,16 +1342,31 @@ export default function App() {
                           <p className="mt-1 text-sm text-foreground">{formatRelativeTime(tool.created_at)}</p>
                         </div>
                         <div>
-                          <p className="uppercase tracking-[0.2em] text-mutedForeground">Session</p>
-                          <button
-                            className="mt-1 text-sm text-primary underline-offset-4 hover:underline"
-                            onClick={(event) => {
-                              event.stopPropagation();
-                              openSessionDetail(tool.session_id);
-                            }}
-                          >
-                            View session
-                          </button>
+                          <p className="uppercase tracking-[0.2em] text-mutedForeground">Links</p>
+                          <div className="mt-1 flex flex-col items-start gap-1">
+                            <button
+                              className="text-sm text-primary underline-offset-4 hover:underline"
+                              onClick={(event) => {
+                                event.stopPropagation();
+                                openSessionDetail(tool.session_id);
+                              }}
+                            >
+                              View session
+                            </button>
+                            {tool.run_id ? (
+                              <button
+                                className="text-sm text-primary underline-offset-4 hover:underline"
+                                onClick={(event) => {
+                                  event.stopPropagation();
+                                  setSelectedRunId(tool.run_id ?? null);
+                                }}
+                              >
+                                View run
+                              </button>
+                            ) : (
+                              <span className="text-xs text-mutedForeground">Run id unavailable</span>
+                            )}
+                          </div>
                         </div>
                       </div>
                       <div className="mt-4 grid gap-4 lg:grid-cols-2">
@@ -2245,7 +2303,7 @@ export default function App() {
                   </DialogDescription>
                 </DialogHeader>
               </div>
-              <div className="grid gap-4 border-b border-border p-6 md:grid-cols-4">
+              <div className="grid gap-4 border-b border-border p-6 md:grid-cols-5">
                 <div className="rounded-2xl border border-border bg-card p-4">
                   <p className="text-xs uppercase tracking-[0.2em] text-mutedForeground">Tool</p>
                   <p className="mt-2 text-sm font-semibold">{selectedToolRun.tool}</p>
@@ -2276,6 +2334,19 @@ export default function App() {
                   <p className="text-xs uppercase tracking-[0.2em] text-mutedForeground">Created</p>
                   <p className="mt-2 text-sm">{formatRelativeTime(selectedToolRun.created_at)}</p>
                 </div>
+                <div className="rounded-2xl border border-border bg-card p-4">
+                  <p className="text-xs uppercase tracking-[0.2em] text-mutedForeground">Run</p>
+                  {selectedToolRun.run_id ? (
+                    <button
+                      className="mt-2 text-sm text-primary underline-offset-4 hover:underline"
+                      onClick={() => setSelectedRunId(selectedToolRun.run_id ?? null)}
+                    >
+                      Open run detail
+                    </button>
+                  ) : (
+                    <p className="mt-2 text-sm text-mutedForeground">Unavailable</p>
+                  )}
+                </div>
               </div>
               <div className="grid min-h-0 flex-1 gap-4 p-6 md:grid-cols-2">
                 <div className="min-h-0">
@@ -2297,6 +2368,174 @@ export default function App() {
               </div>
               <div className="flex justify-end border-t border-border p-4">
                 <Button variant="outline" onClick={() => setSelectedToolRun(null)}>
+                  Close
+                </Button>
+              </div>
+            </DialogContent>
+          </Dialog>
+        )}
+
+        {selectedRunId && (
+          <Dialog
+            open={Boolean(selectedRunId)}
+            onOpenChange={(open) => {
+              if (!open) {
+                setSelectedRunId(null);
+              }
+            }}
+          >
+            <DialogContent className="max-w-7xl w-[95vw] max-h-[92vh] overflow-hidden p-0">
+              <div className="border-b border-border p-6">
+                <DialogHeader>
+                  <DialogTitle>Run Detail</DialogTitle>
+                  <DialogDescription>
+                    Unified execution trace for this request: model, tools, approvals, limits, and result.
+                  </DialogDescription>
+                </DialogHeader>
+              </div>
+              {runDetailLoading ? (
+                <div className="p-6 text-sm text-mutedForeground">Loading run detail...</div>
+              ) : runDetailError ? (
+                <div className="p-6 text-sm text-mutedForeground">{runDetailError}</div>
+              ) : runDetail ? (
+                <div className="min-h-0 flex-1 overflow-hidden p-6">
+                  <div className="grid gap-4 md:grid-cols-4">
+                    <div className="rounded-2xl border border-border bg-card p-4">
+                      <p className="text-xs uppercase tracking-[0.2em] text-mutedForeground">Status</p>
+                      <div className="mt-2">
+                        <Badge
+                          variant={
+                            runDetail.run.status === "failed"
+                              ? "danger"
+                              : runDetail.run.status === "limited"
+                              ? "warning"
+                              : "success"
+                          }
+                        >
+                          {runDetail.run.status}
+                        </Badge>
+                      </div>
+                      <p className="mt-2 text-xs text-mutedForeground">Duration: {formatDuration(runDetail.run.duration_ms)}</p>
+                    </div>
+                    <div className="rounded-2xl border border-border bg-card p-4">
+                      <p className="text-xs uppercase tracking-[0.2em] text-mutedForeground">Model</p>
+                      <p className="mt-2 text-sm">{runDetail.run.model ?? "—"}</p>
+                      <p className="mt-1 text-xs text-mutedForeground">{runDetail.run.origin}</p>
+                    </div>
+                    <div className="rounded-2xl border border-border bg-card p-4">
+                      <p className="text-xs uppercase tracking-[0.2em] text-mutedForeground">Tokens</p>
+                      <p className="mt-2 text-sm">
+                        {formatNumber(runDetail.run.total_tokens ?? 0)} total
+                      </p>
+                      <p className="mt-1 text-xs text-mutedForeground">
+                        In {formatNumber(runDetail.run.input_tokens ?? 0)} · Out{" "}
+                        {formatNumber(runDetail.run.output_tokens ?? 0)}
+                      </p>
+                    </div>
+                    <div className="rounded-2xl border border-border bg-card p-4">
+                      <p className="text-xs uppercase tracking-[0.2em] text-mutedForeground">Cost & Tools</p>
+                      <p className="mt-2 text-sm">{formatCurrency(runDetail.run.cost ?? 0)}</p>
+                      <p className="mt-1 text-xs text-mutedForeground">
+                        {formatNumber(runDetail.run.tool_calls ?? 0)} tool call(s)
+                      </p>
+                    </div>
+                  </div>
+                  {(runDetail.run.error || runDetail.run.limit_reason) && (
+                    <div className="mt-4 rounded-2xl border border-border bg-muted/30 p-4 text-sm">
+                      {runDetail.run.error ? (
+                        <p className="text-foreground">Error: {runDetail.run.error}</p>
+                      ) : null}
+                      {runDetail.run.limit_reason ? (
+                        <p className="text-foreground">
+                          Limit: {runDetail.run.limit_reason}
+                          {runDetail.limit_detail ? ` · ${runDetail.limit_detail}` : ""}
+                        </p>
+                      ) : null}
+                    </div>
+                  )}
+                  <div className="mt-4 grid gap-4 md:grid-cols-3">
+                    <div className="md:col-span-1">
+                      <p className="text-xs font-semibold uppercase tracking-[0.2em] text-mutedForeground">Events</p>
+                      <ScrollArea className="mt-2 h-[52vh] rounded-2xl border border-border bg-muted/40 p-3">
+                        <div className="space-y-3">
+                          {runDetail.events.length ? (
+                            runDetail.events.map((event) => (
+                              <div key={event.id} className="rounded-xl border border-border bg-card p-3">
+                                <p className="text-xs font-semibold">{event.event_type}</p>
+                                <p className="mt-1 text-[11px] text-mutedForeground">
+                                  {formatRelativeTime(event.created_at)}
+                                </p>
+                                <pre className="mt-2 text-[11px] text-mutedForeground whitespace-pre-wrap">
+                                  {formatJsonPreview(event.payload, 1200)}
+                                </pre>
+                              </div>
+                            ))
+                          ) : (
+                            <p className="text-xs text-mutedForeground">No events recorded.</p>
+                          )}
+                        </div>
+                      </ScrollArea>
+                    </div>
+                    <div className="md:col-span-2 grid gap-4">
+                      <div className="grid gap-4 md:grid-cols-2">
+                        <div>
+                          <p className="text-xs font-semibold uppercase tracking-[0.2em] text-mutedForeground">Input</p>
+                          <ScrollArea className="mt-2 h-[24vh] rounded-2xl border border-border bg-muted/40 p-3">
+                            <pre className="text-xs text-foreground whitespace-pre-wrap">
+                              {runDetail.input_text || "—"}
+                            </pre>
+                          </ScrollArea>
+                        </div>
+                        <div>
+                          <p className="text-xs font-semibold uppercase tracking-[0.2em] text-mutedForeground">Output</p>
+                          <ScrollArea className="mt-2 h-[24vh] rounded-2xl border border-border bg-muted/40 p-3">
+                            <pre className="text-xs text-foreground whitespace-pre-wrap">
+                              {runDetail.output_text || "—"}
+                            </pre>
+                          </ScrollArea>
+                        </div>
+                      </div>
+                      <div>
+                        <p className="text-xs font-semibold uppercase tracking-[0.2em] text-mutedForeground">
+                          Tool runs in this request
+                        </p>
+                        <ScrollArea className="mt-2 h-[24vh] rounded-2xl border border-border bg-muted/40 p-3">
+                          <div className="space-y-3">
+                            {runDetail.tool_runs.length ? (
+                              runDetail.tool_runs.map((tool) => (
+                                <div key={tool.id} className="rounded-xl border border-border bg-card p-3">
+                                  <div className="flex items-center justify-between">
+                                    <p className="text-sm font-semibold">{tool.tool}</p>
+                                    <Badge variant={tool.status === "failed" ? "danger" : "secondary"}>
+                                      {tool.status}
+                                    </Badge>
+                                  </div>
+                                  <p className="mt-1 text-xs text-mutedForeground">
+                                    {formatRelativeTime(tool.created_at)} · Approved by{" "}
+                                    {tool.approved_by ? userLabelFor(tool.approved_by) : "auto"}
+                                  </p>
+                                  <div className="mt-2 grid gap-2 md:grid-cols-2">
+                                    <pre className="rounded-lg border border-border bg-muted/40 p-2 text-[11px] text-mutedForeground whitespace-pre-wrap">
+                                      {formatFullJson(tool.input)}
+                                    </pre>
+                                    <pre className="rounded-lg border border-border bg-muted/40 p-2 text-[11px] text-mutedForeground whitespace-pre-wrap">
+                                      {formatFullJson(tool.output)}
+                                    </pre>
+                                  </div>
+                                </div>
+                              ))
+                            ) : (
+                              <p className="text-xs text-mutedForeground">No tool runs linked to this request.</p>
+                            )}
+                          </div>
+                        </ScrollArea>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              ) : null}
+              <div className="flex justify-end border-t border-border p-4">
+                <Button variant="outline" onClick={() => setSelectedRunId(null)}>
                   Close
                 </Button>
               </div>

@@ -19,6 +19,7 @@ async def list_tool_runs(
     return [
         ToolRunListItem(
             id=tool_run.id,
+            run_id=tool_run.run_id,
             tool=tool_run.tool_name,
             status=tool_run.status,
             requested_by=transport_user_id,
