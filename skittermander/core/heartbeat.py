@@ -191,7 +191,7 @@ class HeartbeatService:
                         content=response.text,
                         metadata={"origin": "heartbeat", "response_to": envelope.message_id},
                     )
-                    keep_messages = max(1, int(settings.heartbeat_history_runs)) * 2
+                    keep_messages = max(0, int(settings.heartbeat_history_runs)) * 2
                     await repo.prune_messages_keep_latest(session_obj.id, keep_messages)
                     await repo.add_message(
                         private_session.id,
