@@ -26,8 +26,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # Install UV from the official image
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
 
-# Install Codex using npm
-RUN npm install -g @openai/codex
+# Install Codex using Homebrew
+RUN brew install codex
 ENV CODEX_HOME=/workspace/.codex
 
 RUN mkdir -p /tmp/tmux-sockets
