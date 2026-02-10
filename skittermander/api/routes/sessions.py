@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from datetime import datetime
+
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 
 from ..deps import get_repo
@@ -16,6 +18,7 @@ from ..schemas import (
 from ...core.llm import list_models
 from ...core.config import settings
 from ...core.conversation_scope import private_scope_id
+from ...core.models import StreamEvent
 from ...core.sessions import SessionManager
 from ...data.repositories import Repository
 
@@ -70,6 +73,11 @@ async def create_session(
     if not scope_id:
         scope_id = f"{scope_type}:{user.id}"
     session = None
+    previous_active_id: str | None = None
+    if not payload.reuse_active:
+        previous = await repo.get_active_session_by_scope(scope_type, scope_id)
+        if previous is not None:
+            previous_active_id = previous.id
     if payload.reuse_active:
         session = await repo.get_active_session_by_scope(scope_type, scope_id)
     if session is None:
@@ -90,6 +98,33 @@ async def create_session(
                 origin=origin,
                 scope_type=scope_type,
                 scope_id=scope_id,
+            )
+    if not payload.reuse_active and previous_active_id and previous_active_id != session.id:
+        event_bus = getattr(request.app.state, "event_bus", None)
+        if event_bus is not None:
+            event_payload = {
+                "old_session_id": previous_active_id,
+                "new_session_id": session.id,
+                "scope_type": scope_type,
+                "scope_id": scope_id,
+                "initiated_by_origin": origin,
+            }
+            now = datetime.utcnow()
+            await event_bus.publish(
+                StreamEvent(
+                    session_id=previous_active_id,
+                    type="session_switched",
+                    data=event_payload,
+                    created_at=now,
+                )
+            )
+            await event_bus.publish(
+                StreamEvent(
+                    session_id=session.id,
+                    type="session_switched",
+                    data=event_payload,
+                    created_at=now,
+                )
             )
     return SessionOut(
         id=session.id,

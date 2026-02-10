@@ -107,15 +107,21 @@ final class AppState: ObservableObject {
         await decideToolRun(id: id, approved: false)
     }
 
-    func ensureSession(forceNew: Bool = false) async throws -> String {
-        if let sessionID, !forceNew {
+    func ensureSession(forceNew: Bool = false, syncWithServer: Bool = false) async throws -> String {
+        if let sessionID, !forceNew, !syncWithServer {
             return sessionID
         }
         let id = try await api.createOrResumeSession(origin: "menubar", reuseActive: !forceNew)
         let shouldLoadHistory = id != sessionID
         sessionID = id
-        if shouldLoadHistory {
-            messages = try await api.sessionDetail(sessionID: id)
+        if shouldLoadHistory || syncWithServer {
+            let synced = try await api.sessionDetail(sessionID: id)
+            if shouldLoadHistory {
+                messages = synced
+                unreadMessageCount = 0
+            } else {
+                applySyncedMessages(synced)
+            }
         }
         return id
     }
@@ -259,11 +265,9 @@ final class AppState: ObservableObject {
             progressStatusText = "Working... 0s\nLast step: thinking"
             activity = .thinking
             errorBanner = nil
-            let assistantMessage = try await api.sendMessage(sessionID: id, text: text)
-            messages.append(assistantMessage)
-            if !isChatWindowVisible {
-                unreadMessageCount += 1
-            }
+            _ = try await api.sendMessage(sessionID: id, text: text)
+            let syncedMessages = try await api.sessionDetail(sessionID: id)
+            applySyncedMessages(syncedMessages)
             isSending = false
             requestStartedAt = nil
             progressStatusText = ""
@@ -322,7 +326,7 @@ final class AppState: ObservableObject {
 
         var activeSessionID: String?
         do {
-            let id = try await ensureSession(forceNew: false)
+            let id = try await ensureSession(forceNew: false, syncWithServer: !isSending)
             activeSessionID = id
             let snapshot = try await api.sessionSnapshot(sessionID: id)
             contextTokens = snapshot.contextTokens
@@ -374,7 +378,7 @@ final class AppState: ObservableObject {
         if isSending, let sessionID = activeSessionID {
             let elapsed = max(0, Int(Date().timeIntervalSince(requestStartedAt ?? Date())))
             do {
-                if let latest = try await api.latestToolRun(sessionID: sessionID) {
+                if let latest = try await api.latestToolRun(sessionID: sessionID, since: requestStartedAt) {
                     progressStatusText = "Working... \(elapsed)s\nLast tool: `\(latest.tool)` (\(latest.status))"
                 } else {
                     progressStatusText = "Working... \(elapsed)s\nLast step: thinking"
@@ -421,6 +425,19 @@ final class AppState: ObservableObject {
             attachments: []
         )
         messages.append(message)
+    }
+
+    private func applySyncedMessages(_ synced: [ChatMessage]) {
+        if !isChatWindowVisible {
+            let previousAssistantIDs = Set(messages.filter { $0.role == .assistant }.map(\.id))
+            let newAssistantCount = synced
+                .filter { $0.role == .assistant && !previousAssistantIDs.contains($0.id) }
+                .count
+            if newAssistantCount > 0 {
+                unreadMessageCount += newAssistantCount
+            }
+        }
+        messages = synced
     }
 
     private func setError(_ error: Error?) {

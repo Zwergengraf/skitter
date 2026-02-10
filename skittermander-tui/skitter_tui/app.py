@@ -100,6 +100,7 @@ class SkitterTuiApp(App[None]):
         self._busy = False
         self._stream_stop = asyncio.Event()
         self._last_attachments: list[dict[str, Any]] = []
+        self._seen_message_ids: set[str] = set()
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
@@ -190,51 +191,85 @@ class SkitterTuiApp(App[None]):
         raw_messages = detail.get("messages")
         if not isinstance(raw_messages, list):
             return
+        self._seen_message_ids.clear()
         count = 0
         for item in raw_messages:
-            if not isinstance(item, dict):
-                continue
-            role = str(item.get("role") or "").strip().lower()
-            message_id = str(item.get("id") or "")
-            meta = item.get("meta") if isinstance(item.get("meta"), dict) else {}
-            attachments = self._normalize_attachments(meta.get("attachments"), message_id=message_id)
-            content = str(item.get("content") or "").strip()
-            if not content and attachments:
-                content = "Received attachments."
-            if not content:
-                continue
-            timestamp = self._format_timestamp(item.get("created_at"))
-            if role == "user":
-                self._append_panel("You", content, border_style=self.PANEL_USER_STYLE, timestamp=timestamp)
-            elif role == "assistant":
-                if attachments:
-                    self._last_attachments = list(attachments)
-                self._append_assistant(content, timestamp=timestamp, attachments=attachments)
-            elif role == "system":
-                self._append_panel("System", content, border_style=self.PANEL_SYSTEM_STYLE, timestamp=timestamp)
-            else:
-                self._append_panel(
-                    role.title() or "Message",
-                    content,
-                    border_style=self.PANEL_OTHER_STYLE,
-                    timestamp=timestamp,
-                )
-            count += 1
+            if self._append_history_item(item):
+                count += 1
         if count:
             self._append_system(f"Loaded `{count}` messages from this session.")
 
+    async def _sync_new_messages(self, session_id: str) -> None:
+        try:
+            detail = await self.api.get_session_detail(session_id)
+        except Exception:
+            return
+        raw_messages = detail.get("messages")
+        if not isinstance(raw_messages, list):
+            return
+        for item in raw_messages:
+            self._append_history_item(item)
+
+    def _append_history_item(self, item: dict[str, Any]) -> bool:
+        if not isinstance(item, dict):
+            return False
+        message_id = str(item.get("id") or "").strip()
+        if not message_id or message_id in self._seen_message_ids:
+            return False
+        role = str(item.get("role") or "").strip().lower()
+        meta = item.get("meta") if isinstance(item.get("meta"), dict) else {}
+        attachments = self._normalize_attachments(meta.get("attachments"), message_id=message_id)
+        content = str(item.get("content") or "").strip()
+        if not content and attachments:
+            content = "Received attachments."
+        if not content:
+            self._seen_message_ids.add(message_id)
+            return False
+        timestamp = self._format_timestamp(item.get("created_at"))
+        if role == "user":
+            self._append_panel("You", content, border_style=self.PANEL_USER_STYLE, timestamp=timestamp)
+        elif role == "assistant":
+            if attachments:
+                self._last_attachments = list(attachments)
+            self._append_assistant(content, timestamp=timestamp, attachments=attachments)
+        elif role == "system":
+            self._append_panel("System", content, border_style=self.PANEL_SYSTEM_STYLE, timestamp=timestamp)
+        else:
+            self._append_panel(
+                role.title() or "Message",
+                content,
+                border_style=self.PANEL_OTHER_STYLE,
+                timestamp=timestamp,
+            )
+        self._seen_message_ids.add(message_id)
+        return True
+
     async def on_incoming_event(self, message: IncomingEvent) -> None:
         event = message.event
+        payload = event.data.get("data", {}) if isinstance(event.data.get("data"), dict) else {}
         if event.event == "message_received":
             self._update_status("Thinking", "model run started")
             return
         if event.event == "tool_approval_requested":
-            tool_name = str(event.data.get("data", {}).get("tool_name") or "tool")
+            tool_name = str(payload.get("tool_name") or "tool")
             self._update_status("Waiting approval", f"tool={tool_name}")
             return
         if event.event == "message_response":
             if self._busy:
                 self._update_status("Finalizing", "response ready")
+            elif self._session_id:
+                self.run_worker(
+                    self._sync_new_messages(self._session_id),
+                    name="sync",
+                    group="sync",
+                    exclusive=True,
+                )
+            return
+        if event.event == "session_switched":
+            new_session_id = str(payload.get("new_session_id") or "").strip()
+            if new_session_id and new_session_id != self._session_id:
+                self._update_status("Session changed", "switched from another client")
+                self.post_message(SessionReady(new_session_id, created=False))
             return
 
     async def on_status_update(self, message: StatusUpdate) -> None:
@@ -258,7 +293,6 @@ class SkitterTuiApp(App[None]):
             self._append_system("No session is active yet. Please wait for startup to finish.")
             return
 
-        self._append_user(text)
         self._busy = True
         self._update_status("Thinking", "sending request")
         self.run_worker(self._send_message(text), name="send", group="send", exclusive=True)
@@ -388,18 +422,13 @@ class SkitterTuiApp(App[None]):
             self.post_message(AssistantReply("No active session.", error=True))
             return
         try:
-            response = await self.api.send_message(
+            await self.api.send_message(
                 session_id=self._session_id,
                 user_id=self.config.user_id,
                 text=text,
             )
-            attachments = self._normalize_attachments(response.get("attachments"))
-            content = str(response.get("content") or "").strip()
-            if not content and attachments:
-                content = "Received attachments."
-            if not content:
-                content = "(empty response)"
-            self.post_message(AssistantReply(content, error=False, attachments=attachments))
+            await self._sync_new_messages(self._session_id)
+            self.post_message(AssistantReply("", error=False, attachments=[]))
         except Exception as exc:
             self.post_message(AssistantReply(f"Request failed: {exc}", error=True))
 
@@ -409,8 +438,9 @@ class SkitterTuiApp(App[None]):
             self._append_error(message.text)
             self._update_status("Error", "request failed")
         else:
-            self._last_attachments = list(message.attachments)
-            self._append_assistant(message.text, attachments=message.attachments)
+            if message.text.strip():
+                self._last_attachments = list(message.attachments)
+                self._append_assistant(message.text, attachments=message.attachments)
             self._update_status("Ready", "")
 
     async def action_new_session(self) -> None:

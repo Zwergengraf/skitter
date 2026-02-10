@@ -149,25 +149,32 @@ struct APIClient {
         return payload.count
     }
 
-    func latestToolRun(sessionID: String) async throws -> ToolRunStatus? {
+    func latestToolRun(sessionID: String, since: Date? = nil) async throws -> ToolRunStatus? {
         let payload: [ToolRunPayload] = try await requestJSON(
             path: "/v1/tools?limit=200",
             method: "GET",
             body: Optional<Int>.none,
             requiresAPIKey: true
         )
-        let filtered = payload.filter { $0.session_id == sessionID }
-        guard let latest = filtered.max(by: { $0.created_at < $1.created_at }) else {
+        let filtered = payload.compactMap { item -> (ToolRunPayload, Date)? in
+            guard item.session_id == sessionID else { return nil }
+            let createdAt = parseDate(item.created_at)
+            if let since, createdAt < since {
+                return nil
+            }
+            return (item, createdAt)
+        }
+        guard let latest = filtered.max(by: { $0.1 < $1.1 }) else {
             return nil
         }
         return ToolRunStatus(
-            id: latest.id,
-            sessionID: latest.session_id,
-            tool: latest.tool,
-            status: latest.status,
-            createdAt: parseDate(latest.created_at),
-            requestedBy: latest.requested_by,
-            input: latest.input ?? [:]
+            id: latest.0.id,
+            sessionID: latest.0.session_id,
+            tool: latest.0.tool,
+            status: latest.0.status,
+            createdAt: latest.1,
+            requestedBy: latest.0.requested_by,
+            input: latest.0.input ?? [:]
         )
     }
 

@@ -15,6 +15,7 @@ from .core.scheduler import SchedulerService
 from .core.heartbeat import HeartbeatService
 from .core.conversation_scope import resolve_conversation_scope
 from .core.config import settings
+from .core.models import StreamEvent
 from .core.sessions import SessionManager
 from .data.db import SessionLocal
 from .data.repositories import Repository
@@ -93,13 +94,24 @@ async def main() -> None:
 
     manager = TransportManager(transports)
 
+    def _to_utc_naive(value: datetime) -> datetime:
+        if value.tzinfo is None:
+            return value
+        return value.astimezone(UTC).replace(tzinfo=None)
+
     async def _progress_status_text(session_id: str, started_at: datetime) -> str:
         async with SessionLocal() as session:
             repo = Repository(session)
             tool_runs = await repo.list_tool_runs_by_session(session_id)
+        started_at_naive = _to_utc_naive(started_at)
         elapsed_seconds = max(0, int((datetime.now(UTC) - started_at).total_seconds()))
-        if tool_runs:
-            latest = tool_runs[-1]
+        recent_runs = [
+            run
+            for run in tool_runs
+            if _to_utc_naive(run.created_at) >= started_at_naive
+        ]
+        if recent_runs:
+            latest = recent_runs[-1]
             return f"Working... {elapsed_seconds}s\nLast tool: `{latest.tool_name}` ({latest.status})"
         return f"Working... {elapsed_seconds}s\nLast step: thinking"
 
@@ -179,13 +191,44 @@ async def main() -> None:
         await transport.send_typing(envelope.channel_id)
 
         if envelope.origin == "discord" and envelope.command == "new":
-            summary_path, _ = await session_manager.start_new_session_for_scope(
+            old_session_id: str | None = None
+            async with SessionLocal() as session:
+                repo = Repository(session)
+                active = await repo.get_active_session_by_scope(scope.scope_type, scope.scope_id)
+                if active is not None:
+                    old_session_id = active.id
+            summary_path, new_session_id = await session_manager.start_new_session_for_scope(
                 user_id=internal_user_id,
                 scope_type=scope.scope_type,
                 scope_id=scope.scope_id,
                 origin=envelope.origin,
                 channel_id=envelope.channel_id,
             )
+            if old_session_id and old_session_id != new_session_id:
+                payload = {
+                    "old_session_id": old_session_id,
+                    "new_session_id": new_session_id,
+                    "scope_type": scope.scope_type,
+                    "scope_id": scope.scope_id,
+                    "initiated_by_origin": envelope.origin,
+                }
+                now = datetime.utcnow()
+                await app.state.event_bus.publish(
+                    StreamEvent(
+                        session_id=old_session_id,
+                        type="session_switched",
+                        data=payload,
+                        created_at=now,
+                    )
+                )
+                await app.state.event_bus.publish(
+                    StreamEvent(
+                        session_id=new_session_id,
+                        type="session_switched",
+                        data=payload,
+                        created_at=now,
+                    )
+                )
             if summary_path:
                 await transport.send_message(
                     envelope.channel_id, f"Started a new session. Summary saved to `{summary_path.name}`."
