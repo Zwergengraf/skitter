@@ -36,6 +36,8 @@ _CURRENT_SESSION_ID: ContextVar[str] = ContextVar("skitter_session_id", default=
 _CURRENT_CHANNEL_ID: ContextVar[str] = ContextVar("skitter_channel_id", default="default")
 _CURRENT_USER_ID: ContextVar[str] = ContextVar("skitter_user_id", default="default")
 _CURRENT_ORIGIN: ContextVar[str] = ContextVar("skitter_origin", default="unknown")
+_CURRENT_SCOPE_TYPE: ContextVar[str] = ContextVar("skitter_scope_type", default="private")
+_CURRENT_SCOPE_ID: ContextVar[str] = ContextVar("skitter_scope_id", default="default")
 
 
 def set_current_session_id(session_id: str) -> Token:
@@ -70,6 +72,22 @@ def reset_current_origin(token: Token) -> None:
     _CURRENT_ORIGIN.reset(token)
 
 
+def set_current_scope_type(scope_type: str) -> Token:
+    return _CURRENT_SCOPE_TYPE.set(scope_type)
+
+
+def reset_current_scope_type(token: Token) -> None:
+    _CURRENT_SCOPE_TYPE.reset(token)
+
+
+def set_current_scope_id(scope_id: str) -> Token:
+    return _CURRENT_SCOPE_ID.set(scope_id)
+
+
+def reset_current_scope_id(token: Token) -> None:
+    _CURRENT_SCOPE_ID.reset(token)
+
+
 def _session_id() -> str:
     return _CURRENT_SESSION_ID.get()
 
@@ -83,6 +101,14 @@ def _user_id() -> str:
 
 def _origin() -> str:
     return _CURRENT_ORIGIN.get()
+
+
+def _scope_type() -> str:
+    return _CURRENT_SCOPE_TYPE.get()
+
+
+def _scope_id() -> str:
+    return _CURRENT_SCOPE_ID.get()
 
 
 def current_user_id() -> str:
@@ -844,7 +870,22 @@ def build_graph(
             if user is None:
                 await _complete_tool_run(tool_run_id, "failed", {"error": "user not found"})
                 return "schedule_create error: user not found"
-        result = await scheduler_service.create_job(user.id, target_channel, name or "Scheduled job", prompt, cron)
+        target_scope_type = _scope_type()
+        target_scope_id = _scope_id()
+        if target_scope_type not in {"private", "group"}:
+            target_scope_type = "private"
+            target_scope_id = f"private:{user.id}"
+        result = await scheduler_service.create_job(
+            user.id,
+            target_channel,
+            name or "Scheduled job",
+            prompt,
+            cron,
+            target_scope_type=target_scope_type,
+            target_scope_id=target_scope_id,
+            target_origin=_origin(),
+            target_destination_id=target_channel,
+        )
         await _complete_tool_run(tool_run_id, "failed" if isinstance(result, dict) and result.get("error") else "completed", result if isinstance(result, dict) else {"result": result})
         return json.dumps(result)
 

@@ -21,10 +21,14 @@ from .graph import (
     current_user_id,
     reset_current_channel_id,
     reset_current_origin,
+    reset_current_scope_id,
+    reset_current_scope_type,
     reset_current_session_id,
     reset_current_user_id,
     set_current_channel_id,
     set_current_origin,
+    set_current_scope_id,
+    set_current_scope_type,
     set_current_session_id,
     set_current_user_id,
 )
@@ -103,6 +107,10 @@ class AgentRuntime:
         internal_user_id = envelope.metadata.get("internal_user_id", envelope.user_id)
         token_user = set_current_user_id(internal_user_id)
         token_origin = set_current_origin(envelope.origin)
+        scope_type = str(envelope.metadata.get("scope_type") or "private")
+        scope_id = str(envelope.metadata.get("scope_id") or f"private:{internal_user_id}")
+        token_scope_type = set_current_scope_type(scope_type)
+        token_scope_id = set_current_scope_id(scope_id)
         response: object = ""
         messages: list[BaseMessage] = []
         model_name = resolve_model_name(None, purpose="main")
@@ -189,6 +197,8 @@ class AgentRuntime:
         finally:
             if limit_token is not None:
                 reset_current_run_limits(limit_token)
+            reset_current_scope_id(token_scope_id)
+            reset_current_scope_type(token_scope_type)
             reset_current_origin(token_origin)
             reset_current_user_id(token_user)
             reset_current_channel_id(token_channel)

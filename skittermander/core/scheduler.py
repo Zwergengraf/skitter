@@ -16,7 +16,7 @@ from .llm import resolve_model_name
 from .models import MessageEnvelope
 
 
-DeliverFunc = Callable[[str, str, list], Awaitable[None]]
+DeliverFunc = Callable[[str, str, str, list], Awaitable[None]]
 
 
 class SchedulerService:
@@ -63,7 +63,18 @@ class SchedulerService:
             trigger = CronTrigger.from_crontab(expr, timezone=timezone)
         self.scheduler.add_job(self._run_job, trigger, args=[job_id], id=job_id, replace_existing=True)
 
-    async def create_job(self, user_id: str, channel_id: str, name: str, prompt: str, cron: str) -> dict:
+    async def create_job(
+        self,
+        user_id: str,
+        channel_id: str,
+        name: str,
+        prompt: str,
+        cron: str,
+        target_scope_type: str = "private",
+        target_scope_id: str | None = None,
+        target_origin: str | None = None,
+        target_destination_id: str | None = None,
+    ) -> dict:
         schedule_type = "cron"
         expr = cron
         if cron.startswith("DATE:"):
@@ -87,6 +98,10 @@ class SchedulerService:
                 timezone=settings.scheduler_timezone,
                 enabled=True,
                 schedule_type=schedule_type,
+                target_scope_type=target_scope_type,
+                target_scope_id=target_scope_id,
+                target_origin=target_origin,
+                target_destination_id=target_destination_id,
             )
         self._schedule_job(job.id, job.schedule_type, job.schedule_expr, job.timezone)
         next_run = self.scheduler.get_job(job.id).next_run_time  # type: ignore[union-attr]
@@ -148,6 +163,10 @@ class SchedulerService:
                 "cron": job.schedule_expr,
                 "enabled": job.enabled,
                 "next_run_at": job.next_run_at.isoformat() if job.next_run_at else None,
+                "target_scope_type": job.target_scope_type,
+                "target_scope_id": job.target_scope_id,
+                "target_origin": job.target_origin,
+                "target_destination_id": job.target_destination_id,
             }
             for job in jobs
         ]
@@ -165,31 +184,87 @@ class SchedulerService:
             await repo.update_scheduled_run(run.id, started_at=datetime.utcnow())
             await repo.update_scheduled_job(job_id, last_run_at=datetime.utcnow())
 
-        session_id = None
+        execution_session_id = None
+        target_session_id = None
         try:
             async with SessionLocal() as session:
                 repo = Repository(session)
                 model_name = resolve_model_name(None, purpose="main")
+                target_scope_type = job.target_scope_type or "private"
+                target_scope_id = job.target_scope_id or f"private:{job.user_id}"
+                target_session = await repo.get_active_session_by_scope(target_scope_type, target_scope_id)
+                if target_session is None:
+                    target_session = await repo.create_session(
+                        job.user_id,
+                        status="active",
+                        model=model_name,
+                        origin=job.target_origin or "scheduler",
+                        scope_type=target_scope_type,
+                        scope_id=target_scope_id,
+                    )
+                target_session_id = target_session.id
                 session_obj = await repo.create_session(
                     job.user_id,
                     status="scheduled",
                     model=model_name,
                     origin="scheduler",
+                    scope_type="system",
+                    scope_id=f"system:scheduled:{job.id}:{run.id}",
                 )
-                session_id = session_obj.id
+                execution_session_id = session_obj.id
 
             envelope = MessageEnvelope(
                 message_id=run.id,
-                channel_id=job.channel_id,
+                channel_id=job.target_destination_id or job.channel_id,
                 user_id=user.transport_user_id,
                 timestamp=datetime.utcnow(),
                 text=job.prompt,
                 origin="scheduler",
-                metadata={"internal_user_id": user.id},
+                metadata={
+                    "internal_user_id": user.id,
+                    "scope_type": "system",
+                    "scope_id": f"system:scheduled:{job.id}:{run.id}",
+                    "is_private": False,
+                    "target_scope_type": job.target_scope_type or "private",
+                    "target_scope_id": job.target_scope_id or f"private:{job.user_id}",
+                },
             )
-            response = await self.runtime.handle_message(session_id, envelope)
-            if self.deliver is not None:
-                await self.deliver(job.channel_id, response.text, response.attachments)
+            # Scheduled runs are intentionally stateless: each run executes with no prior chat history.
+            self.runtime.clear_history(execution_session_id)
+            response = await self.runtime.handle_message(execution_session_id, envelope)
+            if target_session_id is not None:
+                attachment_meta = []
+                for attachment in response.attachments:
+                    attachment_meta.append(
+                        {
+                            "filename": attachment.filename,
+                            "content_type": attachment.content_type or "",
+                            "url": attachment.url,
+                            "path": attachment.path,
+                        }
+                    )
+                async with SessionLocal() as session:
+                    repo = Repository(session)
+                    meta = {"origin": "scheduler", "job_id": job.id, "run_id": run.id}
+                    if attachment_meta:
+                        meta["attachments"] = attachment_meta
+                    await repo.add_message(
+                        target_session_id,
+                        role="assistant",
+                        content=response.text,
+                        metadata=meta,
+                    )
+            delivery_error: str | None = None
+            if self.deliver is not None and job.target_origin and (job.target_destination_id or job.channel_id):
+                try:
+                    await self.deliver(
+                        job.target_origin,
+                        job.target_destination_id or job.channel_id,
+                        response.text,
+                        response.attachments,
+                    )
+                except Exception as exc:
+                    delivery_error = str(exc)
 
             async with SessionLocal() as session:
                 repo = Repository(session)
@@ -198,12 +273,15 @@ class SchedulerService:
                     status="success",
                     finished_at=datetime.utcnow(),
                     output=response.text,
-                    attachments={"count": len(response.attachments)},
+                    attachments={
+                        "count": len(response.attachments),
+                        "delivery_error": delivery_error,
+                    },
                 )
                 if job.schedule_type == "date":
                     await repo.update_scheduled_job(job_id, enabled=False)
-            if session_id:
-                self.runtime.clear_history(session_id)
+            if execution_session_id:
+                self.runtime.clear_history(execution_session_id)
         except Exception as exc:
             async with SessionLocal() as session:
                 repo = Repository(session)

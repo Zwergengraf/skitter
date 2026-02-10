@@ -19,6 +19,8 @@ CREATE TABLE IF NOT EXISTS sessions (
     user_id TEXT NOT NULL,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     status TEXT NOT NULL DEFAULT 'active',
+    scope_type TEXT NOT NULL DEFAULT 'private',
+    scope_id TEXT NOT NULL DEFAULT '',
     model TEXT
 );
 
@@ -31,6 +33,37 @@ ALTER TABLE sessions
 UPDATE sessions
 SET origin = 'discord'
 WHERE origin IS NULL;
+
+ALTER TABLE sessions
+    ADD COLUMN IF NOT EXISTS scope_type TEXT;
+
+ALTER TABLE sessions
+    ADD COLUMN IF NOT EXISTS scope_id TEXT;
+
+UPDATE sessions
+SET scope_type = CASE
+    WHEN status = 'heartbeat' THEN 'system'
+    WHEN status = 'scheduled' THEN 'system'
+    ELSE 'private'
+END
+WHERE scope_type IS NULL OR scope_type = '';
+
+UPDATE sessions
+SET scope_id = CASE
+    WHEN scope_type = 'private' THEN 'private:' || user_id
+    WHEN scope_type = 'system' THEN 'system:' || status || ':' || id
+    ELSE 'legacy:' || id
+END
+WHERE scope_id IS NULL OR scope_id = '';
+
+ALTER TABLE sessions
+    ALTER COLUMN scope_type SET DEFAULT 'private';
+
+ALTER TABLE sessions
+    ALTER COLUMN scope_id SET DEFAULT '';
+
+CREATE INDEX IF NOT EXISTS sessions_scope_status_created_idx
+    ON sessions (scope_type, scope_id, status, created_at DESC);
 
 ALTER TABLE sessions
     ADD COLUMN IF NOT EXISTS context_summary TEXT;
@@ -171,6 +204,10 @@ CREATE TABLE IF NOT EXISTS scheduled_jobs (
     id TEXT PRIMARY KEY,
     user_id TEXT NOT NULL,
     channel_id TEXT NOT NULL,
+    target_scope_type TEXT NOT NULL DEFAULT 'private',
+    target_scope_id TEXT NOT NULL DEFAULT '',
+    target_origin TEXT,
+    target_destination_id TEXT,
     name TEXT NOT NULL,
     prompt TEXT NOT NULL,
     schedule_type TEXT NOT NULL DEFAULT 'cron',
@@ -182,6 +219,43 @@ CREATE TABLE IF NOT EXISTS scheduled_jobs (
     last_run_at TIMESTAMPTZ,
     next_run_at TIMESTAMPTZ
 );
+
+ALTER TABLE scheduled_jobs
+    ADD COLUMN IF NOT EXISTS target_scope_type TEXT;
+
+ALTER TABLE scheduled_jobs
+    ADD COLUMN IF NOT EXISTS target_scope_id TEXT;
+
+ALTER TABLE scheduled_jobs
+    ADD COLUMN IF NOT EXISTS target_origin TEXT;
+
+ALTER TABLE scheduled_jobs
+    ADD COLUMN IF NOT EXISTS target_destination_id TEXT;
+
+UPDATE scheduled_jobs
+SET target_scope_type = 'private'
+WHERE target_scope_type IS NULL OR target_scope_type = '';
+
+UPDATE scheduled_jobs
+SET target_scope_id = 'private:' || user_id
+WHERE target_scope_id IS NULL OR target_scope_id = '';
+
+UPDATE scheduled_jobs
+SET target_origin = COALESCE(target_origin, 'discord')
+WHERE target_origin IS NULL;
+
+UPDATE scheduled_jobs
+SET target_destination_id = COALESCE(target_destination_id, channel_id)
+WHERE target_destination_id IS NULL OR target_destination_id = '';
+
+ALTER TABLE scheduled_jobs
+    ALTER COLUMN target_scope_type SET DEFAULT 'private';
+
+ALTER TABLE scheduled_jobs
+    ALTER COLUMN target_scope_id SET DEFAULT '';
+
+CREATE INDEX IF NOT EXISTS scheduled_jobs_target_scope_idx
+    ON scheduled_jobs (target_scope_type, target_scope_id);
 
 CREATE TABLE IF NOT EXISTS scheduled_runs (
     id TEXT PRIMARY KEY,
