@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from typing import Any, List, Optional
 
 from sqlalchemy import func, select, text
@@ -27,12 +27,16 @@ class Repository:
     def __init__(self, session: AsyncSession) -> None:
         self.session = session
 
+    @staticmethod
+    def _utcnow() -> datetime:
+        return datetime.now(UTC)
+
     async def get_or_create_user(self, transport_user_id: str) -> User:
         result = await self.session.execute(select(User).where(User.transport_user_id == transport_user_id))
         user = result.scalar_one_or_none()
         if user:
             if not user.approved:
-                cutoff = datetime.utcnow() - timedelta(minutes=self.PENDING_USER_TTL_MINUTES)
+                cutoff = self._utcnow() - timedelta(minutes=self.PENDING_USER_TTL_MINUTES)
                 if user.created_at < cutoff:
                     await self.session.delete(user)
                     await self.session.commit()
@@ -169,8 +173,6 @@ class Repository:
         if session is None:
             return None
         session.context_summary = summary
-        if checkpoint is not None and checkpoint.tzinfo is not None:
-            checkpoint = checkpoint.replace(tzinfo=None)
         session.context_summary_checkpoint = checkpoint
         await self.session.commit()
         return session
@@ -281,7 +283,7 @@ class Repository:
             session.last_total_tokens = last_total_tokens if last_total_tokens is not None else total_tokens
             session.last_cost = cost
             session.last_model = model
-            session.last_usage_at = datetime.utcnow()
+            session.last_usage_at = self._utcnow()
         await self.session.commit()
         return usage
 
@@ -344,7 +346,7 @@ class Repository:
     async def list_cost_trajectory(self, days: int = 7) -> list[tuple[datetime, float]]:
         if days < 1:
             return []
-        start = datetime.utcnow().date() - timedelta(days=days - 1)
+        start = self._utcnow().date() - timedelta(days=days - 1)
         stmt = (
             select(
                 func.date_trunc("day", LlmUsage.created_at).label("day"),
@@ -410,7 +412,7 @@ class Repository:
                 guild_id=guild_id,
                 guild_name=guild_name,
                 meta=meta or {},
-                updated_at=datetime.utcnow(),
+                updated_at=self._utcnow(),
             )
             self.session.add(channel)
         else:
@@ -419,7 +421,7 @@ class Repository:
             channel.guild_id = guild_id
             channel.guild_name = guild_name
             channel.meta = meta or channel.meta or {}
-            channel.updated_at = datetime.utcnow()
+            channel.updated_at = self._utcnow()
         await self.session.commit()
         return channel
 
@@ -441,7 +443,7 @@ class Repository:
         return True
 
     async def delete_stale_pending_users(self, older_than_minutes: int) -> int:
-        cutoff = datetime.utcnow() - timedelta(minutes=max(1, int(older_than_minutes)))
+        cutoff = self._utcnow() - timedelta(minutes=max(1, int(older_than_minutes)))
         result = await self.session.execute(
             select(User).where(
                 User.approved == False,  # noqa: E712
@@ -626,10 +628,8 @@ class Repository:
             return None
         for key, value in fields.items():
             if hasattr(job, key) and value is not None:
-                if isinstance(value, datetime) and value.tzinfo is not None:
-                    value = value.replace(tzinfo=None)
                 setattr(job, key, value)
-        job.updated_at = datetime.utcnow()
+        job.updated_at = self._utcnow()
         await self.session.commit()
         return job
 
@@ -655,7 +655,7 @@ class Repository:
         return result.scalar_one_or_none()
 
     async def create_scheduled_run(self, job_id: str, status: str) -> ScheduledRun:
-        run = ScheduledRun(id=str(uuid.uuid4()), job_id=job_id, status=status, created_at=datetime.utcnow())
+        run = ScheduledRun(id=str(uuid.uuid4()), job_id=job_id, status=status, created_at=self._utcnow())
         self.session.add(run)
         await self.session.commit()
         return run
@@ -667,8 +667,6 @@ class Repository:
             return None
         for key, value in fields.items():
             if hasattr(run, key) and value is not None:
-                if isinstance(value, datetime) and value.tzinfo is not None:
-                    value = value.replace(tzinfo=None)
                 setattr(run, key, value)
         await self.session.commit()
         return run
@@ -692,8 +690,8 @@ class Repository:
             user_id=user_id,
             name=name,
             value_encrypted=value_encrypted,
-            created_at=datetime.utcnow(),
-            updated_at=datetime.utcnow(),
+            created_at=self._utcnow(),
+            updated_at=self._utcnow(),
         )
         self.session.add(secret)
         await self.session.commit()
@@ -707,13 +705,13 @@ class Repository:
                 user_id=user_id,
                 name=name,
                 value_encrypted=value_encrypted,
-                created_at=datetime.utcnow(),
-                updated_at=datetime.utcnow(),
+                created_at=self._utcnow(),
+                updated_at=self._utcnow(),
             )
             self.session.add(secret)
         else:
             secret.value_encrypted = value_encrypted
-            secret.updated_at = datetime.utcnow()
+            secret.updated_at = self._utcnow()
         await self.session.commit()
         return secret
 
@@ -726,6 +724,6 @@ class Repository:
         return True
 
     async def touch_secret(self, secret: Secret) -> Secret:
-        secret.last_used_at = datetime.utcnow()
+        secret.last_used_at = self._utcnow()
         await self.session.commit()
         return secret

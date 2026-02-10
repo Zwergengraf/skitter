@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import UTC, datetime
 
-from sqlalchemy import JSON, Integer, String, Text, Float
+from sqlalchemy import DateTime, Float, JSON, Integer, String, Text
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 from pgvector.sqlalchemy import Vector
 
@@ -11,12 +11,16 @@ class Base(DeclarativeBase):
     pass
 
 
+def utcnow() -> datetime:
+    return datetime.now(UTC)
+
+
 class User(Base):
     __tablename__ = "users"
 
     id: Mapped[str] = mapped_column(String, primary_key=True)
     transport_user_id: Mapped[str] = mapped_column(String, index=True)
-    created_at: Mapped[datetime] = mapped_column(default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     meta: Mapped[dict] = mapped_column(JSON, default=dict)
     approved: Mapped[bool] = mapped_column(default=False)
 
@@ -26,14 +30,14 @@ class Session(Base):
 
     id: Mapped[str] = mapped_column(String, primary_key=True)
     user_id: Mapped[str] = mapped_column(String, index=True)
-    created_at: Mapped[datetime] = mapped_column(default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     status: Mapped[str] = mapped_column(String, default="active")
     scope_type: Mapped[str] = mapped_column(String, default="private")
     scope_id: Mapped[str] = mapped_column(String, default="")
     origin: Mapped[str] = mapped_column(String, default="discord")
     model: Mapped[str | None] = mapped_column(String, nullable=True)
     context_summary: Mapped[str | None] = mapped_column(Text, nullable=True)
-    context_summary_checkpoint: Mapped[datetime | None] = mapped_column(nullable=True)
+    context_summary_checkpoint: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     input_tokens: Mapped[int] = mapped_column(Integer, default=0)
     output_tokens: Mapped[int] = mapped_column(Integer, default=0)
     total_tokens: Mapped[int] = mapped_column(Integer, default=0)
@@ -43,7 +47,7 @@ class Session(Base):
     last_total_tokens: Mapped[int] = mapped_column(Integer, default=0)
     last_cost: Mapped[float] = mapped_column(Float, default=0.0)
     last_model: Mapped[str | None] = mapped_column(String, nullable=True)
-    last_usage_at: Mapped[datetime | None] = mapped_column(nullable=True)
+    last_usage_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
 class Message(Base):
@@ -53,7 +57,7 @@ class Message(Base):
     session_id: Mapped[str] = mapped_column(String, index=True)
     role: Mapped[str] = mapped_column(String)
     content: Mapped[str] = mapped_column(Text)
-    created_at: Mapped[datetime] = mapped_column(default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     meta: Mapped[dict] = mapped_column(JSON, default=dict)
 
 
@@ -68,7 +72,7 @@ class LlmUsage(Base):
     output_tokens: Mapped[int] = mapped_column(Integer, default=0)
     total_tokens: Mapped[int] = mapped_column(Integer, default=0)
     cost: Mapped[float] = mapped_column(Float, default=0.0)
-    created_at: Mapped[datetime] = mapped_column(default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
 class ToolRun(Base):
@@ -81,7 +85,7 @@ class ToolRun(Base):
     input: Mapped[dict] = mapped_column(JSON, default=dict)
     output: Mapped[dict] = mapped_column(JSON, default=dict)
     approved_by: Mapped[str | None] = mapped_column(String, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
 class MemoryEntry(Base):
@@ -92,7 +96,7 @@ class MemoryEntry(Base):
     embedding: Mapped[list[float]] = mapped_column(Vector(), nullable=False)
     summary: Mapped[str] = mapped_column(Text)
     tags: Mapped[list] = mapped_column(JSON, default=list)
-    created_at: Mapped[datetime] = mapped_column(default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
 class Secret(Base):
@@ -102,9 +106,9 @@ class Secret(Base):
     user_id: Mapped[str] = mapped_column(String, index=True)
     name: Mapped[str] = mapped_column(String, index=True)
     value_encrypted: Mapped[str] = mapped_column(Text)
-    created_at: Mapped[datetime] = mapped_column(default=datetime.utcnow)
-    updated_at: Mapped[datetime] = mapped_column(default=datetime.utcnow)
-    last_used_at: Mapped[datetime | None] = mapped_column(nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    last_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
 class Channel(Base):
@@ -117,7 +121,7 @@ class Channel(Base):
     guild_id: Mapped[str | None] = mapped_column(String, nullable=True)
     guild_name: Mapped[str | None] = mapped_column(String, nullable=True)
     meta: Mapped[dict] = mapped_column(JSON, default=dict)
-    updated_at: Mapped[datetime] = mapped_column(default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
 class ScheduledJob(Base):
@@ -136,10 +140,10 @@ class ScheduledJob(Base):
     schedule_expr: Mapped[str] = mapped_column(String)
     timezone: Mapped[str] = mapped_column(String, default="UTC")
     enabled: Mapped[bool] = mapped_column(default=True)
-    created_at: Mapped[datetime] = mapped_column(default=datetime.utcnow)
-    updated_at: Mapped[datetime] = mapped_column(default=datetime.utcnow)
-    last_run_at: Mapped[datetime | None] = mapped_column(nullable=True)
-    next_run_at: Mapped[datetime | None] = mapped_column(nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    last_run_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    next_run_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
 class ScheduledRun(Base):
@@ -148,9 +152,9 @@ class ScheduledRun(Base):
     id: Mapped[str] = mapped_column(String, primary_key=True)
     job_id: Mapped[str] = mapped_column(String, index=True)
     status: Mapped[str] = mapped_column(String)
-    started_at: Mapped[datetime | None] = mapped_column(nullable=True)
-    finished_at: Mapped[datetime | None] = mapped_column(nullable=True)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
     output: Mapped[str | None] = mapped_column(Text, nullable=True)
     attachments: Mapped[dict] = mapped_column(JSON, default=dict)
-    created_at: Mapped[datetime] = mapped_column(default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)

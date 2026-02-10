@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime
+from datetime import UTC, datetime
 from zoneinfo import ZoneInfo
 from typing import Awaitable, Callable, Optional
 
@@ -25,6 +25,27 @@ class SchedulerService:
         self.deliver = deliver
         self.scheduler = AsyncIOScheduler(timezone=settings.scheduler_timezone)
         self._started = False
+
+    @staticmethod
+    def _utcnow() -> datetime:
+        return datetime.now(UTC)
+
+    @staticmethod
+    def _to_utc(value: datetime | None) -> datetime | None:
+        if value is None:
+            return None
+        if value.tzinfo is None:
+            return value.replace(tzinfo=UTC)
+        return value.astimezone(UTC)
+
+    def _to_local(self, value: datetime | None, timezone_name: str) -> datetime | None:
+        utc_value = self._to_utc(value)
+        if utc_value is None:
+            return None
+        try:
+            return utc_value.astimezone(ZoneInfo(timezone_name))
+        except Exception:
+            return utc_value
 
     async def start(self) -> None:
         if self._started:
@@ -105,12 +126,18 @@ class SchedulerService:
             )
         self._schedule_job(job.id, job.schedule_type, job.schedule_expr, job.timezone)
         next_run = self.scheduler.get_job(job.id).next_run_time  # type: ignore[union-attr]
-        if next_run is not None and next_run.tzinfo is not None:
-            next_run = next_run.replace(tzinfo=None)
+        next_run = self._to_utc(next_run)
         async with SessionLocal() as session:
             repo = Repository(session)
             await repo.update_scheduled_job(job.id, next_run_at=next_run)
-        return {"id": job.id, "name": job.name, "cron": job.schedule_expr, "next_run_at": str(next_run)}
+        next_run_local = self._to_local(next_run, job.timezone)
+        return {
+            "id": job.id,
+            "name": job.name,
+            "cron": job.schedule_expr,
+            "next_run_at": next_run_local.isoformat() if next_run_local else None,
+            "timezone": job.timezone,
+        }
 
     async def update_job(self, job_id: str, **fields) -> dict:
         if "schedule_expr" in fields:
@@ -130,15 +157,22 @@ class SchedulerService:
         if job.enabled:
             self._schedule_job(job.id, job.schedule_type, job.schedule_expr, job.timezone)
             next_run = self.scheduler.get_job(job.id).next_run_time  # type: ignore[union-attr]
-            if next_run is not None and next_run.tzinfo is not None:
-                next_run = next_run.replace(tzinfo=None)
+            next_run = self._to_utc(next_run)
         else:
             self.scheduler.remove_job(job.id)
             next_run = None
         async with SessionLocal() as session:
             repo = Repository(session)
             await repo.update_scheduled_job(job.id, next_run_at=next_run)
-        return {"id": job.id, "name": job.name, "cron": job.schedule_expr, "enabled": job.enabled}
+        next_run_local = self._to_local(next_run, job.timezone)
+        return {
+            "id": job.id,
+            "name": job.name,
+            "cron": job.schedule_expr,
+            "enabled": job.enabled,
+            "next_run_at": next_run_local.isoformat() if next_run_local else None,
+            "timezone": job.timezone,
+        }
 
     async def delete_job(self, job_id: str) -> dict:
         async with SessionLocal() as session:
@@ -155,21 +189,25 @@ class SchedulerService:
         async with SessionLocal() as session:
             repo = Repository(session)
             jobs = await repo.list_scheduled_jobs(user_id)
-        return [
-            {
-                "id": job.id,
-                "name": job.name,
-                "prompt": job.prompt,
-                "cron": job.schedule_expr,
-                "enabled": job.enabled,
-                "next_run_at": job.next_run_at.isoformat() if job.next_run_at else None,
-                "target_scope_type": job.target_scope_type,
-                "target_scope_id": job.target_scope_id,
-                "target_origin": job.target_origin,
-                "target_destination_id": job.target_destination_id,
-            }
-            for job in jobs
-        ]
+        rows: list[dict] = []
+        for job in jobs:
+            next_run_local = self._to_local(job.next_run_at, job.timezone)
+            rows.append(
+                {
+                    "id": job.id,
+                    "name": job.name,
+                    "prompt": job.prompt,
+                    "cron": job.schedule_expr,
+                    "enabled": job.enabled,
+                    "next_run_at": next_run_local.isoformat() if next_run_local else None,
+                    "timezone": job.timezone,
+                    "target_scope_type": job.target_scope_type,
+                    "target_scope_id": job.target_scope_id,
+                    "target_origin": job.target_origin,
+                    "target_destination_id": job.target_destination_id,
+                }
+            )
+        return rows
 
     async def _run_job(self, job_id: str) -> None:
         async with SessionLocal() as session:
@@ -181,8 +219,9 @@ class SchedulerService:
             if user is None:
                 return
             run = await repo.create_scheduled_run(job_id, status="running")
-            await repo.update_scheduled_run(run.id, started_at=datetime.utcnow())
-            await repo.update_scheduled_job(job_id, last_run_at=datetime.utcnow())
+            now_utc = self._utcnow()
+            await repo.update_scheduled_run(run.id, started_at=now_utc)
+            await repo.update_scheduled_job(job_id, last_run_at=now_utc)
 
         execution_session_id = None
         target_session_id = None
@@ -217,7 +256,7 @@ class SchedulerService:
                 message_id=run.id,
                 channel_id=job.target_destination_id or job.channel_id,
                 user_id=user.transport_user_id,
-                timestamp=datetime.utcnow(),
+                timestamp=self._utcnow(),
                 text=job.prompt,
                 origin="scheduler",
                 metadata={
@@ -271,7 +310,7 @@ class SchedulerService:
                 await repo.update_scheduled_run(
                     run.id,
                     status="success",
-                    finished_at=datetime.utcnow(),
+                    finished_at=self._utcnow(),
                     output=response.text,
                     attachments={
                         "count": len(response.attachments),
@@ -288,6 +327,6 @@ class SchedulerService:
                 await repo.update_scheduled_run(
                     run.id,
                     status="failed",
-                    finished_at=datetime.utcnow(),
+                    finished_at=self._utcnow(),
                     error=str(exc),
                 )

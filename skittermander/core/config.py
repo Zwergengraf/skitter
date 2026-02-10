@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+from datetime import datetime
 from typing import Any
 
 import yaml
 from pydantic import Field, BaseModel
 from pydantic import ConfigDict
 from pydantic_settings import BaseSettings, SettingsConfigDict
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from .config_schema import flatten_config, build_config_from_settings
 
@@ -21,6 +23,31 @@ class ModelConfig(BaseModel):
     output_cost_per_1m: float = Field(default=0.0)
 
     model_config = ConfigDict(populate_by_name=True, extra="ignore")
+
+
+def _detect_system_timezone() -> str:
+    # Prefer explicit system TZ configuration when available.
+    env_tz = os.environ.get("TZ", "").strip()
+    if env_tz:
+        try:
+            ZoneInfo(env_tz)
+            return env_tz
+        except ZoneInfoNotFoundError:
+            pass
+
+    local_tz = datetime.now().astimezone().tzinfo
+    zone_key = getattr(local_tz, "key", None)
+    if isinstance(zone_key, str) and zone_key:
+        return zone_key
+
+    tz_name = datetime.now().astimezone().tzname() or ""
+    if tz_name:
+        try:
+            ZoneInfo(tz_name)
+            return tz_name
+        except ZoneInfoNotFoundError:
+            pass
+    return "UTC"
 
 
 class Settings(BaseSettings):
@@ -42,7 +69,7 @@ class Settings(BaseSettings):
     brave_api_base: str = Field(default="https://api.search.brave.com/res/v1/web/search")
     browser_executable: str = Field(default="")
 
-    scheduler_timezone: str = Field(default="UTC")
+    scheduler_timezone: str = Field(default_factory=_detect_system_timezone)
 
     discord_token: str = Field(default="")
     user_approved_message: str = Field(default="Hey! I just came online. Who am I? Who are you?")

@@ -42,8 +42,8 @@ brave:
   api_base: https://api.search.brave.com/res/v1/web/search
 browser:
   executable: /usr/bin/brave-browser
-scheduler:
-  timezone: UTC
+# scheduler:
+#   timezone: UTC
 discord:
   token: ""
   progress_updates: true
