@@ -62,6 +62,38 @@ class SchedulerService:
     def set_deliver(self, deliver: DeliverFunc) -> None:
         self.deliver = deliver
 
+    @staticmethod
+    def _normalize_schedule(cron: str) -> tuple[str, str]:
+        schedule_type = "cron"
+        expr = cron
+        if cron.startswith("DATE:"):
+            schedule_type = "date"
+            expr = cron.replace("DATE:", "", 1).strip()
+        return schedule_type, expr
+
+    def _validate_schedule(self, schedule_type: str, expr: str, timezone: str) -> None:
+        if schedule_type == "date":
+            self._parse_run_date(expr, timezone)
+            return
+        CronTrigger.from_crontab(expr, timezone=timezone)
+
+    def _next_run_utc(self, job_id: str) -> datetime | None:
+        scheduled = self.scheduler.get_job(job_id)
+        if scheduled is None:
+            return None
+        return self._to_utc(scheduled.next_run_time)
+
+    def _job_response(self, job, next_run_utc: datetime | None) -> dict:
+        next_run_local = self._to_local(next_run_utc, job.timezone)
+        return {
+            "id": job.id,
+            "name": job.name,
+            "cron": job.schedule_expr,
+            "enabled": job.enabled,
+            "next_run_at": next_run_local.isoformat() if next_run_local else None,
+            "timezone": job.timezone,
+        }
+
     async def _load_jobs(self) -> None:
         async with SessionLocal() as session:
             repo = Repository(session)
@@ -96,16 +128,9 @@ class SchedulerService:
         target_origin: str | None = None,
         target_destination_id: str | None = None,
     ) -> dict:
-        schedule_type = "cron"
-        expr = cron
-        if cron.startswith("DATE:"):
-            schedule_type = "date"
-            expr = cron.replace("DATE:", "", 1).strip()
+        schedule_type, expr = self._normalize_schedule(cron)
         try:
-            if schedule_type == "date":
-                self._parse_run_date(expr, settings.scheduler_timezone)
-            else:
-                CronTrigger.from_crontab(expr, timezone=settings.scheduler_timezone)
+            self._validate_schedule(schedule_type, expr, settings.scheduler_timezone)
         except Exception as exc:
             return {"error": f"invalid schedule: {exc}"}
         async with SessionLocal() as session:
@@ -125,28 +150,20 @@ class SchedulerService:
                 target_destination_id=target_destination_id,
             )
         self._schedule_job(job.id, job.schedule_type, job.schedule_expr, job.timezone)
-        next_run = self.scheduler.get_job(job.id).next_run_time  # type: ignore[union-attr]
-        next_run = self._to_utc(next_run)
+        next_run = self._next_run_utc(job.id)
         async with SessionLocal() as session:
             repo = Repository(session)
             await repo.update_scheduled_job(job.id, next_run_at=next_run)
-        next_run_local = self._to_local(next_run, job.timezone)
-        return {
-            "id": job.id,
-            "name": job.name,
-            "cron": job.schedule_expr,
-            "next_run_at": next_run_local.isoformat() if next_run_local else None,
-            "timezone": job.timezone,
-        }
+        response = self._job_response(job, next_run)
+        # Keep old response shape for compatibility with existing callers.
+        response.pop("enabled", None)
+        return response
 
     async def update_job(self, job_id: str, **fields) -> dict:
         if "schedule_expr" in fields:
             schedule_type = fields.get("schedule_type", "cron")
             try:
-                if schedule_type == "date":
-                    self._parse_run_date(fields["schedule_expr"], settings.scheduler_timezone)
-                else:
-                    CronTrigger.from_crontab(fields["schedule_expr"], timezone=settings.scheduler_timezone)
+                self._validate_schedule(schedule_type, fields["schedule_expr"], settings.scheduler_timezone)
             except Exception as exc:
                 return {"error": f"invalid schedule: {exc}"}
         async with SessionLocal() as session:
@@ -156,23 +173,17 @@ class SchedulerService:
             return {"error": "job not found"}
         if job.enabled:
             self._schedule_job(job.id, job.schedule_type, job.schedule_expr, job.timezone)
-            next_run = self.scheduler.get_job(job.id).next_run_time  # type: ignore[union-attr]
-            next_run = self._to_utc(next_run)
+            next_run = self._next_run_utc(job.id)
         else:
-            self.scheduler.remove_job(job.id)
+            try:
+                self.scheduler.remove_job(job.id)
+            except Exception:
+                pass
             next_run = None
         async with SessionLocal() as session:
             repo = Repository(session)
             await repo.update_scheduled_job(job.id, next_run_at=next_run)
-        next_run_local = self._to_local(next_run, job.timezone)
-        return {
-            "id": job.id,
-            "name": job.name,
-            "cron": job.schedule_expr,
-            "enabled": job.enabled,
-            "next_run_at": next_run_local.isoformat() if next_run_local else None,
-            "timezone": job.timezone,
-        }
+        return self._job_response(job, next_run)
 
     async def delete_job(self, job_id: str) -> dict:
         async with SessionLocal() as session:
@@ -191,16 +202,16 @@ class SchedulerService:
             jobs = await repo.list_scheduled_jobs(user_id)
         rows: list[dict] = []
         for job in jobs:
-            next_run_local = self._to_local(job.next_run_at, job.timezone)
+            base = self._job_response(job, job.next_run_at)
             rows.append(
                 {
-                    "id": job.id,
-                    "name": job.name,
+                    "id": base["id"],
+                    "name": base["name"],
                     "prompt": job.prompt,
-                    "cron": job.schedule_expr,
-                    "enabled": job.enabled,
-                    "next_run_at": next_run_local.isoformat() if next_run_local else None,
-                    "timezone": job.timezone,
+                    "cron": base["cron"],
+                    "enabled": base["enabled"],
+                    "next_run_at": base["next_run_at"],
+                    "timezone": base["timezone"],
                     "target_scope_type": job.target_scope_type,
                     "target_scope_id": job.target_scope_id,
                     "target_origin": job.target_origin,

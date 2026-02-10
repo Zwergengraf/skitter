@@ -6,8 +6,31 @@ from ..deps import get_repo
 from ..schemas import ScheduledJobCreate, ScheduledJobOut, ScheduledJobUpdate
 from ...data.db import SessionLocal
 from ...data.repositories import Repository
+from ...data.models import ScheduledJob
 
 router = APIRouter(prefix="/v1/schedules", tags=["schedules"])
+
+
+def _to_scheduled_job_out(job: ScheduledJob) -> ScheduledJobOut:
+    return ScheduledJobOut(
+        id=job.id,
+        user_id=job.user_id,
+        channel_id=job.channel_id,
+        target_scope_type=job.target_scope_type or "private",
+        target_scope_id=job.target_scope_id or f"private:{job.user_id}",
+        target_origin=job.target_origin,
+        target_destination_id=job.target_destination_id,
+        name=job.name,
+        prompt=job.prompt,
+        schedule_type=job.schedule_type,
+        schedule_expr=job.schedule_expr,
+        timezone=job.timezone,
+        enabled=job.enabled,
+        created_at=job.created_at,
+        updated_at=job.updated_at,
+        last_run_at=job.last_run_at,
+        next_run_at=job.next_run_at,
+    )
 
 
 @router.get("", response_model=list[ScheduledJobOut])
@@ -21,28 +44,7 @@ async def list_schedules(
     else:
         jobs = await repo.list_scheduled_jobs_all()
     jobs = jobs[:limit]
-    return [
-        ScheduledJobOut(
-            id=job.id,
-            user_id=job.user_id,
-            channel_id=job.channel_id,
-            target_scope_type=job.target_scope_type or "private",
-            target_scope_id=job.target_scope_id or f"private:{job.user_id}",
-            target_origin=job.target_origin,
-            target_destination_id=job.target_destination_id,
-            name=job.name,
-            prompt=job.prompt,
-            schedule_type=job.schedule_type,
-            schedule_expr=job.schedule_expr,
-            timezone=job.timezone,
-            enabled=job.enabled,
-            created_at=job.created_at,
-            updated_at=job.updated_at,
-            last_run_at=job.last_run_at,
-            next_run_at=job.next_run_at,
-        )
-        for job in jobs
-    ]
+    return [_to_scheduled_job_out(job) for job in jobs]
 
 
 @router.post("", response_model=ScheduledJobOut)
@@ -75,25 +77,7 @@ async def create_schedule(
         job = await repo.get_scheduled_job(result["id"])
     if job is None:
         raise HTTPException(status_code=404, detail="Job not found")
-    return ScheduledJobOut(
-        id=job.id,
-        user_id=job.user_id,
-        channel_id=job.channel_id,
-        target_scope_type=job.target_scope_type or "private",
-        target_scope_id=job.target_scope_id or f"private:{job.user_id}",
-        target_origin=job.target_origin,
-        target_destination_id=job.target_destination_id,
-        name=job.name,
-        prompt=job.prompt,
-        schedule_type=job.schedule_type,
-        schedule_expr=job.schedule_expr,
-        timezone=job.timezone,
-        enabled=job.enabled,
-        created_at=job.created_at,
-        updated_at=job.updated_at,
-        last_run_at=job.last_run_at,
-        next_run_at=job.next_run_at,
-    )
+    return _to_scheduled_job_out(job)
 
 
 @router.patch("/{job_id}", response_model=ScheduledJobOut)
@@ -118,25 +102,7 @@ async def update_schedule(
         job = await repo.get_scheduled_job(job_id)
     if job is None:
         raise HTTPException(status_code=404, detail="Job not found")
-    return ScheduledJobOut(
-        id=job.id,
-        user_id=job.user_id,
-        channel_id=job.channel_id,
-        target_scope_type=job.target_scope_type or "private",
-        target_scope_id=job.target_scope_id or f"private:{job.user_id}",
-        target_origin=job.target_origin,
-        target_destination_id=job.target_destination_id,
-        name=job.name,
-        prompt=job.prompt,
-        schedule_type=job.schedule_type,
-        schedule_expr=job.schedule_expr,
-        timezone=job.timezone,
-        enabled=job.enabled,
-        created_at=job.created_at,
-        updated_at=job.updated_at,
-        last_run_at=job.last_run_at,
-        next_run_at=job.next_run_at,
-    )
+    return _to_scheduled_job_out(job)
 
 
 @router.delete("/{job_id}")
