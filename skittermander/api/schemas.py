@@ -10,6 +10,8 @@ class SessionCreate(BaseModel):
     user_id: str
     origin: str = "web"
     reuse_active: bool = True
+    scope_type: str | None = None
+    scope_id: str | None = None
 
 
 class SessionOut(BaseModel):
@@ -17,6 +19,8 @@ class SessionOut(BaseModel):
     user_id: str
     created_at: datetime
     status: str
+    scope_type: str = "private"
+    scope_id: str = ""
     model: str | None = None
     input_tokens: int = 0
     output_tokens: int = 0
@@ -44,6 +48,8 @@ class SessionListItem(BaseModel):
     user: str
     transport: str
     status: str
+    scope_type: str = "private"
+    scope_id: str = ""
     last_active_at: datetime | None = None
     total_tokens: int = 0
     total_cost: float = 0.0
@@ -73,6 +79,8 @@ class SessionDetailOut(BaseModel):
     user_id: str
     user: str
     status: str
+    scope_type: str = "private"
+    scope_id: str = ""
     created_at: datetime
     last_active_at: datetime | None = None
     input_tokens: int = 0
@@ -233,6 +241,10 @@ class ScheduledJobOut(BaseModel):
     id: str
     user_id: str
     channel_id: str
+    target_scope_type: str = "private"
+    target_scope_id: str = ""
+    target_origin: str | None = None
+    target_destination_id: str | None = None
     name: str
     prompt: str
     schedule_type: str

@@ -53,7 +53,7 @@ users:
 heartbeat:
   enabled: true
   interval_minutes: 15
-  history_runs: 5
+  history_runs: 0 # No previous heartbeat messages will be included in the heartbeat prompt if this is set to 0
   prompt: "Follow these instructions from the file `HEARTBEAT.md` strictly. Do not infer or repeat old tasks from prior chats. If nothing needs attention, reply with: HEARTBEAT_OK"
   quiet_hours_start: "23:00"
   quiet_hours_end: "08:00"

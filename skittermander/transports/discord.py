@@ -191,11 +191,12 @@ class DiscordTransport(TransportAdapter):
         async def on_message(message: discord.Message) -> None:
             if message.author.bot:
                 return
-            if not isinstance(message.channel, discord.DMChannel):
+            is_private = isinstance(message.channel, discord.DMChannel)
+            if not is_private and not isinstance(message.channel, (discord.TextChannel, discord.Thread)):
                 return
             if self._handler is None:
                 return
-            await self._record_user_channel(message)
+            await self._record_user_channel(message, is_private=is_private)
             envelope = MessageEnvelope(
                 message_id=str(message.id),
                 channel_id=str(message.channel.id),
@@ -207,6 +208,11 @@ class DiscordTransport(TransportAdapter):
                     for a in message.attachments
                 ],
                 origin="discord",
+                metadata={
+                    "is_private": is_private,
+                    "external_channel_id": str(message.channel.id),
+                    "guild_id": str(message.guild.id) if message.guild else None,
+                },
             )
             await self._handler(envelope)
 
@@ -375,7 +381,7 @@ class DiscordTransport(TransportAdapter):
         self, tool_run_id: str, channel_id: str, tool_name: str, payload: dict
     ) -> None:
         channel = await self.client.fetch_channel(int(channel_id))
-        if not isinstance(channel, discord.DMChannel):
+        if not isinstance(channel, (discord.DMChannel, discord.TextChannel, discord.Thread)):
             return
         view = ApprovalView(tool_run_id, self._approval_service)
         formatted = json.dumps(payload, indent=2, ensure_ascii=True)
@@ -395,6 +401,15 @@ class DiscordTransport(TransportAdapter):
             return
         await interaction.response.defer(thinking=True, ephemeral=ephemeral)
         await self._record_interaction(interaction)
+        is_private = isinstance(interaction.channel, discord.DMChannel)
+        metadata = dict(extra or {})
+        metadata.update(
+            {
+                "is_private": is_private,
+                "external_channel_id": str(interaction.channel_id) if interaction.channel_id is not None else "",
+                "guild_id": str(interaction.guild_id) if interaction.guild_id is not None else None,
+            }
+        )
         envelope = MessageEnvelope(
             message_id=str(interaction.id),
             channel_id=str(interaction.channel_id),
@@ -404,7 +419,7 @@ class DiscordTransport(TransportAdapter):
             attachments=[],
             origin="discord",
             command=command,
-            metadata=extra or {},
+            metadata=metadata,
         )
         await self._handler(envelope)
         ephemeral_response = envelope.metadata.get("ephemeral_response")
@@ -416,10 +431,19 @@ class DiscordTransport(TransportAdapter):
         if interaction.response.is_done():
             await interaction.followup.send("Command received.")
 
-    async def _record_user_channel(self, message: discord.Message) -> None:
+    async def _record_user_channel(self, message: discord.Message, is_private: bool) -> None:
         display_name = getattr(message.author, "display_name", None) or message.author.name
         username = message.author.name
-        channel_name = f"@{display_name}"
+        if is_private:
+            channel_name = f"@{display_name}"
+            kind = "dm"
+            guild_id = None
+            guild_name = None
+        else:
+            channel_name = getattr(message.channel, "name", None) or str(message.channel.id)
+            kind = "text"
+            guild_id = str(message.guild.id) if message.guild else None
+            guild_name = message.guild.name if message.guild else None
         avatar_url = message.author.display_avatar.url if message.author.display_avatar else None
         async with SessionLocal() as session:
             repo = Repository(session)
@@ -427,13 +451,25 @@ class DiscordTransport(TransportAdapter):
             await repo.upsert_channel(
                 transport_channel_id=str(message.channel.id),
                 name=channel_name,
-                kind="dm",
+                kind=kind,
+                guild_id=guild_id,
+                guild_name=guild_name,
             )
 
     async def _record_interaction(self, interaction: discord.Interaction) -> None:
         display_name = getattr(interaction.user, "display_name", None) or interaction.user.name
         username = interaction.user.name
-        channel_name = f"@{display_name}"
+        is_private = isinstance(interaction.channel, discord.DMChannel)
+        if is_private:
+            channel_name = f"@{display_name}"
+            kind = "dm"
+            guild_id = None
+            guild_name = None
+        else:
+            channel_name = getattr(interaction.channel, "name", None) or str(interaction.channel_id)
+            kind = "text"
+            guild_id = str(interaction.guild_id) if interaction.guild_id is not None else None
+            guild_name = interaction.guild.name if interaction.guild is not None else None
         avatar_url = interaction.user.display_avatar.url if interaction.user.display_avatar else None
         async with SessionLocal() as session:
             repo = Repository(session)
@@ -442,7 +478,9 @@ class DiscordTransport(TransportAdapter):
                 await repo.upsert_channel(
                     transport_channel_id=str(interaction.channel_id),
                     name=channel_name,
-                    kind="dm",
+                    kind=kind,
+                    guild_id=guild_id,
+                    guild_name=guild_name,
                 )
 
     async def _sync_channels(self) -> None:

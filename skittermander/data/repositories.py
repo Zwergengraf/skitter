@@ -108,19 +108,34 @@ class Repository:
         status: str = "active",
         model: str | None = None,
         origin: str = "discord",
+        scope_type: str = "private",
+        scope_id: str | None = None,
     ) -> Session:
-        # Enforce a single active session per user+origin so transports can keep separate active sessions.
+        if not scope_id:
+            if scope_type == "private":
+                scope_id = f"private:{user_id}"
+            else:
+                scope_id = f"{scope_type}:{user_id}"
+        # Enforce a single active session per scope.
         if status == "active":
             existing_result = await self.session.execute(
                 select(Session).where(
-                    Session.user_id == user_id,
                     Session.status == "active",
-                    Session.origin == origin,
+                    Session.scope_type == scope_type,
+                    Session.scope_id == scope_id,
                 )
             )
             for existing in existing_result.scalars().all():
                 existing.status = "ended"
-        session = Session(id=str(uuid.uuid4()), user_id=user_id, status=status, model=model, origin=origin)
+        session = Session(
+            id=str(uuid.uuid4()),
+            user_id=user_id,
+            status=status,
+            model=model,
+            origin=origin,
+            scope_type=scope_type,
+            scope_id=scope_id,
+        )
         self.session.add(session)
         await self.session.commit()
         return session
@@ -160,12 +175,46 @@ class Repository:
         await self.session.commit()
         return session
 
-    async def get_active_session(self, user_id: str, origin: str | None = None) -> Optional[Session]:
-        stmt = select(Session).where(Session.user_id == user_id, Session.status == "active")
-        if origin:
-            stmt = stmt.where(Session.origin == origin)
+    async def get_active_session_by_scope(self, scope_type: str, scope_id: str) -> Optional[Session]:
+        result = await self.session.execute(
+            select(Session)
+            .where(
+                Session.scope_type == scope_type,
+                Session.scope_id == scope_id,
+                Session.status == "active",
+            )
+            .order_by(Session.created_at.desc())
+        )
+        return result.scalars().first()
+
+    async def get_latest_session_by_scope(
+        self,
+        scope_type: str,
+        scope_id: str,
+        status: str | None = None,
+    ) -> Optional[Session]:
+        stmt = select(Session).where(Session.scope_type == scope_type, Session.scope_id == scope_id)
+        if status:
+            stmt = stmt.where(Session.status == status)
         result = await self.session.execute(stmt.order_by(Session.created_at.desc()))
         return result.scalars().first()
+
+    async def get_active_session(self, user_id: str, origin: str | None = None) -> Optional[Session]:
+        if origin == "heartbeat":
+            result = await self.session.execute(
+                select(Session)
+                .where(Session.user_id == user_id, Session.status == "heartbeat")
+                .order_by(Session.created_at.desc())
+            )
+            return result.scalars().first()
+        if origin == "scheduler":
+            result = await self.session.execute(
+                select(Session)
+                .where(Session.user_id == user_id, Session.status == "scheduled")
+                .order_by(Session.created_at.desc())
+            )
+            return result.scalars().first()
+        return await self.get_active_session_by_scope("private", f"private:{user_id}")
 
     async def get_latest_session_by_status(self, user_id: str, status: str) -> Optional[Session]:
         result = await self.session.execute(
@@ -544,11 +593,21 @@ class Repository:
         timezone: str,
         enabled: bool = True,
         schedule_type: str = "cron",
+        target_scope_type: str = "private",
+        target_scope_id: str | None = None,
+        target_origin: str | None = None,
+        target_destination_id: str | None = None,
     ) -> ScheduledJob:
+        if not target_scope_id:
+            target_scope_id = f"private:{user_id}"
         job = ScheduledJob(
             id=str(uuid.uuid4()),
             user_id=user_id,
             channel_id=channel_id,
+            target_scope_type=target_scope_type,
+            target_scope_id=target_scope_id,
+            target_origin=target_origin,
+            target_destination_id=target_destination_id,
             name=name,
             prompt=prompt,
             schedule_expr=cron,

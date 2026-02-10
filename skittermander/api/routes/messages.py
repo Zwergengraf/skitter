@@ -64,6 +64,13 @@ async def send_message(
     if user is None:
         raise HTTPException(status_code=404, detail="User not found")
     _require_approved_user(user.approved)
+    metadata_input = payload.metadata or {}
+    origin_hint = str(
+        metadata_input.get("origin")
+        or metadata_input.get("client_origin")
+        or session.origin
+        or "web"
+    )
 
     envelope = MessageEnvelope(
         message_id=str(uuid.uuid4()),
@@ -71,20 +78,39 @@ async def send_message(
         user_id=payload.user_id,
         timestamp=datetime.utcnow(),
         text=payload.text,
-        origin="web",
+        origin=origin_hint,
         metadata=payload.metadata,
     )
-    metadata = dict(payload.metadata)
+    scope_type = session.scope_type or "private"
+    scope_id = session.scope_id or f"private:{session.user_id}"
+    if scope_type == "private":
+        destination_hint = str(
+            metadata_input.get("destination_id")
+            or metadata_input.get("channel_id")
+            or payload.session_id
+        )
+        await repo.set_user_meta(
+            session.user_id,
+            {
+                "last_private_origin": envelope.origin,
+                "last_private_destination_id": destination_hint,
+                "last_seen_at": datetime.utcnow().isoformat(),
+            },
+        )
+    metadata = dict(metadata_input)
     metadata.update(
         {
             "message_id": envelope.message_id,
-            "origin": "web",
+            "origin": envelope.origin,
             "internal_user_id": session.user_id,
+            "scope_type": scope_type,
+            "scope_id": scope_id,
+            "is_private": scope_type == "private",
         }
     )
     await repo.add_message(payload.session_id, role="user", content=payload.text, metadata=metadata)
 
-    envelope.metadata.update({"internal_user_id": session.user_id})
+    envelope.metadata.update(metadata)
 
     runtime = request.app.state.runtime
     response = await runtime.handle_message(payload.session_id, envelope)
