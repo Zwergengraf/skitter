@@ -82,12 +82,11 @@ class AgentRuntime:
         # Force graph rebuild so scheduler-aware tools are wired correctly.
         self._graphs.clear()
 
-    async def handle_message(self, session_id: str, envelope: MessageEnvelope) -> AgentResponse:
-        if not envelope.text and not envelope.command and not envelope.attachments:
-            return AgentResponse(text="")
-        if not settings.models:
-            return AgentResponse(text="LLM is not configured. Define at least one model in config.yaml.")
+    @staticmethod
+    def _purpose_for_origin(origin: str) -> str:
+        return "heartbeat" if origin == "heartbeat" else "main"
 
+    def _prepare_envelope_content(self, envelope: MessageEnvelope) -> tuple[str, bool, list[dict]]:
         content = envelope.text
         is_command = False
         attachments_meta: list[dict] = []
@@ -96,6 +95,54 @@ class AgentRuntime:
             content = f"/{envelope.command} {envelope.metadata}".strip()
         elif envelope.attachments:
             attachments_meta = self._serialize_attachments(envelope.attachments)
+        return content, is_command, attachments_meta
+
+    def _push_request_context(
+        self,
+        *,
+        session_id: str,
+        envelope: MessageEnvelope,
+        run_id: str,
+    ) -> tuple[str, str, str, dict[str, object]]:
+        internal_user_id = str(envelope.metadata.get("internal_user_id", envelope.user_id))
+        scope_type = str(envelope.metadata.get("scope_type") or "private")
+        scope_id = str(envelope.metadata.get("scope_id") or f"private:{internal_user_id}")
+        tokens: dict[str, object] = {
+            "session": set_current_session_id(session_id),
+            "channel": set_current_channel_id(envelope.channel_id),
+            "user": set_current_user_id(internal_user_id),
+            "origin": set_current_origin(envelope.origin),
+            "run_id": set_current_run_id(run_id),
+            "message_id": set_current_message_id(envelope.message_id),
+            "scope_type": set_current_scope_type(scope_type),
+            "scope_id": set_current_scope_id(scope_id),
+        }
+        return internal_user_id, scope_type, scope_id, tokens
+
+    def _pop_request_context(self, tokens: dict[str, object]) -> None:
+        reset_current_scope_id(tokens["scope_id"])
+        reset_current_scope_type(tokens["scope_type"])
+        reset_current_origin(tokens["origin"])
+        reset_current_user_id(tokens["user"])
+        reset_current_message_id(tokens["message_id"])
+        reset_current_run_id(tokens["run_id"])
+        reset_current_channel_id(tokens["channel"])
+        reset_current_session_id(tokens["session"])
+
+    @staticmethod
+    def _extract_limit_from_response(text: str) -> tuple[str | None, str | None]:
+        match = re.match(r"^LIMIT_REACHED \(([^)]+)\):\s*(.+)$", text.strip())
+        if not match:
+            return None, None
+        return match.group(1).strip(), match.group(2).strip()
+
+    async def handle_message(self, session_id: str, envelope: MessageEnvelope) -> AgentResponse:
+        if not envelope.text and not envelope.command and not envelope.attachments:
+            return AgentResponse(text="")
+        if not settings.models:
+            return AgentResponse(text="LLM is not configured. Define at least one model in config.yaml.")
+
+        content, is_command, attachments_meta = self._prepare_envelope_content(envelope)
 
         run_id = str(uuid.uuid4())
         run_started_at = datetime.now(UTC)
@@ -115,20 +162,15 @@ class AgentRuntime:
                 created_at=datetime.now(UTC),
             )
         )
-        token_session = set_current_session_id(session_id)
-        token_channel = set_current_channel_id(envelope.channel_id)
-        internal_user_id = envelope.metadata.get("internal_user_id", envelope.user_id)
-        token_user = set_current_user_id(internal_user_id)
-        token_origin = set_current_origin(envelope.origin)
-        token_run_id = set_current_run_id(run_id)
-        token_message_id = set_current_message_id(envelope.message_id)
-        scope_type = str(envelope.metadata.get("scope_type") or "private")
-        scope_id = str(envelope.metadata.get("scope_id") or f"private:{internal_user_id}")
-        token_scope_type = set_current_scope_type(scope_type)
-        token_scope_id = set_current_scope_id(scope_id)
+        internal_user_id, _scope_type, _scope_id, context_tokens = self._push_request_context(
+            session_id=session_id,
+            envelope=envelope,
+            run_id=run_id,
+        )
         response: object = ""
         messages: list[BaseMessage] = []
-        model_name = resolve_model_name(None, purpose="main")
+        purpose = self._purpose_for_origin(envelope.origin)
+        model_name = resolve_model_name(None, purpose=purpose)
         await self._trace_create(
             run_id=run_id,
             session_id=session_id,
@@ -174,7 +216,7 @@ class AgentRuntime:
             model_name = await self._get_session_model(session_id, envelope)
             await self._trace_update(run_id, model=model_name)
             await self._compact_history_for_context(session_id, history, model_name)
-            resolved_model = resolve_model(model_name, purpose="heartbeat" if envelope.origin == "heartbeat" else "main")
+            resolved_model = resolve_model(model_name, purpose=purpose)
             limits = RunLimitsState(
                 max_tool_calls=max(0, int(settings.limits_max_tool_calls)),
                 max_runtime_seconds=max(1, int(settings.limits_max_runtime_seconds)),
@@ -194,7 +236,7 @@ class AgentRuntime:
                 "callbacks": callbacks,
                 "recursion_limit": max(32, int(settings.limits_max_tool_calls) * 4 + 16),
             }
-            graph = self._get_graph(model_name, purpose="heartbeat" if envelope.origin == "heartbeat" else "main")
+            graph = self._get_graph(model_name, purpose=purpose)
             try:
                 result = await asyncio.wait_for(
                     graph.ainvoke({"messages": history}, config=invoke_config),
@@ -235,10 +277,7 @@ class AgentRuntime:
                 run_input_tokens = int(usage.get("input_tokens") or 0)
                 run_output_tokens = int(usage.get("output_tokens") or 0)
                 run_total_tokens = int(usage.get("total_tokens") or 0)
-                resolved_for_cost = resolve_model(
-                    model_name,
-                    purpose="heartbeat" if envelope.origin == "heartbeat" else "main",
-                )
+                resolved_for_cost = resolve_model(model_name, purpose=purpose)
                 run_cost = (run_input_tokens / 1_000_000.0) * float(resolved_for_cost.input_cost_per_1m) + (
                     run_output_tokens / 1_000_000.0
                 ) * float(resolved_for_cost.output_cost_per_1m)
@@ -272,14 +311,7 @@ class AgentRuntime:
         finally:
             if limit_token is not None:
                 reset_current_run_limits(limit_token)
-            reset_current_scope_id(token_scope_id)
-            reset_current_scope_type(token_scope_type)
-            reset_current_origin(token_origin)
-            reset_current_user_id(token_user)
-            reset_current_message_id(token_message_id)
-            reset_current_run_id(token_run_id)
-            reset_current_channel_id(token_channel)
-            reset_current_session_id(token_session)
+            self._pop_request_context(context_tokens)
         await self.event_bus.publish(
             StreamEvent(
                 session_id=session_id,
@@ -309,10 +341,7 @@ class AgentRuntime:
             )
         cleaned = self._strip_attachment_paths(response_text) if attachments else response_text
         if run_limit_reason is None:
-            match = re.match(r"^LIMIT_REACHED \(([^)]+)\):\s*(.+)$", cleaned.strip())
-            if match:
-                run_limit_reason = match.group(1).strip()
-                run_limit_detail = match.group(2).strip()
+            run_limit_reason, run_limit_detail = self._extract_limit_from_response(cleaned)
         if run_status == "running":
             run_status = "limited" if run_limit_reason else "completed"
         finished_at = datetime.now(UTC)
