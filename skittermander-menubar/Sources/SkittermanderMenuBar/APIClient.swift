@@ -4,7 +4,7 @@ import Foundation
 struct APIClient {
     enum APIError: LocalizedError {
         case invalidBaseURL
-        case missingAPIKey
+        case missingAuthToken
         case http(Int, String)
         case decoding(String)
 
@@ -12,8 +12,8 @@ struct APIClient {
             switch self {
             case .invalidBaseURL:
                 return "Invalid API URL"
-            case .missingAPIKey:
-                return "API key is required"
+            case .missingAuthToken:
+                return "Access token is required"
             case let .http(code, message):
                 return "HTTP \(code): \(message)"
             case let .decoding(message):
@@ -60,7 +60,7 @@ struct APIClient {
     }
 
     func createOrResumeSession(origin: String, reuseActive: Bool) async throws -> String {
-        let body = SessionCreateBody(user_id: settings.userID, origin: origin, reuse_active: reuseActive)
+        let body = SessionCreateBody(origin: origin, reuse_active: reuseActive)
         let payload: SessionPayload = try await requestJSON(
             path: "/v1/sessions",
             method: "POST",
@@ -120,7 +120,7 @@ struct APIClient {
     }
 
     func sendMessage(sessionID: String, text: String) async throws -> ChatMessage {
-        let body = MessageCreateBody(session_id: sessionID, user_id: settings.userID, text: text, metadata: [:])
+        let body = MessageCreateBody(session_id: sessionID, text: text, metadata: [:])
         let payload: MessagePayload = try await requestJSON(
             path: "/v1/messages",
             method: "POST",
@@ -246,13 +246,60 @@ struct APIClient {
         let url = try resolveURL(from: rawURL)
         var request = URLRequest(url: url)
         request.httpMethod = "GET"
-        let key = settings.apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !key.isEmpty {
-            request.setValue(key, forHTTPHeaderField: "X-API-Key")
-        }
+        applyAuthHeader(&request)
         let (data, response) = try await session.data(for: request)
         try ensureHTTP200(response: response, data: data)
         return data
+    }
+
+    func bootstrap(
+        bootstrapCode: String,
+        displayName: String,
+        deviceName: String?,
+        deviceType: String
+    ) async throws -> (token: String, user: AuthUser) {
+        let body = AuthBootstrapBody(
+            bootstrap_code: bootstrapCode,
+            display_name: displayName,
+            device_name: deviceName,
+            device_type: deviceType
+        )
+        let payload: AuthTokenPayload = try await requestJSON(
+            path: "/v1/auth/bootstrap",
+            method: "POST",
+            body: body,
+            requiresAPIKey: false
+        )
+        return (payload.token, payload.user.toDomain())
+    }
+
+    func pair(
+        pairCode: String,
+        deviceName: String?,
+        deviceType: String
+    ) async throws -> (token: String, user: AuthUser) {
+        let body = AuthPairBody(
+            pair_code: pairCode,
+            device_name: deviceName,
+            device_type: deviceType
+        )
+        let payload: AuthTokenPayload = try await requestJSON(
+            path: "/v1/auth/pair/complete",
+            method: "POST",
+            body: body,
+            requiresAPIKey: false
+        )
+        return (payload.token, payload.user.toDomain())
+    }
+
+    func authMe() async throws -> AuthUser {
+        let payload: AuthUserPayload = try await requestJSON(
+            path: "/v1/auth/me",
+            method: "GET",
+            body: Optional<Int>.none,
+            requiresAPIKey: true
+        )
+        return payload.toDomain()
     }
 
     private func requestJSON<T: Decodable, B: Encodable>(
@@ -283,11 +330,19 @@ struct APIClient {
         if requiresAPIKey {
             let key = settings.apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !key.isEmpty else {
-                throw APIError.missingAPIKey
+                throw APIError.missingAuthToken
             }
-            request.setValue(key, forHTTPHeaderField: "X-API-Key")
+            request.setValue("Bearer \(key)", forHTTPHeaderField: "Authorization")
         }
         return request
+    }
+
+    private func applyAuthHeader(_ request: inout URLRequest) {
+        let token = settings.apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        if token.isEmpty {
+            return
+        }
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
     }
 
     private func url(path: String) throws -> URL {
@@ -367,7 +422,6 @@ private struct HealthPayload: Decodable {
 }
 
 private struct SessionCreateBody: Encodable {
-    let user_id: String
     let origin: String
     let reuse_active: Bool
 }
@@ -383,7 +437,6 @@ private struct SessionPayload: Decodable {
 
 private struct MessageCreateBody: Encodable {
     let session_id: String
-    let user_id: String
     let text: String
     let metadata: [String: String]
 }
@@ -449,4 +502,32 @@ private struct ToolApprovalResult: Decodable {
     let id: String
     let status: String
     let approved_by: String?
+}
+
+private struct AuthBootstrapBody: Encodable {
+    let bootstrap_code: String
+    let display_name: String
+    let device_name: String?
+    let device_type: String
+}
+
+private struct AuthPairBody: Encodable {
+    let pair_code: String
+    let device_name: String?
+    let device_type: String
+}
+
+private struct AuthTokenPayload: Decodable {
+    let token: String
+    let user: AuthUserPayload
+}
+
+private struct AuthUserPayload: Decodable {
+    let id: String
+    let display_name: String
+    let approved: Bool
+
+    func toDomain() -> AuthUser {
+        AuthUser(id: id, displayName: display_name, approved: approved)
+    }
 }

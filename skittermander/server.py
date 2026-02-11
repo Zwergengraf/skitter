@@ -4,11 +4,12 @@ import asyncio
 import os
 import json
 import contextlib
-from datetime import datetime, UTC
+from datetime import datetime, UTC, timedelta
 
 import uvicorn
 
 from .api.app import create_app
+from .api.security import hash_pair_code, make_pair_code
 from .core.runtime import AgentRuntime
 from .core.llm import list_models, resolve_model_name
 from .core.scheduler import SchedulerService
@@ -363,6 +364,27 @@ async def main() -> None:
                 envelope.channel_id,
                 f"Active model set to `{match.name}`.",
             )
+            return True
+        if envelope.command == "pair":
+            code = make_pair_code()
+            expires_at = datetime.now(UTC) + timedelta(minutes=10)
+            async with SessionLocal() as session:
+                repo = Repository(session)
+                await repo.create_pair_code(
+                    hash_pair_code(code),
+                    flow_type="pair",
+                    user_id=internal_user_id,
+                    display_name=None,
+                    created_by_user_id=internal_user_id,
+                    created_via="discord",
+                    expires_at=expires_at,
+                )
+            envelope.metadata["ephemeral_response"] = (
+                f"Pair code: `{code}`\n"
+                f"Expires at: {expires_at.strftime('%Y-%m-%d %H:%M:%S UTC')}\n"
+                "Use this code in the menubar/TUI pairing flow."
+            )
+            envelope.metadata["suppress_ack"] = True
             return True
         if envelope.command == "info":
             async with SessionLocal() as session:

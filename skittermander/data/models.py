@@ -20,6 +20,7 @@ class User(Base):
 
     id: Mapped[str] = mapped_column(String, primary_key=True)
     transport_user_id: Mapped[str] = mapped_column(String, index=True)
+    display_name: Mapped[str | None] = mapped_column(String, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     meta: Mapped[dict] = mapped_column(JSON, default=dict)
     approved: Mapped[bool] = mapped_column(default=False)
@@ -147,6 +148,38 @@ class Secret(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     last_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class AuthToken(Base):
+    __tablename__ = "auth_tokens"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    user_id: Mapped[str] = mapped_column(String, index=True)
+    token_hash: Mapped[str] = mapped_column(String, unique=True, index=True)
+    token_prefix: Mapped[str] = mapped_column(String, unique=True, index=True)
+    device_name: Mapped[str | None] = mapped_column(String, nullable=True)
+    device_type: Mapped[str | None] = mapped_column(String, nullable=True)
+    created_via: Mapped[str] = mapped_column(String, default="unknown")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    last_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class PairCode(Base):
+    __tablename__ = "pair_codes"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    code_hash: Mapped[str] = mapped_column(String, unique=True, index=True)
+    user_id: Mapped[str | None] = mapped_column(String, index=True, nullable=True)
+    flow_type: Mapped[str] = mapped_column(String, default="pair")
+    display_name: Mapped[str | None] = mapped_column(String, nullable=True)
+    created_by_user_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    created_via: Mapped[str] = mapped_column(String, default="unknown")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    consumed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    attempts: Mapped[int] = mapped_column(Integer, default=0)
 
 
 class Channel(Base):

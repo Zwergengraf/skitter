@@ -3,9 +3,9 @@ services:
     image: pgvector/pgvector:pg15
     restart: unless-stopped
     environment:
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: postgres
-      POSTGRES_DB: skittermander
+      POSTGRES_USER: ${SKITTER_POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${SKITTER_POSTGRES_PASSWORD:-postgres}
+      POSTGRES_DB: ${SKITTER_POSTGRES_DB:-skittermander}
     # For security reasons, we do not expose the Postgres port to the host machine. The API service connects to it via the Docker network.
     # DO NOT UNCOMMENT THE PORTS SECTION BELOW UNLESS YOU KNOW WHAT YOU ARE DOING AND HAVE SECURED YOUR DATABASE PROPERLY.
     # ports:
@@ -13,7 +13,7 @@ services:
     volumes:
       - skitter_pg:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U postgres -d skittermander"]
+      test: ["CMD-SHELL", "pg_isready -U ${SKITTER_POSTGRES_USER:-postgres} -d ${SKITTER_POSTGRES_DB:-skittermander}"]
       interval: 5s
       timeout: 5s
       retries: 20
@@ -25,9 +25,10 @@ services:
     environment:
       SKITTER_CONFIG_PATH: ${SKITTER_CONFIG_PATH:-config.yaml}
       SKITTER_API_KEY: ${SKITTER_API_KEY:-}
+      SKITTER_BOOTSTRAP_CODE: ${SKITTER_BOOTSTRAP_CODE:-}
       SKITTER_SECRETS_MASTER_KEY: ${SKITTER_SECRETS_MASTER_KEY:-}
-      SKITTER_ENABLE_DISCORD: ${SKITTER_ENABLE_DISCORD:-false}
-      SKITTER_DB_URL: postgresql+asyncpg://postgres:postgres@postgres:5432/skittermander
+      SKITTER_ENABLE_DISCORD: ${SKITTER_ENABLE_DISCORD:-true}
+      SKITTER_DB_URL: postgresql+asyncpg://${SKITTER_POSTGRES_USER:-postgres}:${SKITTER_POSTGRES_PASSWORD:-postgres}@postgres:5432/${SKITTER_POSTGRES_DB:-skittermander}
       SKITTER_WORKSPACE_ROOT: /workspace
       SKITTER_HOST_WORKSPACE_ROOT: ${SKITTER_HOST_WORKSPACE_ROOT:-}
       SKITTER_SANDBOX_IMAGE: skittermander-sandbox

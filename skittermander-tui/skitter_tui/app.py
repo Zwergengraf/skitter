@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import socket
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -16,15 +17,16 @@ from textual.containers import Vertical
 from textual.message import Message
 from textual.widgets import Footer, Header, Input, RichLog, Static
 
-from .client import ApiError, SkitterApiClient, StreamEvent
+from .client import ApiError, AuthUser, SkitterApiClient, StreamEvent
 
 
 @dataclass(slots=True)
 class AppConfig:
     api_url: str
-    user_id: str
-    api_key: str | None = None
+    access_token: str | None = None
+    device_name: str | None = None
     session_id: str | None = None
+    prefer_saved_token: bool = True
 
 
 @dataclass(slots=True)
@@ -60,6 +62,12 @@ class StatusUpdate(Message):
 class IncomingEvent(Message):
     def __init__(self, event: StreamEvent) -> None:
         self.event = event
+        super().__init__()
+
+
+class SystemLog(Message):
+    def __init__(self, text: str) -> None:
+        self.text = text
         super().__init__()
 
 
@@ -106,7 +114,7 @@ class SkitterTuiApp(App[None]):
     def __init__(self, config: AppConfig) -> None:
         super().__init__()
         self.config = config
-        self.api = SkitterApiClient(config.api_url, api_key=config.api_key)
+        self.api = SkitterApiClient(config.api_url, api_key=config.access_token)
         self._session_id: str | None = config.session_id
         self._busy = False
         self._stream_stop = asyncio.Event()
@@ -115,7 +123,20 @@ class SkitterTuiApp(App[None]):
         self._chat_entries: list[ChatEntry] = []
         self._is_replaying = False
         self._state_path = self._resolve_state_path()
-        self._saved_theme = self._load_saved_theme()
+        self._persisted_state = self._load_state()
+        saved_theme = self._persisted_state.get("theme")
+        self._saved_theme = saved_theme if isinstance(saved_theme, str) and saved_theme.strip() else None
+        saved_token = self._persisted_state.get("access_token")
+        if (
+            self.config.prefer_saved_token
+            and isinstance(saved_token, str)
+            and saved_token.strip()
+        ):
+            self.config.access_token = saved_token.strip()
+            self.api.set_token(self.config.access_token)
+        elif self.config.access_token:
+            self._save_access_token(self.config.access_token)
+        self._auth_user: AuthUser | None = None
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
@@ -123,7 +144,7 @@ class SkitterTuiApp(App[None]):
             yield Static("Connecting...", id="status")
             yield RichLog(id="chat", highlight=True, markup=True, wrap=True)
             yield Input(
-                placeholder="Type a message. Commands: /new /session /attachments /download /help /clear /quit",
+                placeholder="Type a message. Commands: /new /session /whoami /bootstrap /pair /token /attachments /download /help /clear /quit",
                 id="input",
             )
         yield Footer()
@@ -132,7 +153,14 @@ class SkitterTuiApp(App[None]):
         self.title = "Skittermander TUI"
         self.sub_title = self.config.api_url
         self._apply_saved_theme()
-        self._update_status("Connecting", f"user={self.config.user_id}")
+        self._update_status("Connecting", "checking auth")
+        if not self.api.has_token:
+            self._append_system(
+                "No access token configured.\n"
+                "Use `/bootstrap <setup_code> <display_name>` for first-time setup, "
+                "or `/pair <pair_code>` to pair an existing account."
+            )
+            self._update_status("Ready", "unauthenticated")
         self.run_worker(self._bootstrap(), name="bootstrap", group="bootstrap", exclusive=True)
 
     def watch_theme(self, theme_name: str) -> None:
@@ -150,12 +178,22 @@ class SkitterTuiApp(App[None]):
 
     async def _bootstrap(self) -> None:
         try:
+            if not self.api.has_token:
+                return
+            self._auth_user = await self.api.auth_me()
+            if not self._auth_user.approved:
+                self.post_message(
+                    SystemLog("Your account is not yet approved. An admin has to approve it first.")
+                )
+                self.post_message(StatusUpdate("Waiting approval", "account pending"))
+                return
             if self._session_id:
                 self.post_message(SessionReady(self._session_id, created=False))
                 return
-            session_id = await self.api.create_session(self.config.user_id, origin="tui", reuse_active=True)
+            session_id = await self.api.create_session(origin="tui", reuse_active=True)
             self.post_message(SessionReady(session_id, created=True))
         except Exception as exc:
+            self.post_message(SystemLog(f"Connection failed: {exc}"))
             self.post_message(StatusUpdate("Connection failed", str(exc)))
 
     async def on_session_ready(self, message: SessionReady) -> None:
@@ -163,8 +201,9 @@ class SkitterTuiApp(App[None]):
         chat = self.query_one("#chat", RichLog)
         chat.clear()
         self._chat_entries.clear()
+        identity = self._auth_user.display_name if self._auth_user else "unknown user"
         self._append_system(
-            f"Connected as `{self.config.user_id}`\n"
+            f"Connected as `{identity}`\n"
             f"Session: `{message.session_id}`\n"
             f"Type `/help` for commands."
         )
@@ -301,6 +340,9 @@ class SkitterTuiApp(App[None]):
     async def on_status_update(self, message: StatusUpdate) -> None:
         self._update_status(message.title, message.detail)
 
+    async def on_system_log(self, message: SystemLog) -> None:
+        self._append_system(message.text)
+
     async def on_input_submitted(self, event: Input.Submitted) -> None:
         text = event.value.strip()
         event.input.value = ""
@@ -335,6 +377,11 @@ class SkitterTuiApp(App[None]):
                 "Commands:\n"
                 "- `/new` create a new session\n"
                 "- `/session` show current session id\n"
+                "- `/whoami` show authenticated user info\n"
+                "- `/bootstrap <setup_code> <display_name>` first-time account setup\n"
+                "- `/pair <pair_code>` pair this client to an existing account\n"
+                "- `/token <access_token>` set access token manually\n"
+                "- `/logout` clear access token and disconnect\n"
                 "- `/attachments` list last assistant attachments\n"
                 "- `/download <index> [target_path]` download attachment\n"
                 "- `/clear` clear local chat view\n"
@@ -352,6 +399,59 @@ class SkitterTuiApp(App[None]):
                 self._append_system(f"Current session: `{self._session_id}`")
             else:
                 self._append_system("No active session.")
+            return
+        if cmd == "/whoami":
+            if self._auth_user is None:
+                self._append_system("Not authenticated.")
+            else:
+                approval = "approved" if self._auth_user.approved else "pending approval"
+                self._append_system(
+                    f"User: `{self._auth_user.display_name}`\n"
+                    f"User ID: `{self._auth_user.id}`\n"
+                    f"Status: {approval}"
+                )
+            return
+        if cmd == "/token":
+            token = arg.strip()
+            if not token:
+                self._append_system("Usage: `/token <access_token>`")
+                return
+            self.api.set_token(token)
+            self.config.access_token = token
+            self._save_access_token(token)
+            self._session_id = None
+            self._auth_user = None
+            self._append_system("Access token updated. Reconnecting...")
+            self.run_worker(self._bootstrap(), name="bootstrap", group="bootstrap", exclusive=True)
+            return
+        if cmd == "/logout":
+            self.api.set_token(None)
+            self.config.access_token = None
+            self._save_access_token(None)
+            self._session_id = None
+            self._auth_user = None
+            self._stream_stop.set()
+            self._update_status("Ready", "unauthenticated")
+            self._append_system("Logged out. Use /bootstrap or /pair to authenticate.")
+            return
+        if cmd == "/bootstrap":
+            args = arg.split(maxsplit=1)
+            if len(args) < 2:
+                self._append_system("Usage: `/bootstrap <setup_code> <display_name>`")
+                return
+            setup_code = args[0].strip()
+            display_name = args[1].strip()
+            if not setup_code or not display_name:
+                self._append_system("Usage: `/bootstrap <setup_code> <display_name>`")
+                return
+            await self._run_bootstrap_command(setup_code, display_name)
+            return
+        if cmd == "/pair":
+            pair_code = arg.strip()
+            if not pair_code:
+                self._append_system("Usage: `/pair <pair_code>`")
+                return
+            await self._run_pair_command(pair_code)
             return
         if cmd == "/clear":
             self.action_clear_chat()
@@ -450,7 +550,6 @@ class SkitterTuiApp(App[None]):
         try:
             await self.api.send_message(
                 session_id=self._session_id,
-                user_id=self.config.user_id,
                 text=text,
             )
             await self._sync_new_messages(self._session_id)
@@ -472,7 +571,7 @@ class SkitterTuiApp(App[None]):
     async def action_new_session(self) -> None:
         self._update_status("Creating session", "")
         try:
-            session_id = await self.api.create_session(self.config.user_id, origin="tui", reuse_active=False)
+            session_id = await self.api.create_session(origin="tui", reuse_active=False)
         except Exception as exc:
             self._append_error(f"Could not create session: {exc}")
             self._update_status("Error", "session creation failed")
@@ -576,19 +675,61 @@ class SkitterTuiApp(App[None]):
         else:
             status.update(title)
 
+    async def _run_bootstrap_command(self, setup_code: str, display_name: str) -> None:
+        self._update_status("Authenticating", "bootstrap")
+        device_name = self.config.device_name or socket.gethostname()
+        try:
+            _, user = await self.api.bootstrap(
+                bootstrap_code=setup_code,
+                display_name=display_name,
+                device_name=device_name,
+                device_type="tui",
+            )
+        except Exception as exc:
+            self._append_error(f"Bootstrap failed: {exc}")
+            self._update_status("Error", "bootstrap failed")
+            return
+        self._auth_user = user
+        self.config.access_token = self.api.token
+        self._save_access_token(self.config.access_token)
+        self._session_id = None
+        self._append_system(f"Authenticated as `{user.display_name}`. Reconnecting…")
+        self.run_worker(self._bootstrap(), name="bootstrap", group="bootstrap", exclusive=True)
+
+    async def _run_pair_command(self, pair_code: str) -> None:
+        self._update_status("Authenticating", "pairing")
+        device_name = self.config.device_name or socket.gethostname()
+        try:
+            _, user = await self.api.pair(
+                pair_code=pair_code,
+                device_name=device_name,
+                device_type="tui",
+            )
+        except Exception as exc:
+            self._append_error(f"Pair failed: {exc}")
+            self._update_status("Error", "pair failed")
+            return
+        self._auth_user = user
+        self.config.access_token = self.api.token
+        self._save_access_token(self.config.access_token)
+        self._session_id = None
+        self._append_system(f"Paired as `{user.display_name}`. Reconnecting…")
+        self.run_worker(self._bootstrap(), name="bootstrap", group="bootstrap", exclusive=True)
+
     def _resolve_state_path(self) -> Path:
         config_home = os.environ.get("XDG_CONFIG_HOME", "").strip()
         if not config_home:
             config_home = str(Path.home() / ".config")
         return Path(config_home) / "skitter-tui" / "state.json"
 
-    def _load_saved_theme(self) -> str | None:
+    def _load_state(self) -> dict[str, Any]:
         try:
             payload = json.loads(self._state_path.read_text(encoding="utf-8"))
         except (FileNotFoundError, OSError, json.JSONDecodeError):
-            return None
-        theme = payload.get("theme")
-        return theme.strip() if isinstance(theme, str) and theme.strip() else None
+            return {}
+        if not isinstance(payload, dict):
+            return {}
+        return payload
 
     def _apply_saved_theme(self) -> None:
         if not self._saved_theme:
@@ -600,9 +741,19 @@ class SkitterTuiApp(App[None]):
             return
 
     def _save_theme(self, theme_name: str) -> None:
+        self._save_state_value("theme", theme_name)
+
+    def _save_access_token(self, token: str | None) -> None:
+        value = token.strip() if isinstance(token, str) else ""
+        self._save_state_value("access_token", value or None)
+
+    def _save_state_value(self, key: str, value: Any | None) -> None:
+        if value is None:
+            self._persisted_state.pop(key, None)
+        else:
+            self._persisted_state[key] = value
         try:
             self._state_path.parent.mkdir(parents=True, exist_ok=True)
-            payload = {"theme": theme_name}
-            self._state_path.write_text(json.dumps(payload), encoding="utf-8")
+            self._state_path.write_text(json.dumps(self._persisted_state), encoding="utf-8")
         except OSError:
             return

@@ -7,6 +7,9 @@ struct ChatView: View {
     @State private var visibleLimit: Int = 160
     @State private var onboardingChecking: Bool = false
     @State private var onboardingStatusText: String?
+    @State private var onboardingDisplayName: String = ""
+    @State private var onboardingSetupCode: String = ""
+    @State private var onboardingPairCode: String = ""
     private static let progressMessageID = "temporary-progress-message"
     private static let bottomAnchorID = "chat-bottom-anchor"
     private static let relativeTimeFormatter: RelativeDateTimeFormatter = {
@@ -325,14 +328,10 @@ struct ChatView: View {
             get: { state.settings.apiKey },
             set: { state.settings.apiKey = $0 }
         )
-        let userIDBinding = Binding<String>(
-            get: { state.settings.userID },
-            set: { state.settings.userID = $0 }
-        )
         VStack(alignment: .leading, spacing: 10) {
             Text("Welcome to Skittermander")
                 .font(.headline)
-            Text("Set API connection details, then test and reconnect.")
+            Text("Connect with an existing access token, or bootstrap/pair this device.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
 
@@ -346,19 +345,11 @@ struct ChatView: View {
                         .textFieldStyle(.roundedBorder)
                 }
                 GridRow {
-                    Text("API Key")
+                    Text("Access Token")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .frame(width: 86, alignment: .leading)
-                    SecureField("Required", text: apiKeyBinding)
-                        .textFieldStyle(.roundedBorder)
-                }
-                GridRow {
-                    Text("User ID")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .frame(width: 86, alignment: .leading)
-                    TextField("menubar.local", text: userIDBinding)
+                    SecureField("Optional (set by bootstrap/pair)", text: apiKeyBinding)
                         .textFieldStyle(.roundedBorder)
                 }
             }
@@ -389,6 +380,61 @@ struct ChatView: View {
                         .font(.caption)
                         .foregroundStyle(.orange)
                 }
+            }
+
+            Divider()
+
+            Grid(alignment: .leading, horizontalSpacing: 10, verticalSpacing: 8) {
+                GridRow {
+                    Text("Name")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .frame(width: 86, alignment: .leading)
+                    TextField("Your display name", text: $onboardingDisplayName)
+                        .textFieldStyle(.roundedBorder)
+                }
+                GridRow {
+                    Text("Setup Code")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .frame(width: 86, alignment: .leading)
+                    SecureField("First-time setup code", text: $onboardingSetupCode)
+                        .textFieldStyle(.roundedBorder)
+                }
+            }
+            HStack(spacing: 8) {
+                Button("Register & Connect") {
+                    Task {
+                        await state.bootstrapAccount(
+                            setupCode: onboardingSetupCode,
+                            displayName: onboardingDisplayName
+                        )
+                        onboardingStatusText = state.errorBanner ?? "Registered and connected."
+                    }
+                }
+                .buttonStyle(.bordered)
+                Spacer()
+            }
+
+            Grid(alignment: .leading, horizontalSpacing: 10, verticalSpacing: 8) {
+                GridRow {
+                    Text("Pair Code")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .frame(width: 86, alignment: .leading)
+                    TextField("ABCD-1234", text: $onboardingPairCode)
+                        .textFieldStyle(.roundedBorder)
+                }
+            }
+            HStack(spacing: 8) {
+                Button("Pair Existing Account") {
+                    Task {
+                        await state.pairAccount(pairCode: onboardingPairCode)
+                        onboardingStatusText = state.errorBanner ?? "Paired and connected."
+                    }
+                }
+                .buttonStyle(.bordered)
+                Spacer()
             }
 
             if let onboardingStatusText, !onboardingStatusText.isEmpty {

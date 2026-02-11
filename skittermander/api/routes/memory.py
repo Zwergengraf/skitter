@@ -1,7 +1,10 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, Query, HTTPException
+from pathlib import Path
 
+from fastapi import APIRouter, Depends, Query, HTTPException, Request
+
+from ..authz import require_admin
 from ..deps import get_repo
 from ..schemas import MemoryEntryOut, MemoryForgetRequest
 from ...core.workspace import user_workspace_root
@@ -31,10 +34,12 @@ def _safe_memory_path(user_id: str, source: str) -> Path:
 
 @router.get("", response_model=list[MemoryEntryOut])
 async def list_memory(
+    request: Request,
     repo: Repository = Depends(get_repo),
     user_id: str = Query(...),
     limit: int = Query(default=200, ge=1, le=1000),
 ) -> list[MemoryEntryOut]:
+    require_admin(request)
     entries = await repo.list_memory_entries(user_id)
     grouped: dict[str, dict] = {}
     for entry in entries:
@@ -74,7 +79,8 @@ async def list_memory(
 
 
 @router.get("/file")
-async def get_memory_file(source: str, user_id: str = Query(...)) -> dict:
+async def get_memory_file(request: Request, source: str, user_id: str = Query(...)) -> dict:
+    require_admin(request)
     path = _safe_memory_path(user_id, source)
     content = path.read_text(encoding="utf-8")
     return {"source": source, "content": content}
@@ -82,9 +88,11 @@ async def get_memory_file(source: str, user_id: str = Query(...)) -> dict:
 
 @router.post("/reindex")
 async def reindex_memory(
+    request: Request,
     repo: Repository = Depends(get_repo),
     user_id: str = Query(...),
 ) -> dict:
+    require_admin(request)
     user = await repo.get_user_by_id(user_id)
     if user is None:
         raise HTTPException(status_code=404, detail="User not found")
@@ -97,6 +105,7 @@ async def reindex_memory(
 
 
 @router.post("/forget")
-async def forget_memory(payload: MemoryForgetRequest, repo: Repository = Depends(get_repo)) -> dict:
+async def forget_memory(payload: MemoryForgetRequest, request: Request, repo: Repository = Depends(get_repo)) -> dict:
+    require_admin(request)
     deleted = await repo.delete_memory(payload.user_id)
     return {"deleted": deleted}

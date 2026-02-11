@@ -6,6 +6,7 @@ from typing import Literal
 from fastapi import APIRouter, Depends, Query, Request
 from sqlalchemy import func, select, text
 
+from ..authz import require_admin
 from ..deps import get_repo
 from ..schemas import (
     OverviewCostPoint,
@@ -163,6 +164,7 @@ async def get_overview(
     repo: Repository = Depends(get_repo),
     range: OverviewRange = Query(default="week"),
 ) -> OverviewOut:
+    require_admin(request)
     sessions = await repo.list_recent_sessions(limit=8, status="active")
     tool_runs = await repo.list_pending_tool_runs(limit=6)
 

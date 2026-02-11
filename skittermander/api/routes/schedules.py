@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 
+from ..authz import require_admin
 from ..deps import get_repo
 from ..schemas import ScheduledJobCreate, ScheduledJobOut, ScheduledJobUpdate
 from ...data.db import SessionLocal
@@ -35,10 +36,12 @@ def _to_scheduled_job_out(job: ScheduledJob) -> ScheduledJobOut:
 
 @router.get("", response_model=list[ScheduledJobOut])
 async def list_schedules(
+    request: Request,
     repo: Repository = Depends(get_repo),
     user_id: str | None = Query(default=None),
     limit: int = Query(default=100, ge=1, le=500),
 ) -> list[ScheduledJobOut]:
+    require_admin(request)
     if user_id:
         jobs = await repo.list_scheduled_jobs(user_id)
     else:
@@ -52,6 +55,7 @@ async def create_schedule(
     payload: ScheduledJobCreate,
     request: Request,
 ) -> ScheduledJobOut:
+    require_admin(request)
     scheduler = request.app.state.scheduler_service
     schedule_expr = payload.schedule_expr
     if payload.schedule_type == "date":
@@ -86,6 +90,7 @@ async def update_schedule(
     payload: ScheduledJobUpdate,
     request: Request,
 ) -> ScheduledJobOut:
+    require_admin(request)
     scheduler = request.app.state.scheduler_service
     fields = payload.model_dump(exclude_unset=True)
     if "schedule_type" in fields and "schedule_expr" in fields:
@@ -107,6 +112,7 @@ async def update_schedule(
 
 @router.delete("/{job_id}")
 async def delete_schedule(job_id: str, request: Request) -> dict:
+    require_admin(request)
     scheduler = request.app.state.scheduler_service
     result = await scheduler.delete_job(job_id)
     return result

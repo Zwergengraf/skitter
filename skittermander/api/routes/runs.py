@@ -1,7 +1,8 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 
+from ..authz import require_admin
 from ..deps import get_repo
 from ..schemas import (
     RunTraceDetailOut,
@@ -38,18 +39,21 @@ def _run_item(trace) -> RunTraceListItem:
 
 @router.get("", response_model=list[RunTraceListItem])
 async def list_runs(
+    request: Request,
     repo: Repository = Depends(get_repo),
     status: str | None = Query(default=None),
     user_id: str | None = Query(default=None),
     session_id: str | None = Query(default=None),
     limit: int = Query(default=100, ge=1, le=500),
 ) -> list[RunTraceListItem]:
+    require_admin(request)
     rows = await repo.list_run_traces(limit=limit, status=status, user_id=user_id, session_id=session_id)
     return [_run_item(trace) for trace in rows]
 
 
 @router.get("/{run_id}", response_model=RunTraceDetailOut)
-async def get_run_detail(run_id: str, repo: Repository = Depends(get_repo)) -> RunTraceDetailOut:
+async def get_run_detail(run_id: str, request: Request, repo: Repository = Depends(get_repo)) -> RunTraceDetailOut:
+    require_admin(request)
     trace = await repo.get_run_trace(run_id)
     if trace is None:
         raise HTTPException(status_code=404, detail="Run not found")
@@ -82,4 +86,3 @@ async def get_run_detail(run_id: str, repo: Repository = Depends(get_repo)) -> R
             for event in events
         ],
     )
-

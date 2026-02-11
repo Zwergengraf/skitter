@@ -114,6 +114,8 @@ class Settings(BaseSettings):
     cors_origins: str = Field(default="http://localhost:5173")
     # Env-only: API key required for /v1/* HTTP endpoints.
     api_key: str = Field(default="", exclude=True)
+    # Env-only: one-time bootstrap code to initialize first non-discord client.
+    bootstrap_code: str = Field(default="", exclude=True)
     config_path: str = Field(default="config.yaml")
     prompt_path: str = Field(default="system_prompt.md")
     prompt_context_files: str = Field(

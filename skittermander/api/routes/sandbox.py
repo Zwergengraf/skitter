@@ -4,8 +4,9 @@ from datetime import datetime
 import os
 from pathlib import Path
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Request
 
+from ..authz import require_admin
 from ..schemas import SandboxContainerOut, SandboxStatusOut, SandboxWorkspaceOut
 from ...core.workspace import users_root
 from ...tools.sandbox_manager import sandbox_manager
@@ -37,7 +38,8 @@ def _dir_size(path: Path) -> int:
 
 
 @router.get("", response_model=SandboxStatusOut)
-async def sandbox_status() -> SandboxStatusOut:
+async def sandbox_status(request: Request) -> SandboxStatusOut:
+    require_admin(request)
     workspace_entries: list[SandboxWorkspaceOut] = []
     total_bytes = 0
     root = users_root()
