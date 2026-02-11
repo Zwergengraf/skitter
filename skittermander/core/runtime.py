@@ -838,10 +838,28 @@ class AgentRuntime:
         llm = build_llm()
         prompt = [
             SystemMessage(
-                content=(
-                    "Summarize the session focusing only on important facts, events, decisions, and user preferences. "
-                    "Use concise bullet points."
-                )
+                content=("""
+Create long-term memory notes for semantic retrieval.
+Keep only information likely useful in future sessions.
+                    
+Include only:
+- Stable user preferences and working style
+- Important project decisions and rationale
+- Lasting technical setup facts
+- Open commitments / follow-ups
+                    
+Exclude:
+- IDs, hashes, timestamps, URLs, raw logs, transient debugging details
+- Step-by-step chronology of the session
+- Tool call noise unless it defines a durable rule
+
+Output concise Markdown bullets under these headings (not all headings are necessary, include only relevant ones):
+## Preferences
+## Decisions
+## Setup Facts
+## Open Loops
+Each bullet must be self-contained, explicit, and searchable.
+                """.strip())
             ),
             HumanMessage(content=transcript),
         ]
