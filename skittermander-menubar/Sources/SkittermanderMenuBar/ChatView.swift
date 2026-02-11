@@ -293,13 +293,8 @@ struct ChatView: View {
             Image(systemName: "bolt.circle.fill")
                 .font(.title3)
                 .foregroundStyle(Color.accentColor)
-            VStack(alignment: .leading, spacing: 2) {
-                Text("Skittermander")
-                    .font(.headline)
-                Text("\(state.health.label.capitalized) · \(state.activity.label.capitalized)")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
+            Text("Skittermander")
+                .font(.headline)
             Spacer(minLength: 8)
             statusChip(label: state.health.label.capitalized, color: healthChipColor)
             statusChip(label: state.activity.label.capitalized, color: activityChipColor)

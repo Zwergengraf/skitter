@@ -92,33 +92,31 @@ final class StatusItemController: NSObject, NSMenuDelegate {
         statusMenu.removeAllItems()
         statusMenu.autoenablesItems = false
         statusMenu.delegate = self
+        statusMenu.minimumWidth = 340
 
-        let title = NSMenuItem(title: "Skittermander", action: nil, keyEquivalent: "")
-        title.isEnabled = false
-        title.image = symbolImage("bolt.circle.fill")
+        let title = NSMenuItem(title: "", action: nil, keyEquivalent: "")
+        title.view = headerItemView(label: "Skittermander", icon: "bolt.circle.fill", iconColor: healthValueColor)
+        title.isEnabled = true
         statusMenu.addItem(title)
         statusMenu.addItem(.separator())
 
-        statusMenu.addItem(disabledInfoItem(
+        statusMenu.addItem(infoItem(
             icon: "waveform.path.ecg",
             label: "Health",
             value: state.health.label.capitalized,
             valueColor: healthValueColor
         ))
-        statusMenu.addItem(disabledInfoItem(
+        statusMenu.addItem(infoItem(
             icon: "brain.head.profile",
             label: "Activity",
             value: state.activity.label.capitalized,
             valueColor: activityValueColor
         ))
-        statusMenu.addItem(disabledInfoItem(icon: "cpu", label: "Model", value: state.modelName))
-        statusMenu.addItem(disabledInfoItem(icon: "text.word.spacing", label: "Context", value: "\(state.contextTokens) tokens"))
-        statusMenu.addItem(disabledInfoItem(icon: "dollarsign.circle", label: "Session cost", value: "$\(String(format: "%.2f", state.sessionCost))"))
-        if let sessionID = state.sessionID, !sessionID.isEmpty {
-            statusMenu.addItem(disabledInfoItem(icon: "number.circle", label: "Session", value: sessionID))
-        }
+        statusMenu.addItem(infoItem(icon: "cpu", label: "Model", value: state.modelName))
+        statusMenu.addItem(infoItem(icon: "text.word.spacing", label: "Context", value: "\(state.contextTokens) tokens"))
+        statusMenu.addItem(infoItem(icon: "dollarsign.circle", label: "Session cost", value: "$\(String(format: "%.2f", state.sessionCost))"))
         if !state.pendingToolApprovals.isEmpty {
-            statusMenu.addItem(disabledInfoItem(
+            statusMenu.addItem(infoItem(
                 icon: "checkmark.shield",
                 label: "Approvals",
                 value: "\(state.pendingToolApprovals.count) pending",
@@ -126,7 +124,7 @@ final class StatusItemController: NSObject, NSMenuDelegate {
             ))
         }
         if state.hasUnreadMessages {
-            statusMenu.addItem(disabledInfoItem(
+            statusMenu.addItem(infoItem(
                 icon: "envelope.badge",
                 label: "Unread",
                 value: "\(state.unreadMessageCount)",
@@ -136,7 +134,6 @@ final class StatusItemController: NSObject, NSMenuDelegate {
 
         statusMenu.addItem(.separator())
         statusMenu.addItem(actionItem(title: "Open Chat", icon: "bubble.left.and.bubble.right", action: #selector(openChatFromMenu)))
-        statusMenu.addItem(actionItem(title: "Refresh", icon: "arrow.clockwise", action: #selector(refreshNowFromMenu)))
         statusMenu.addItem(actionItem(title: "Settings…", icon: "gearshape", action: #selector(openSettingsFromMenu)))
         statusMenu.addItem(actionItem(title: "About…", icon: "info.circle", action: #selector(openAboutFromMenu)))
         statusMenu.addItem(.separator())
@@ -165,11 +162,15 @@ final class StatusItemController: NSObject, NSMenuDelegate {
         }
     }
 
-    private func disabledInfoItem(icon: String, label: String, value: String, valueColor: NSColor = .secondaryLabelColor) -> NSMenuItem {
+    private func infoItem(
+        icon: String,
+        label: String,
+        value: String,
+        valueColor: NSColor = NSColor.labelColor.withAlphaComponent(0.86)
+    ) -> NSMenuItem {
         let item = NSMenuItem(title: "", action: nil, keyEquivalent: "")
-        item.attributedTitle = attributedInfoTitle(label: label, value: value, valueColor: valueColor)
-        item.image = symbolImage(icon)
-        item.isEnabled = false
+        item.view = infoItemView(icon: icon, label: label, value: value, valueColor: valueColor)
+        item.isEnabled = true
         return item
     }
 
@@ -187,27 +188,91 @@ final class StatusItemController: NSObject, NSMenuDelegate {
             .withSymbolConfiguration(config)
     }
 
-    private func attributedInfoTitle(label: String, value: String, valueColor: NSColor) -> NSAttributedString {
-        let text = NSMutableAttributedString()
-        text.append(
-            NSAttributedString(
-                string: "\(label): ",
-                attributes: [
-                    .foregroundColor: NSColor.secondaryLabelColor,
-                    .font: NSFont.systemFont(ofSize: 13, weight: .regular),
-                ]
-            )
-        )
-        text.append(
-            NSAttributedString(
-                string: value,
-                attributes: [
-                    .foregroundColor: valueColor,
-                    .font: NSFont.systemFont(ofSize: 13, weight: .semibold),
-                ]
-            )
-        )
-        return text
+    private func infoItemView(icon: String, label: String, value: String, valueColor: NSColor) -> NSView {
+        let container = NSView(frame: NSRect(x: 0, y: 0, width: 340, height: 22))
+
+        let iconView = NSImageView()
+        iconView.image = symbolImage(icon)
+        iconView.contentTintColor = NSColor.secondaryLabelColor.withAlphaComponent(0.88)
+        iconView.translatesAutoresizingMaskIntoConstraints = false
+        iconView.setContentHuggingPriority(.required, for: .horizontal)
+        iconView.setContentCompressionResistancePriority(.required, for: .horizontal)
+
+        let labelField = NSTextField(labelWithString: label)
+        labelField.font = NSFont.systemFont(ofSize: 13, weight: .regular)
+        labelField.textColor = NSColor.labelColor.withAlphaComponent(0.84)
+        labelField.lineBreakMode = .byTruncatingTail
+        labelField.translatesAutoresizingMaskIntoConstraints = false
+        labelField.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+
+        let valueField = NSTextField(labelWithString: value)
+        valueField.font = NSFont.systemFont(ofSize: 13, weight: .semibold)
+        valueField.textColor = valueColor
+        valueField.alignment = .right
+        valueField.lineBreakMode = .byTruncatingMiddle
+        valueField.translatesAutoresizingMaskIntoConstraints = false
+        valueField.setContentCompressionResistancePriority(.required, for: .horizontal)
+        valueField.setContentHuggingPriority(.required, for: .horizontal)
+
+        let spacer = NSView()
+        spacer.translatesAutoresizingMaskIntoConstraints = false
+        spacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        spacer.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+
+        let row = NSStackView(views: [iconView, labelField, spacer, valueField])
+        row.orientation = .horizontal
+        row.alignment = .centerY
+        row.spacing = 8
+        row.translatesAutoresizingMaskIntoConstraints = false
+
+        container.addSubview(row)
+        NSLayoutConstraint.activate([
+            row.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 14),
+            row.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -14),
+            row.topAnchor.constraint(equalTo: container.topAnchor, constant: 2),
+            row.bottomAnchor.constraint(equalTo: container.bottomAnchor, constant: -2),
+            iconView.widthAnchor.constraint(equalToConstant: 15),
+            iconView.heightAnchor.constraint(equalToConstant: 15),
+            container.heightAnchor.constraint(equalToConstant: 22),
+        ])
+
+        return container
+    }
+
+    private func headerItemView(label: String, icon: String, iconColor: NSColor) -> NSView {
+        let container = NSView(frame: NSRect(x: 0, y: 0, width: 340, height: 28))
+
+        let iconView = NSImageView()
+        iconView.image = symbolImage(icon)
+        iconView.contentTintColor = iconColor
+        iconView.translatesAutoresizingMaskIntoConstraints = false
+        iconView.setContentHuggingPriority(.required, for: .horizontal)
+        iconView.setContentCompressionResistancePriority(.required, for: .horizontal)
+
+        let labelField = NSTextField(labelWithString: label)
+        labelField.font = NSFont.systemFont(ofSize: 14, weight: .semibold)
+        labelField.textColor = NSColor.labelColor.withAlphaComponent(0.88)
+        labelField.lineBreakMode = .byTruncatingTail
+        labelField.translatesAutoresizingMaskIntoConstraints = false
+
+        let row = NSStackView(views: [iconView, labelField])
+        row.orientation = .horizontal
+        row.alignment = .centerY
+        row.spacing = 8
+        row.translatesAutoresizingMaskIntoConstraints = false
+
+        container.addSubview(row)
+        NSLayoutConstraint.activate([
+            row.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 14),
+            row.trailingAnchor.constraint(lessThanOrEqualTo: container.trailingAnchor, constant: -14),
+            row.topAnchor.constraint(equalTo: container.topAnchor, constant: 3),
+            row.bottomAnchor.constraint(equalTo: container.bottomAnchor, constant: -3),
+            iconView.widthAnchor.constraint(equalToConstant: 16),
+            iconView.heightAnchor.constraint(equalToConstant: 16),
+            container.heightAnchor.constraint(equalToConstant: 28),
+        ])
+
+        return container
     }
 
     @objc
@@ -218,13 +283,6 @@ final class StatusItemController: NSObject, NSMenuDelegate {
     @objc
     private func openSettingsFromMenu() {
         openSettings()
-    }
-
-    @objc
-    private func refreshNowFromMenu() {
-        Task { @MainActor in
-            await state.refreshStatus()
-        }
     }
 
     @objc
