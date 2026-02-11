@@ -10,6 +10,7 @@ from typing import Any
 
 from rich.markdown import Markdown
 from rich.panel import Panel
+from textual import events
 from textual.app import App, ComposeResult
 from textual.containers import Vertical
 from textual.message import Message
@@ -24,6 +25,14 @@ class AppConfig:
     user_id: str
     api_key: str | None = None
     session_id: str | None = None
+
+
+@dataclass(slots=True)
+class ChatEntry:
+    title: str
+    text: str
+    border_style: str
+    timestamp: str
 
 
 class SessionReady(Message):
@@ -103,6 +112,8 @@ class SkitterTuiApp(App[None]):
         self._stream_stop = asyncio.Event()
         self._last_attachments: list[dict[str, Any]] = []
         self._seen_message_ids: set[str] = set()
+        self._chat_entries: list[ChatEntry] = []
+        self._is_replaying = False
         self._state_path = self._resolve_state_path()
         self._saved_theme = self._load_saved_theme()
 
@@ -133,6 +144,10 @@ class SkitterTuiApp(App[None]):
         self._stream_stop.set()
         await self.api.aclose()
 
+    async def on_resize(self, event: events.Resize) -> None:
+        del event
+        self._replay_chat_entries()
+
     async def _bootstrap(self) -> None:
         try:
             if self._session_id:
@@ -147,6 +162,7 @@ class SkitterTuiApp(App[None]):
         self._session_id = message.session_id
         chat = self.query_one("#chat", RichLog)
         chat.clear()
+        self._chat_entries.clear()
         self._append_system(
             f"Connected as `{self.config.user_id}`\n"
             f"Session: `{message.session_id}`\n"
@@ -476,6 +492,7 @@ class SkitterTuiApp(App[None]):
     def action_clear_chat(self) -> None:
         chat = self.query_one("#chat", RichLog)
         chat.clear()
+        self._chat_entries.clear()
         self._append_system("Chat view cleared.")
 
     def _append_user(self, text: str) -> None:
@@ -505,17 +522,42 @@ class SkitterTuiApp(App[None]):
         self._append_panel("Error", text, border_style=self.PANEL_ERROR_STYLE)
 
     def _append_panel(self, title: str, text: str, border_style: str, timestamp: str | None = None) -> None:
-        chat = self.query_one("#chat", RichLog)
-        ts = timestamp or datetime.now().strftime("%H:%M:%S")
-        markdown = Markdown(text)
-        panel = Panel(
-            markdown,
-            title=f"{title} {ts}",
+        entry = ChatEntry(
+            title=title,
+            text=text,
             border_style=border_style,
+            timestamp=timestamp or datetime.now().strftime("%H:%M:%S"),
+        )
+        if not self._is_replaying:
+            self._chat_entries.append(entry)
+        self._render_chat_entry(entry)
+
+    def _render_chat_entry(self, entry: ChatEntry) -> None:
+        chat = self.query_one("#chat", RichLog)
+        # Keep one extra column of slack to avoid horizontal scrollbars after resizes.
+        panel_width = max(24, chat.size.width - 4)
+        panel = Panel(
+            Markdown(entry.text),
+            title=f"{entry.title} {entry.timestamp}",
+            border_style=entry.border_style,
             title_align="left",
+            width=panel_width,
         )
         chat.write(panel)
         chat.scroll_end(animate=False)
+
+    def _replay_chat_entries(self) -> None:
+        if not self._chat_entries:
+            return
+        chat = self.query_one("#chat", RichLog)
+        snapshot = list(self._chat_entries)
+        self._is_replaying = True
+        try:
+            chat.clear()
+            for entry in snapshot:
+                self._render_chat_entry(entry)
+        finally:
+            self._is_replaying = False
 
     def _format_timestamp(self, value: Any) -> str:
         if isinstance(value, str) and value:
