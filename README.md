@@ -76,7 +76,7 @@ SKITTER_API_KEY=replace-with-a-long-random-admin-key
 SKITTER_BOOTSTRAP_CODE=replace-with-a-one-time-setup-code
 ```
 
-Generate a bootstrap code, for example:
+Generate an API key and bootstrap code, for example:
 
 ```bash
 openssl rand -hex 24

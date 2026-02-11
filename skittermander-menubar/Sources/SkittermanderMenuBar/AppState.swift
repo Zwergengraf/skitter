@@ -215,7 +215,7 @@ final class AppState: ObservableObject {
         errorBanner = nil
 
         do {
-            _ = try await WhisperKit.download(
+            let folderURL = try await WhisperKit.download(
                 variant: model,
                 progressCallback: { [weak self] progress in
                     Task { @MainActor in
@@ -228,6 +228,7 @@ final class AppState: ObservableObject {
                     }
                 }
             )
+            settings.setWhisperModelFolder(folderURL.path, for: model)
             guard whisperDownloadRequestID == requestID else { return }
             whisperDownloadProgress = 1
             whisperDownloadStatusText = "Model \(model) downloaded."
@@ -409,8 +410,19 @@ final class AppState: ObservableObject {
             try await speechTranscriber.requestMicrophonePermission()
             draftPrefixBeforeTranscription = draft
             transcriptionStatusText = "Starting local Whisper…"
+            var folderPath = settings.whisperModelFolder(for: settings.whisperModel)
+            if folderPath == nil {
+                do {
+                    let discovered = try await WhisperKit.download(variant: settings.whisperModel)
+                    settings.setWhisperModelFolder(discovered.path, for: settings.whisperModel)
+                    folderPath = discovered.path
+                } catch {
+                    // Keep graceful failure path below; transcriber will report a clear "model not downloaded" message.
+                }
+            }
             try await speechTranscriber.startStreaming(
                 modelName: settings.whisperModel,
+                modelFolderPath: folderPath,
                 onStatus: { [weak self] status in
                     self?.transcriptionStatusText = status
                 },
@@ -449,7 +461,7 @@ final class AppState: ObservableObject {
         do {
             _ = try await speechTranscriber.stopStreaming()
         } catch {
-            setError(error)
+            // Stopping can race with stream teardown; ignore stop-time errors in UI.
         }
         isTranscribing = false
         transcriptionStatusText = ""

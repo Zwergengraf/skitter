@@ -856,7 +856,6 @@ Exclude:
 Output concise Markdown bullets under these headings (not all headings are necessary, include only relevant ones):
 ## Preferences
 ## Decisions
-## Setup Facts
 ## Open Loops
 Each bullet must be self-contained, explicit, and searchable.
                 """.strip())

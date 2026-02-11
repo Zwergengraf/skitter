@@ -24,6 +24,7 @@ enum SpeechTranscriberError: LocalizedError {
 final class SpeechTranscriber {
     private var whisperKit: WhisperKit?
     private var loadedModelName: String?
+    private var loadedModelFolderPath: String?
     private var captureTask: Task<Void, Never>?
     private var decodeTask: Task<Void, Never>?
     private var streamContinuation: AsyncThrowingStream<[Float], Error>.Continuation?
@@ -44,6 +45,7 @@ final class SpeechTranscriber {
 
     func startStreaming(
         modelName: String,
+        modelFolderPath: String?,
         onStatus: (@MainActor (String) -> Void)? = nil,
         onPartial: @escaping @MainActor (String) -> Void,
         onError: @escaping @MainActor (Error) -> Void
@@ -51,9 +53,16 @@ final class SpeechTranscriber {
         cancelRecording()
 
         await onStatus?("Loading local Whisper model (\(modelName))…")
-        let whisper = try await loadWhisperKitIfNeeded(modelName: modelName)
+        let whisper = try await loadWhisperKitIfNeeded(modelName: modelName, modelFolderPath: modelFolderPath)
         if whisper.modelState != .loaded {
-            try await whisper.loadModels()
+            do {
+                try await whisper.loadModels()
+            } catch {
+                if isModelUnavailable(error) {
+                    throw SpeechTranscriberError.modelNotDownloaded(modelName.trimmingCharacters(in: .whitespacesAndNewlines))
+                }
+                throw error
+            }
         }
         try await whisper.loadTokenizerIfNeeded()
         try await requestMicrophonePermission()
@@ -78,7 +87,7 @@ final class SpeechTranscriber {
                     self.appendSamples(chunk)
                 }
             } catch {
-                if !Task.isCancelled {
+                if !Task.isCancelled && self.isStreaming {
                     await onError(error)
                 }
             }
@@ -164,21 +173,24 @@ final class SpeechTranscriber {
         }
     }
 
-    private func loadWhisperKitIfNeeded(modelName: String) async throws -> WhisperKit {
+    private func loadWhisperKitIfNeeded(modelName: String, modelFolderPath: String?) async throws -> WhisperKit {
         let normalizedModel = modelName.trimmingCharacters(in: .whitespacesAndNewlines)
-        if let whisperKit, loadedModelName == normalizedModel {
+        let normalizedFolder = modelFolderPath?.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let whisperKit, loadedModelName == normalizedModel, loadedModelFolderPath == normalizedFolder {
             return whisperKit
         }
 
-        if let whisperKit, loadedModelName != normalizedModel {
+        if let whisperKit {
             await whisperKit.unloadModels()
             whisperKit.clearState()
             self.whisperKit = nil
             loadedModelName = nil
+            loadedModelFolderPath = nil
         }
 
         let config = WhisperKitConfig(
             model: normalizedModel.isEmpty ? nil : normalizedModel,
+            modelFolder: normalizedFolder,
             verbose: false,
             load: true,
             download: false
@@ -194,6 +206,7 @@ final class SpeechTranscriber {
         }
         whisperKit = instance
         loadedModelName = normalizedModel.isEmpty ? "tiny" : normalizedModel
+        loadedModelFolderPath = normalizedFolder
         return instance
     }
 
@@ -202,6 +215,7 @@ final class SpeechTranscriber {
         return message.contains("models unavailable")
             || message.contains("no models found")
             || message.contains("model not found")
+            || message.contains("model folder is not set")
     }
 
     private func transcribeIfNeeded(
@@ -250,7 +264,7 @@ final class SpeechTranscriber {
                 await onPartial(merged)
             }
         } catch {
-            if let onError {
+            if isStreaming, let onError {
                 await onError(error)
             }
         }
