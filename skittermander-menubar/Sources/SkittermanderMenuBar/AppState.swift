@@ -31,12 +31,17 @@ final class AppState: ObservableObject {
     @Published private(set) var isChatWindowVisible: Bool = false
     @Published private(set) var didInitialStatusCheck: Bool = false
     @Published private(set) var hasWorkingConnection: Bool = false
+    @Published private(set) var isTranscribing: Bool = false
+    @Published private(set) var isTranscriptionStarting: Bool = false
+    @Published private(set) var transcriptionStatusText: String = ""
 
     let settings: SettingsStore
     private let api: APIClient
+    private let speechTranscriber = SpeechTranscriber()
     private var pollTask: Task<Void, Never>?
     private var requestStartedAt: Date?
     private var lastModelFetchAt: Date?
+    private var draftPrefixBeforeTranscription: String = ""
 
     static let commands: [LocalCommand] = [
         LocalCommand(id: "help", name: "/help", usage: "/help", description: "Show available commands"),
@@ -66,9 +71,11 @@ final class AppState: ObservableObject {
     func stop() {
         pollTask?.cancel()
         pollTask = nil
+        stopTranscription(clearStatus: true)
     }
 
     func reconnect() async {
+        stopTranscription(clearStatus: true)
         sessionID = nil
         messages = []
         health = .checking
@@ -195,6 +202,9 @@ final class AppState: ObservableObject {
     }
 
     func sendCurrentDraft() async {
+        if isTranscribing {
+            stopTranscription(clearStatus: true)
+        }
         let text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else { return }
         draft = ""
@@ -251,6 +261,81 @@ final class AppState: ObservableObject {
         }
     }
 
+    func toggleTranscription() async {
+        if isTranscriptionStarting {
+            return
+        }
+        if isTranscribing {
+            await stopStreamingTranscription()
+            return
+        }
+        await startTranscription()
+    }
+
+    private func startTranscription() async {
+        guard !isTranscriptionStarting else { return }
+        isTranscriptionStarting = true
+        do {
+            try await speechTranscriber.requestMicrophonePermission()
+            draftPrefixBeforeTranscription = draft
+            transcriptionStatusText = "Starting local Whisper…"
+            try await speechTranscriber.startStreaming(
+                modelName: settings.whisperModel,
+                onStatus: { [weak self] status in
+                    self?.transcriptionStatusText = status
+                },
+                onPartial: { [weak self] partial in
+                    guard let self else { return }
+                    guard self.isTranscribing else { return }
+                    let trimmed = partial.trimmingCharacters(in: .whitespacesAndNewlines)
+                    if trimmed.isEmpty {
+                        self.draft = self.draftPrefixBeforeTranscription
+                        return
+                    }
+                    let needsSpace =
+                        !self.draftPrefixBeforeTranscription.isEmpty &&
+                        !self.draftPrefixBeforeTranscription.hasSuffix(" ") &&
+                        !self.draftPrefixBeforeTranscription.hasSuffix("\n")
+                    let separator = needsSpace ? " " : ""
+                    self.draft = self.draftPrefixBeforeTranscription + separator + trimmed
+                },
+                onError: { [weak self] error in
+                    guard let self else { return }
+                    self.stopTranscription(clearStatus: true)
+                    self.setError(error)
+                }
+            )
+            isTranscribing = true
+            isTranscriptionStarting = false
+            errorBanner = nil
+        } catch {
+            stopTranscription(clearStatus: true)
+            setError(error)
+        }
+    }
+
+    private func stopStreamingTranscription() async {
+        guard isTranscribing else { return }
+        do {
+            _ = try await speechTranscriber.stopStreaming()
+        } catch {
+            setError(error)
+        }
+        isTranscribing = false
+        transcriptionStatusText = ""
+        draftPrefixBeforeTranscription = ""
+    }
+
+    private func stopTranscription(clearStatus: Bool) {
+        speechTranscriber.cancelRecording()
+        isTranscribing = false
+        isTranscriptionStarting = false
+        draftPrefixBeforeTranscription = ""
+        if clearStatus {
+            transcriptionStatusText = ""
+        }
+    }
+
     func send(text: String) async {
         var sessionForRecovery: String?
         var sentAt = Date()
@@ -300,6 +385,8 @@ final class AppState: ObservableObject {
         isChatWindowVisible = visible
         if visible {
             unreadMessageCount = 0
+        } else if isTranscribing {
+            stopTranscription(clearStatus: true)
         }
     }
 

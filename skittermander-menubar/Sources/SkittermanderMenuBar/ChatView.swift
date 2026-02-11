@@ -205,6 +205,17 @@ struct ChatView: View {
                     .clipShape(RoundedRectangle(cornerRadius: 10))
 
                     Button(action: {
+                        Task { await state.toggleTranscription() }
+                    }) {
+                        Image(systemName: state.isTranscribing ? "stop.circle.fill" : (state.isTranscriptionStarting ? "waveform.circle.fill" : "mic.circle.fill"))
+                            .font(.title2)
+                            .foregroundStyle(state.isTranscribing ? .red : (state.isTranscriptionStarting ? .orange : .secondary))
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(state.isTranscriptionStarting)
+                    .help(state.isTranscribing ? "Stop voice transcription" : (state.isTranscriptionStarting ? "Starting voice transcription…" : "Start voice transcription"))
+
+                    Button(action: {
                         Task { await state.sendCurrentDraft() }
                     }) {
                         Image(systemName: "arrow.up.circle.fill")
@@ -215,7 +226,7 @@ struct ChatView: View {
                 }
 
                 HStack {
-                    Text("Enter: send | Shift+Enter: newline")
+                    Text(keyboardHintText)
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                     Spacer()
@@ -651,6 +662,19 @@ struct ChatView: View {
         case .other:
             return "Message"
         }
+    }
+
+    private var keyboardHintText: String {
+        if state.isTranscriptionStarting {
+            return "Starting local Whisper… | Enter: send | Shift+Enter: newline"
+        }
+        if state.isTranscribing {
+            return "Listening with local Whisper… Tap mic to stop | Enter: send | Shift+Enter: newline"
+        }
+        if !state.transcriptionStatusText.isEmpty {
+            return "\(state.transcriptionStatusText) | Enter: send | Shift+Enter: newline"
+        }
+        return "Enter: send | Shift+Enter: newline"
     }
 
     private func approvalDetailLine(for toolRun: ToolRunStatus) -> String {

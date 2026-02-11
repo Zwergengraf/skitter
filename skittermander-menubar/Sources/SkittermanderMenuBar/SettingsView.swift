@@ -34,6 +34,17 @@ struct SettingsView: View {
                     TextField("32000", value: $settings.contextTokenTarget, format: .number)
                         .textFieldStyle(.roundedBorder)
                 }
+                GridRow {
+                    Text("Whisper Model")
+                        .frame(width: 130, alignment: .leading)
+                    Picker("", selection: $settings.whisperModel) {
+                        ForEach(SettingsStore.whisperModelOptions, id: \.self) { model in
+                            Text(model).tag(model)
+                        }
+                    }
+                    .pickerStyle(.menu)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
             }
 
             Spacer(minLength: 8)
