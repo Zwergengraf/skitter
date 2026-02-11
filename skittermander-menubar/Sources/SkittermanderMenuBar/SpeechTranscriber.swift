@@ -4,6 +4,7 @@ import WhisperKit
 enum SpeechTranscriberError: LocalizedError {
     case microphonePermissionDenied
     case unavailable
+    case modelNotDownloaded(String)
     case noAudioInput
 
     var errorDescription: String? {
@@ -12,6 +13,8 @@ enum SpeechTranscriberError: LocalizedError {
             return "Microphone permission was denied."
         case .unavailable:
             return "Local Whisper transcription is unavailable."
+        case let .modelNotDownloaded(model):
+            return "Whisper model '\(model)' is not downloaded. Open Settings and download it first."
         case .noAudioInput:
             return "Microphone started, but no audio input was detected."
         }
@@ -177,12 +180,28 @@ final class SpeechTranscriber {
         let config = WhisperKitConfig(
             model: normalizedModel.isEmpty ? nil : normalizedModel,
             verbose: false,
-            load: true
+            load: true,
+            download: false
         )
-        let instance = try await WhisperKit(config)
+        let instance: WhisperKit
+        do {
+            instance = try await WhisperKit(config)
+        } catch {
+            if isModelUnavailable(error) {
+                throw SpeechTranscriberError.modelNotDownloaded(normalizedModel.isEmpty ? "tiny" : normalizedModel)
+            }
+            throw error
+        }
         whisperKit = instance
         loadedModelName = normalizedModel.isEmpty ? "tiny" : normalizedModel
         return instance
+    }
+
+    private func isModelUnavailable(_ error: Error) -> Bool {
+        let message = error.localizedDescription.lowercased()
+        return message.contains("models unavailable")
+            || message.contains("no models found")
+            || message.contains("model not found")
     }
 
     private func transcribeIfNeeded(

@@ -1,5 +1,6 @@
 import Foundation
 import AppKit
+import WhisperKit
 
 struct LocalCommand: Identifiable {
     let id: String
@@ -34,6 +35,9 @@ final class AppState: ObservableObject {
     @Published private(set) var isTranscribing: Bool = false
     @Published private(set) var isTranscriptionStarting: Bool = false
     @Published private(set) var transcriptionStatusText: String = ""
+    @Published private(set) var whisperDownloadInProgress: Bool = false
+    @Published private(set) var whisperDownloadProgress: Double = 0
+    @Published private(set) var whisperDownloadStatusText: String = ""
 
     let settings: SettingsStore
     private let api: APIClient
@@ -42,6 +46,7 @@ final class AppState: ObservableObject {
     private var requestStartedAt: Date?
     private var lastModelFetchAt: Date?
     private var draftPrefixBeforeTranscription: String = ""
+    private var whisperDownloadRequestID = UUID()
 
     static let commands: [LocalCommand] = [
         LocalCommand(id: "help", name: "/help", usage: "/help", description: "Show available commands"),
@@ -165,6 +170,56 @@ final class AppState: ObservableObject {
         } catch {
             setError(error)
         }
+    }
+
+    func downloadSelectedWhisperModel() async {
+        if whisperDownloadInProgress {
+            return
+        }
+        let model = settings.whisperModel.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !model.isEmpty else {
+            whisperDownloadStatusText = "Select a Whisper model first."
+            return
+        }
+
+        let requestID = UUID()
+        whisperDownloadRequestID = requestID
+        whisperDownloadInProgress = true
+        whisperDownloadProgress = 0
+        whisperDownloadStatusText = "Downloading \(model)…"
+        errorBanner = nil
+
+        do {
+            _ = try await WhisperKit.download(
+                variant: model,
+                progressCallback: { [weak self] progress in
+                    Task { @MainActor in
+                        guard let self else { return }
+                        guard self.whisperDownloadRequestID == requestID else { return }
+                        let fraction = min(1.0, max(0.0, progress.fractionCompleted))
+                        self.whisperDownloadProgress = fraction.isFinite ? fraction : 0
+                        let percent = Int((self.whisperDownloadProgress * 100).rounded())
+                        self.whisperDownloadStatusText = "Downloading \(model)… \(percent)%"
+                    }
+                }
+            )
+            guard whisperDownloadRequestID == requestID else { return }
+            whisperDownloadProgress = 1
+            whisperDownloadStatusText = "Model \(model) downloaded."
+        } catch {
+            guard whisperDownloadRequestID == requestID else { return }
+            whisperDownloadStatusText = "Download failed: \(error.localizedDescription)"
+            setError(error)
+        }
+        guard whisperDownloadRequestID == requestID else { return }
+        whisperDownloadInProgress = false
+    }
+
+    func clearWhisperDownloadStateForModelChange() {
+        whisperDownloadRequestID = UUID()
+        whisperDownloadInProgress = false
+        whisperDownloadProgress = 0
+        whisperDownloadStatusText = ""
     }
 
     func fetchAttachmentData(url: URL) async -> Data? {
@@ -536,6 +591,10 @@ final class AppState: ObservableObject {
         let lower = text.lowercased()
         if lower.contains("not yet approved") || lower.contains("admin has to approve it first") {
             errorBanner = "Your account is not yet approved. An admin has to approve it first."
+            return
+        }
+        if lower.contains("whisper model") && lower.contains("not downloaded") {
+            errorBanner = text
             return
         }
         if text.contains("HTTP 401") || text.localizedCaseInsensitiveContains("Invalid API key") {

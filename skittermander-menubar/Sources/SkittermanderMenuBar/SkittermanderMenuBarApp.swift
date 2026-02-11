@@ -48,18 +48,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
 
-        let root = SettingsView(settings: settings, onApply: { [weak self] in
-            Task { @MainActor in
-                await self?.state.reconnect()
+        let root = SettingsView(
+            settings: settings,
+            state: state,
+            onApply: { [weak self] in
+                Task { @MainActor in
+                    await self?.state.reconnect()
+                }
+            },
+            onDownloadWhisperModel: { [weak self] in
+                Task { @MainActor in
+                    await self?.state.downloadSelectedWhisperModel()
+                }
+            },
+            onClose: { [weak self] in
+                self?.settingsWindowController?.close()
             }
-        })
+        )
         let host = NSHostingController(rootView: root)
 
         let window = NSWindow(contentViewController: host)
         window.title = "Skittermander Settings"
         window.styleMask = [.titled, .closable, .miniaturizable]
-        window.setContentSize(NSSize(width: 620, height: 320))
-        window.minSize = NSSize(width: 560, height: 280)
+        window.setContentSize(NSSize(width: 680, height: 420))
+        window.minSize = NSSize(width: 620, height: 360)
         window.center()
 
         let controller = NSWindowController(window: window)

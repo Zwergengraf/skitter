@@ -37,12 +37,12 @@ final class SettingsStore: ObservableObject {
         self.apiKey = defaults.string(forKey: Self.apiKeyKey) ?? ""
         self.userID = defaults.string(forKey: Self.userIDKey) ?? "menubar.local"
         let savedTarget = defaults.integer(forKey: Self.contextTargetKey)
-        self.contextTokenTarget = savedTarget > 0 ? savedTarget : 32_000
-        let savedWhisperModel = defaults.string(forKey: Self.whisperModelKey) ?? "tiny"
+        self.contextTokenTarget = savedTarget > 0 ? savedTarget : 256_000
+        let savedWhisperModel = defaults.string(forKey: Self.whisperModelKey) ?? "medium"
         if Self.whisperModelOptions.contains(savedWhisperModel) {
             self.whisperModel = savedWhisperModel
         } else {
-            self.whisperModel = "tiny"
+            self.whisperModel = "medium"
         }
     }
 }

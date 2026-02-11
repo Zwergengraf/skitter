@@ -2,7 +2,10 @@ import SwiftUI
 
 struct SettingsView: View {
     @ObservedObject var settings: SettingsStore
+    @ObservedObject var state: AppState
     var onApply: () -> Void
+    var onDownloadWhisperModel: () -> Void
+    var onClose: () -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
@@ -37,7 +40,7 @@ struct SettingsView: View {
                 GridRow {
                     Text("Whisper Model")
                         .frame(width: 130, alignment: .leading)
-                    Picker("", selection: $settings.whisperModel) {
+                    Picker("Whisper Model", selection: $settings.whisperModel) {
                         ForEach(SettingsStore.whisperModelOptions, id: \.self) { model in
                             Text(model).tag(model)
                         }
@@ -47,15 +50,45 @@ struct SettingsView: View {
                 }
             }
 
+            VStack(alignment: .leading, spacing: 8) {
+                HStack {
+                    Text("Whisper Model Download")
+                        .font(.subheadline.weight(.semibold))
+                    Spacer()
+                    Button(state.whisperDownloadInProgress ? "Downloading…" : "Download Model") {
+                        onDownloadWhisperModel()
+                    }
+                    .disabled(state.whisperDownloadInProgress)
+                }
+                if state.whisperDownloadInProgress || state.whisperDownloadProgress > 0 {
+                    ProgressView(value: state.whisperDownloadProgress)
+                        .progressViewStyle(.linear)
+                }
+                if !state.whisperDownloadStatusText.isEmpty {
+                    Text(state.whisperDownloadStatusText)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
+                } else {
+                    Text("Download the selected model before using microphone transcription.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+
             Spacer(minLength: 8)
 
             HStack {
                 Spacer()
-                Button("Apply & Reconnect", action: onApply)
+                Button("Close", action: onClose)
+                Button("Save", action: onApply)
                     .keyboardShortcut(.defaultAction)
             }
         }
         .padding(18)
-        .frame(minWidth: 560, minHeight: 280)
+        .frame(minWidth: 620, minHeight: 360)
+        .onChange(of: settings.whisperModel) { _, _ in
+            state.clearWhisperDownloadStateForModelChange()
+        }
     }
 }
