@@ -253,7 +253,7 @@ class DiscordTransport(TransportAdapter):
         async def tools(interaction: discord.Interaction) -> None:
             await self._handle_command(interaction, "tools")
 
-        @self.tree.command(name="model", description="List available models or set the active model")
+        @self.tree.command(name="model", description="List models or set active model (provider/model)")
         async def model(interaction: discord.Interaction, model_name: Optional[str] = None) -> None:
             await self._handle_command(interaction, "model", extra={"model_name": model_name} if model_name else None)
 

@@ -23,7 +23,7 @@ A standalone terminal UI client for interacting with a remote Skittermander serv
   - `/schedule_pause <job_id>` pause a scheduled job
   - `/schedule_resume <job_id>` resume a scheduled job
   - `/tools` show tool approval settings
-  - `/model [name]` list/set active model
+  - `/model [provider/model]` list/set active model
   - `/pair` create pair code (authenticated)
   - `/info` show session usage info
   - `/session` show active session

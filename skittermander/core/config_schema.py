@@ -147,7 +147,7 @@ FIELDS: list[ConfigFieldSpec] = [
         category="models",
         label="Main model",
         field_type="string",
-        description="Model name from the models list.",
+        description="Model selector from the models list, format: provider/model.",
     ),
     ConfigFieldSpec(
         key="heartbeat_model",
@@ -155,7 +155,7 @@ FIELDS: list[ConfigFieldSpec] = [
         category="models",
         label="Heartbeat model",
         field_type="string",
-        description="Model name from the models list (optional).",
+        description="Model selector from the models list, format: provider/model (optional).",
     ),
     ConfigFieldSpec(
         key="embeddings_api_base",
@@ -512,6 +512,13 @@ def build_config_from_settings(current: Any) -> dict:
         if field.field_type == "list" and isinstance(value, str):
             value = [item.strip() for item in value.split(",") if item.strip()]
         _set_nested(data, field.path, value)
+    if hasattr(current, "providers"):
+        try:
+            providers = [provider.model_dump() for provider in current.providers]
+        except Exception:
+            providers = []
+        if providers:
+            data["providers"] = providers
     if hasattr(current, "models"):
         try:
             models = [model.model_dump(by_alias=True) for model in current.models]

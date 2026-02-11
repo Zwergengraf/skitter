@@ -167,6 +167,7 @@ async def execute_command(
         if not requested:
             active = await repo.get_active_session_by_scope(scope_type, scope_id)
             current = active.model if active and active.model else resolve_model_name(None, purpose="main")
+            current = resolve_model_name(current, purpose="main")
             lines = []
             for item in models:
                 suffix = " (active)" if current and item.name.lower() == current.lower() else ""
@@ -175,7 +176,8 @@ async def execute_command(
                 message="Available models:\n" + "\n".join(lines),
                 data={"models": [m.name for m in models], "current": current},
             )
-        match = next((m for m in models if m.name.lower() == requested.lower()), None)
+        requested_name = resolve_model_name(requested, purpose="main")
+        match = next((m for m in models if m.name.lower() == requested_name.lower()), None)
         if match is None:
             raise HTTPException(status_code=400, detail=f"Unknown model '{requested}'.")
         active = await repo.get_active_session_by_scope(scope_type, scope_id)

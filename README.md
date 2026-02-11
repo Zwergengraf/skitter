@@ -94,9 +94,10 @@ openssl rand -hex 24
 
 At minimum, set:
 
-- `models` (name, model_id, api_base, api_key, token costs)
-- `main_model`
-- `heartbeat_model`
+- `providers` (`name`, `api_base`, `api_key`)
+- `models` (`name`, `provider`, `model_id`, token costs)
+- `main_model` in `provider/model` format (for example `openai/gpt-5-mini`)
+- `heartbeat_model` in `provider/model` format
 - `database.url` (if not using default)
 - `discord.token` (if using Discord transport)
 

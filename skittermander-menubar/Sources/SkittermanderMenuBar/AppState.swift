@@ -62,7 +62,7 @@ final class AppState: ObservableObject {
         LocalCommand(id: "schedule_pause", name: "/schedule_pause", usage: "/schedule_pause <job_id>", description: "Pause a scheduled job"),
         LocalCommand(id: "schedule_resume", name: "/schedule_resume", usage: "/schedule_resume <job_id>", description: "Resume a scheduled job"),
         LocalCommand(id: "tools", name: "/tools", usage: "/tools", description: "Show tool approval settings"),
-        LocalCommand(id: "model", name: "/model", usage: "/model [model_name]", description: "List/set active model"),
+        LocalCommand(id: "model", name: "/model", usage: "/model [provider/model]", description: "List/set active model"),
         LocalCommand(id: "pair", name: "/pair", usage: "/pair", description: "Create a pair code"),
         LocalCommand(id: "info", name: "/info", usage: "/info", description: "Show session usage info"),
     ]

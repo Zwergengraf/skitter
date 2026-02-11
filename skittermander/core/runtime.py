@@ -37,7 +37,7 @@ from .graph import (
     set_current_user_id,
 )
 from .models import AgentResponse, Attachment, MessageEnvelope, StreamEvent
-from .llm import build_llm, resolve_model, resolve_model_name
+from .llm import build_llm, list_models, resolve_model, resolve_model_name
 from .prompting import build_system_prompt
 from .usage import collect_usage, record_usage
 from .run_limits import RunBudgetUsageCallback, RunLimitsState, reset_current_run_limits, set_current_run_limits
@@ -180,7 +180,7 @@ class AgentRuntime:
     async def handle_message(self, session_id: str, envelope: MessageEnvelope) -> AgentResponse:
         if not envelope.text and not envelope.command and not envelope.attachments:
             return AgentResponse(text="")
-        if not settings.models:
+        if not list_models():
             return AgentResponse(text="LLM is not configured. Define at least one model in config.yaml.")
 
         content, is_command, attachments_meta = self._prepare_envelope_content(envelope)
@@ -638,7 +638,7 @@ class AgentRuntime:
                 latest_user_text = self._message_content_to_text(msg.content)
                 if latest_user_text:
                     break
-        if not settings.models:
+        if not list_models():
             return (
                 f"LIMIT_REACHED ({reason}): {detail}. "
                 "I stopped execution for safety. Please refine the request or split it into smaller steps."
@@ -718,7 +718,7 @@ class AgentRuntime:
         if not lines:
             return previous_summary.strip()
         transcript = "\n".join(lines)
-        if not settings.models:
+        if not list_models():
             merged = f"{previous_summary.strip()}\n{transcript}".strip()
             return merged[:4000]
         llm = build_llm(model_name=model_name, purpose="main")
@@ -832,7 +832,7 @@ class AgentRuntime:
             transcript_lines.append(f"{role}: {content}")
         transcript = "\n".join(transcript_lines)
 
-        if not settings.models:
+        if not list_models():
             return transcript
 
         llm = build_llm()

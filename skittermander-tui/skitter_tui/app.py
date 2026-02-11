@@ -382,7 +382,7 @@ class SkitterTuiApp(App[None]):
                 "- `/schedule_pause <job_id>` pause scheduled job\n"
                 "- `/schedule_resume <job_id>` resume scheduled job\n"
                 "- `/tools` show tool approval config\n"
-                "- `/model [name]` list or set model\n"
+                "- `/model [provider/model]` list or set model\n"
                 "- `/pair` create pairing code (authenticated)\n"
                 "- `/info` show session usage info\n"
                 "- `/session` show current session id\n"

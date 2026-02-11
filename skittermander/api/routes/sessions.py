@@ -16,7 +16,7 @@ from ..schemas import (
     SessionOut,
     SessionToolRunOut,
 )
-from ...core.llm import list_models
+from ...core.llm import list_models, resolve_model_name
 from ...core.config import settings
 from ...core.conversation_scope import private_scope_id
 from ...core.models import StreamEvent
@@ -243,9 +243,10 @@ async def set_session_model(
     if not available:
         raise HTTPException(status_code=400, detail="No models configured")
 
+    requested_name = resolve_model_name(payload.model_name, purpose="main")
     selected = None
     for model in available:
-        if model.name.lower() == payload.model_name.lower():
+        if model.name.lower() == requested_name.lower():
             selected = model.name
             break
     if selected is None:

@@ -338,15 +338,18 @@ async def main() -> None:
                 current = active.model if active and active.model else None
                 if current is None:
                     current = resolve_model_name(None, purpose="main")
+                else:
+                    current = resolve_model_name(current, purpose="main")
                 lines = []
                 for item in models:
                     suffix = " (active)" if current and item.name.lower() == current.lower() else ""
                     lines.append(f"- {item.name}{suffix}")
                 await transport.send_message(envelope.channel_id, "Available models:\n" + "\n".join(lines))
                 return True
+            requested_name = resolve_model_name(str(requested), purpose="main")
             match = None
             for item in models:
-                if item.name.lower() == str(requested).lower():
+                if item.name.lower() == requested_name.lower():
                     match = item
                     break
             if match is None:
