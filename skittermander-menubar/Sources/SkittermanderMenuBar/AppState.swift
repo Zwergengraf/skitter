@@ -108,12 +108,18 @@ final class AppState: ObservableObject {
     }
 
     func ensureSession(forceNew: Bool = false, syncWithServer: Bool = false) async throws -> String {
-        if let sessionID, !forceNew, !syncWithServer {
-            return sessionID
+        if !forceNew, let currentID = sessionID {
+            if syncWithServer {
+                let synced = try await api.sessionDetail(sessionID: currentID)
+                applySyncedMessages(synced)
+            }
+            return currentID
         }
+
         let id = try await api.createOrResumeSession(origin: "menubar", reuseActive: !forceNew)
         let shouldLoadHistory = id != sessionID
         sessionID = id
+
         if shouldLoadHistory || syncWithServer {
             let synced = try await api.sessionDetail(sessionID: id)
             if shouldLoadHistory {
@@ -300,7 +306,7 @@ final class AppState: ObservableObject {
     private func pollLoop() async {
         while !Task.isCancelled {
             await refreshStatus()
-            let delay = isSending ? 1_000_000_000 : 5_000_000_000
+            let delay = isSending ? 1_000_000_000 : 8_000_000_000
             try? await Task.sleep(nanoseconds: UInt64(delay))
         }
     }
@@ -326,7 +332,8 @@ final class AppState: ObservableObject {
 
         var activeSessionID: String?
         do {
-            let id = try await ensureSession(forceNew: false, syncWithServer: !isSending)
+            let shouldSyncMessages = isChatWindowVisible && !isSending
+            let id = try await ensureSession(forceNew: false, syncWithServer: shouldSyncMessages)
             activeSessionID = id
             let snapshot = try await api.sessionSnapshot(sessionID: id)
             contextTokens = snapshot.contextTokens
@@ -347,14 +354,6 @@ final class AppState: ObservableObject {
             lastError = error
         }
 
-        var pendingCount = 0
-        do {
-            pendingCount = try await api.pendingToolCount()
-            anySuccess = true
-        } catch {
-            lastError = error
-        }
-
         if let activeSessionID {
             do {
                 pendingToolApprovals = try await api.pendingToolRuns(sessionID: activeSessionID)
@@ -367,6 +366,7 @@ final class AppState: ObservableObject {
             pendingToolApprovals = []
         }
 
+        let pendingCount = pendingToolApprovals.count
         if isSending {
             activity = .thinking
         } else if pendingCount > 0 {
