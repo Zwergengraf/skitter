@@ -26,6 +26,13 @@ class AuthUser:
     approved: bool
 
 
+@dataclass(slots=True)
+class CommandResult:
+    ok: bool
+    message: str
+    data: dict[str, Any]
+
+
 class SkitterApiClient:
     def __init__(self, api_url: str, api_key: str | None = None, timeout: float = 180.0) -> None:
         base = api_url.rstrip("/")
@@ -104,6 +111,32 @@ class SkitterApiClient:
         response = await self._request("GET", "/v1/auth/me", requires_auth=True)
         payload = response.json()
         return self._parse_auth_user(payload)
+
+    async def execute_command(
+        self,
+        *,
+        command: str,
+        args: dict[str, Any] | None = None,
+        origin: str = "tui",
+    ) -> CommandResult:
+        response = await self._request(
+            "POST",
+            "/v1/commands/execute",
+            json={
+                "command": command,
+                "args": args or {},
+                "origin": origin,
+            },
+            requires_auth=True,
+        )
+        payload = response.json()
+        if not isinstance(payload, dict):
+            raise ApiError("Invalid /v1/commands/execute response payload")
+        return CommandResult(
+            ok=bool(payload.get("ok", True)),
+            message=str(payload.get("message") or ""),
+            data=payload.get("data") if isinstance(payload.get("data"), dict) else {},
+        )
 
     async def create_session(
         self,

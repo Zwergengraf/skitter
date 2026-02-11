@@ -302,6 +302,21 @@ struct APIClient {
         return payload.toDomain()
     }
 
+    func executeCommand(
+        command: String,
+        args: [String: String] = [:],
+        origin: String = "menubar"
+    ) async throws -> CommandResult {
+        let body = CommandExecuteBody(command: command, args: args, origin: origin)
+        let payload: CommandExecutePayload = try await requestJSON(
+            path: "/v1/commands/execute",
+            method: "POST",
+            body: body,
+            requiresAPIKey: true
+        )
+        return CommandResult(ok: payload.ok, message: payload.message, data: payload.data)
+    }
+
     private func requestJSON<T: Decodable, B: Encodable>(
         path: String,
         method: String,
@@ -530,4 +545,16 @@ private struct AuthUserPayload: Decodable {
     func toDomain() -> AuthUser {
         AuthUser(id: id, displayName: display_name, approved: approved)
     }
+}
+
+private struct CommandExecuteBody: Encodable {
+    let command: String
+    let args: [String: String]
+    let origin: String
+}
+
+private struct CommandExecutePayload: Decodable {
+    let ok: Bool
+    let message: String
+    let data: [String: JSONValue]?
 }

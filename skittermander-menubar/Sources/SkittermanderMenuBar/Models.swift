@@ -170,3 +170,9 @@ struct ToolRunStatus {
         }
     }
 }
+
+struct CommandResult {
+    let ok: Bool
+    let message: String
+    let data: [String: JSONValue]?
+}

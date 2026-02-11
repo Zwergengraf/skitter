@@ -316,6 +316,15 @@ async def main() -> None:
             lines = [f"{j['id']} | {j['name']} | {j['cron']} | {'on' if j['enabled'] else 'off'}" for j in jobs]
             await transport.send_message(envelope.channel_id, "Scheduled jobs:\n" + "\n".join(lines))
             return True
+        if envelope.command == "tools":
+            tool_list = [item.strip() for item in settings.tool_approval_tools.split(",") if item.strip()]
+            mode = "required" if settings.tool_approval_required else "optional"
+            text = (
+                f"Tool approvals are {mode}.\n"
+                f"Configured approval tools ({len(tool_list)}): {', '.join(tool_list) if tool_list else '(none)'}"
+            )
+            await transport.send_message(envelope.channel_id, text)
+            return True
         if envelope.command == "model":
             requested = envelope.metadata.get("model_name") if envelope.metadata else None
             models = list_models()

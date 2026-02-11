@@ -121,7 +121,6 @@ class SkitterTuiApp(App[None]):
         self._last_attachments: list[dict[str, Any]] = []
         self._seen_message_ids: set[str] = set()
         self._chat_entries: list[ChatEntry] = []
-        self._is_replaying = False
         self._state_path = self._resolve_state_path()
         self._persisted_state = self._load_state()
         saved_theme = self._persisted_state.get("theme")
@@ -144,7 +143,7 @@ class SkitterTuiApp(App[None]):
             yield Static("Connecting...", id="status")
             yield RichLog(id="chat", highlight=True, markup=True, wrap=True)
             yield Input(
-                placeholder="Type a message. Commands: /new /session /whoami /bootstrap /pair /token /attachments /download /help /clear /quit",
+                placeholder="Type a message. Commands: /new /memory_reindex /memory_search /schedule_list /model /pair /info /help",
                 id="input",
             )
         yield Footer()
@@ -375,11 +374,21 @@ class SkitterTuiApp(App[None]):
         if cmd == "/help":
             self._append_system(
                 "Commands:\n"
-                "- `/new` create a new session\n"
+                "- `/new` start a new session\n"
+                "- `/memory_reindex` rebuild memory embeddings\n"
+                "- `/memory_search <query>` semantic memory search\n"
+                "- `/schedule_list` list scheduled jobs\n"
+                "- `/schedule_delete <job_id>` delete scheduled job\n"
+                "- `/schedule_pause <job_id>` pause scheduled job\n"
+                "- `/schedule_resume <job_id>` resume scheduled job\n"
+                "- `/tools` show tool approval config\n"
+                "- `/model [name]` list or set model\n"
+                "- `/pair` create pairing code (authenticated)\n"
+                "- `/info` show session usage info\n"
                 "- `/session` show current session id\n"
                 "- `/whoami` show authenticated user info\n"
                 "- `/bootstrap <setup_code> <display_name>` first-time account setup\n"
-                "- `/pair <pair_code>` pair this client to an existing account\n"
+                "- `/pair <pair_code>` pair this client to an existing account (if not authenticated)\n"
                 "- `/token <access_token>` set access token manually\n"
                 "- `/logout` clear access token and disconnect\n"
                 "- `/attachments` list last assistant attachments\n"
@@ -448,10 +457,16 @@ class SkitterTuiApp(App[None]):
             return
         if cmd == "/pair":
             pair_code = arg.strip()
-            if not pair_code:
+            if pair_code:
+                if self.api.has_token:
+                    self._append_system("Usage: `/pair` to generate a pair code while authenticated.")
+                    return
+                await self._run_pair_command(pair_code)
+                return
+            if not self.api.has_token:
                 self._append_system("Usage: `/pair <pair_code>`")
                 return
-            await self._run_pair_command(pair_code)
+            await self._run_remote_command("pair")
             return
         if cmd == "/clear":
             self.action_clear_chat()
@@ -460,7 +475,62 @@ class SkitterTuiApp(App[None]):
             if self._busy:
                 self._append_system("Cannot create a new session while a request is running.")
                 return
-            await self.action_new_session()
+            result = await self._run_remote_command("new")
+            if result is None:
+                return
+            new_session_id = str(result.data.get("session_id") or "").strip()
+            if new_session_id:
+                self.post_message(SessionReady(new_session_id, created=True))
+            return
+        if cmd == "/memory_reindex":
+            await self._run_remote_command("memory_reindex")
+            return
+        if cmd == "/memory_search":
+            query = arg.strip()
+            if not query:
+                self._append_system("Usage: `/memory_search <query>`")
+                return
+            await self._run_remote_command("memory_search", {"query": query})
+            return
+        if cmd == "/schedule_list":
+            await self._run_remote_command("schedule_list")
+            return
+        if cmd == "/schedule_delete":
+            job_id = arg.strip()
+            if not job_id:
+                self._append_system("Usage: `/schedule_delete <job_id>`")
+                return
+            await self._run_remote_command("schedule_delete", {"job_id": job_id})
+            return
+        if cmd == "/schedule_pause":
+            job_id = arg.strip()
+            if not job_id:
+                self._append_system("Usage: `/schedule_pause <job_id>`")
+                return
+            await self._run_remote_command("schedule_pause", {"job_id": job_id})
+            return
+        if cmd == "/schedule_resume":
+            job_id = arg.strip()
+            if not job_id:
+                self._append_system("Usage: `/schedule_resume <job_id>`")
+                return
+            await self._run_remote_command("schedule_resume", {"job_id": job_id})
+            return
+        if cmd == "/tools":
+            await self._run_remote_command("tools")
+            return
+        if cmd == "/model":
+            name = arg.strip()
+            args = {"model_name": name} if name else None
+            result = await self._run_remote_command("model", args)
+            if result is None:
+                return
+            new_session_id = str(result.data.get("session_id") or "").strip()
+            if new_session_id and new_session_id != self._session_id:
+                self.post_message(SessionReady(new_session_id, created=False))
+            return
+        if cmd == "/info":
+            await self._run_remote_command("info")
             return
         self._append_system(f"Unknown command: `{cmd}`. Use `/help`.")
 
@@ -627,8 +697,7 @@ class SkitterTuiApp(App[None]):
             border_style=border_style,
             timestamp=timestamp or datetime.now().strftime("%H:%M:%S"),
         )
-        if not self._is_replaying:
-            self._chat_entries.append(entry)
+        self._chat_entries.append(entry)
         self._render_chat_entry(entry)
 
     def _render_chat_entry(self, entry: ChatEntry) -> None:
@@ -650,13 +719,9 @@ class SkitterTuiApp(App[None]):
             return
         chat = self.query_one("#chat", RichLog)
         snapshot = list(self._chat_entries)
-        self._is_replaying = True
-        try:
-            chat.clear()
-            for entry in snapshot:
-                self._render_chat_entry(entry)
-        finally:
-            self._is_replaying = False
+        chat.clear()
+        for entry in snapshot:
+            self._render_chat_entry(entry)
 
     def _format_timestamp(self, value: Any) -> str:
         if isinstance(value, str) and value:
@@ -715,6 +780,18 @@ class SkitterTuiApp(App[None]):
         self._session_id = None
         self._append_system(f"Paired as `{user.display_name}`. Reconnecting…")
         self.run_worker(self._bootstrap(), name="bootstrap", group="bootstrap", exclusive=True)
+
+    async def _run_remote_command(self, command: str, args: dict[str, Any] | None = None):
+        try:
+            result = await self.api.execute_command(command=command, args=args, origin="tui")
+        except Exception as exc:
+            self._append_error(f"Command failed: {exc}")
+            return None
+        if result.message:
+            self._append_system(result.message)
+        else:
+            self._append_system("Command completed.")
+        return result
 
     def _resolve_state_path(self) -> Path:
         config_home = os.environ.get("XDG_CONFIG_HOME", "").strip()

@@ -15,11 +15,21 @@ A standalone terminal UI client for interacting with a remote Skittermander serv
 - Assistant attachments (files/images) shown in chat with download links.
 - `/download <index> [target_path]` saves the last assistant attachment locally.
 - Interactive commands:
-  - `/new` create a new session
+  - `/new` start a new session (same behavior as Discord `/new`)
+  - `/memory_reindex` rebuild memory embeddings
+  - `/memory_search <query>` semantic memory search
+  - `/schedule_list` list scheduled jobs
+  - `/schedule_delete <job_id>` delete a scheduled job
+  - `/schedule_pause <job_id>` pause a scheduled job
+  - `/schedule_resume <job_id>` resume a scheduled job
+  - `/tools` show tool approval settings
+  - `/model [name]` list/set active model
+  - `/pair` create pair code (authenticated)
+  - `/info` show session usage info
   - `/session` show active session
   - `/whoami` show authenticated user
   - `/bootstrap <setup_code> <display_name>` first-time setup
-  - `/pair <pair_code>` pair with existing account (e.g. via Discord `/pair`)
+  - `/pair <pair_code>` pair this TUI to existing account when unauthenticated
   - `/token <access_token>` set token manually
   - `/logout` clear token
   - `/attachments` list attachments from the last assistant reply

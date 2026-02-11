@@ -48,15 +48,23 @@ final class AppState: ObservableObject {
     private var requestStartedAt: Date?
     private var lastModelFetchAt: Date?
     private var lastAuthUserFetchAt: Date?
+    private var localOverlayMessages: [ChatMessage] = []
     private var draftPrefixBeforeTranscription: String = ""
     private var whisperDownloadRequestID = UUID()
 
     static let commands: [LocalCommand] = [
         LocalCommand(id: "help", name: "/help", usage: "/help", description: "Show available commands"),
-        LocalCommand(id: "new", name: "/new", usage: "/new", description: "Start a new menubar session"),
-        LocalCommand(id: "status", name: "/status", usage: "/status", description: "Show current connection/session status"),
-        LocalCommand(id: "reconnect", name: "/reconnect", usage: "/reconnect", description: "Reconnect and reload session"),
-        LocalCommand(id: "memory", name: "/memory", usage: "/memory", description: "Show memory guidance"),
+        LocalCommand(id: "new", name: "/new", usage: "/new", description: "Start a new session"),
+        LocalCommand(id: "memory_reindex", name: "/memory_reindex", usage: "/memory_reindex", description: "Rebuild memory embeddings"),
+        LocalCommand(id: "memory_search", name: "/memory_search", usage: "/memory_search <query>", description: "Search semantic memory"),
+        LocalCommand(id: "schedule_list", name: "/schedule_list", usage: "/schedule_list", description: "List scheduled jobs"),
+        LocalCommand(id: "schedule_delete", name: "/schedule_delete", usage: "/schedule_delete <job_id>", description: "Delete a scheduled job"),
+        LocalCommand(id: "schedule_pause", name: "/schedule_pause", usage: "/schedule_pause <job_id>", description: "Pause a scheduled job"),
+        LocalCommand(id: "schedule_resume", name: "/schedule_resume", usage: "/schedule_resume <job_id>", description: "Resume a scheduled job"),
+        LocalCommand(id: "tools", name: "/tools", usage: "/tools", description: "Show tool approval settings"),
+        LocalCommand(id: "model", name: "/model", usage: "/model [model_name]", description: "List/set active model"),
+        LocalCommand(id: "pair", name: "/pair", usage: "/pair", description: "Create a pair code"),
+        LocalCommand(id: "info", name: "/info", usage: "/info", description: "Show session usage info"),
     ]
 
     init(settings: SettingsStore) {
@@ -86,6 +94,7 @@ final class AppState: ObservableObject {
         stopTranscription(clearStatus: true)
         sessionID = nil
         messages = []
+        localOverlayMessages = []
         health = .checking
         activity = .idle
         progressStatusText = ""
@@ -105,6 +114,7 @@ final class AppState: ObservableObject {
         lastModelFetchAt = nil
         sessionID = nil
         messages = []
+        localOverlayMessages = []
         pendingToolApprovals = []
         decidingToolRunIDs = []
         unreadMessageCount = 0
@@ -153,8 +163,12 @@ final class AppState: ObservableObject {
             return currentID
         }
 
+        let previousSessionID = sessionID
         let id = try await api.createOrResumeSession(origin: "menubar", reuseActive: !forceNew)
-        let shouldLoadHistory = id != sessionID
+        let shouldLoadHistory = id != previousSessionID
+        if shouldLoadHistory {
+            localOverlayMessages.removeAll()
+        }
         sessionID = id
 
         if shouldLoadHistory || syncWithServer {
@@ -350,6 +364,7 @@ final class AppState: ObservableObject {
         let parts = text.split(separator: " ", maxSplits: 1, omittingEmptySubsequences: true)
         guard let rawCommand = parts.first else { return false }
         let command = rawCommand.lowercased()
+        let argument = parts.count > 1 ? String(parts[1]).trimmingCharacters(in: .whitespacesAndNewlines) : ""
         switch command {
         case "/help":
             appendLocalMessage(
@@ -360,36 +375,99 @@ final class AppState: ObservableObject {
             )
             return true
         case "/new":
-            do {
-                _ = try await ensureSession(forceNew: true)
-                appendLocalMessage("Started a new menubar session.")
-            } catch {
-                setError(error)
+            if let result = await runRemoteCommand(name: "new") {
+                if let data = result.data,
+                   let sessionID = jsonString(data["session_id"]),
+                   !sessionID.isEmpty
+                {
+                    self.sessionID = nil
+                    do {
+                        _ = try await ensureSession(forceNew: false, syncWithServer: true)
+                    } catch {
+                        setError(error)
+                    }
+                }
             }
             return true
-        case "/status":
-            let session = sessionID ?? "(none)"
-            appendLocalMessage(
-                """
-                Status: \(health.label), \(activity.label)
-                Session: \(session)
-                Model: \(modelName)
-                Tokens: \(totalTokens)
-                Cost: $\(String(format: "%.4f", sessionCost))
-                """
-            )
+        case "/memory_reindex":
+            _ = await runRemoteCommand(name: "memory_reindex")
             return true
-        case "/reconnect":
-            await reconnect()
-            appendLocalMessage("Reconnected.")
+        case "/memory_search":
+            guard !argument.isEmpty else {
+                appendLocalMessage("Usage: /memory_search <query>")
+                return true
+            }
+            _ = await runRemoteCommand(name: "memory_search", args: ["query": argument])
             return true
-        case "/memory":
-            appendLocalMessage("Memory operations are available in the admin web UI.")
+        case "/schedule_list":
+            _ = await runRemoteCommand(name: "schedule_list")
+            return true
+        case "/schedule_delete":
+            guard !argument.isEmpty else {
+                appendLocalMessage("Usage: /schedule_delete <job_id>")
+                return true
+            }
+            _ = await runRemoteCommand(name: "schedule_delete", args: ["job_id": argument])
+            return true
+        case "/schedule_pause":
+            guard !argument.isEmpty else {
+                appendLocalMessage("Usage: /schedule_pause <job_id>")
+                return true
+            }
+            _ = await runRemoteCommand(name: "schedule_pause", args: ["job_id": argument])
+            return true
+        case "/schedule_resume":
+            guard !argument.isEmpty else {
+                appendLocalMessage("Usage: /schedule_resume <job_id>")
+                return true
+            }
+            _ = await runRemoteCommand(name: "schedule_resume", args: ["job_id": argument])
+            return true
+        case "/tools":
+            _ = await runRemoteCommand(name: "tools")
+            return true
+        case "/model":
+            let args = argument.isEmpty ? [:] : ["model_name": argument]
+            _ = await runRemoteCommand(name: "model", args: args)
+            await refreshStatus()
+            return true
+        case "/pair":
+            if !argument.isEmpty && !hasWorkingConnection {
+                await pairAccount(pairCode: argument)
+                return true
+            }
+            _ = await runRemoteCommand(name: "pair")
+            return true
+        case "/info":
+            _ = await runRemoteCommand(name: "info")
             return true
         default:
             appendLocalMessage("Unknown command: \(command). Use /help.")
             return true
         }
+    }
+
+    private func runRemoteCommand(name: String, args: [String: String] = [:]) async -> CommandResult? {
+        do {
+            let result = try await api.executeCommand(command: name, args: args, origin: "menubar")
+            if !result.message.isEmpty {
+                appendLocalMessage(result.message)
+            } else {
+                appendLocalMessage("Command completed.")
+            }
+            return result
+        } catch {
+            setError(error)
+            return nil
+        }
+    }
+
+    private func jsonString(_ value: JSONValue?) -> String? {
+        guard let value else { return nil }
+        if case let .string(text) = value {
+            return text
+        }
+        return nil
     }
 
     func toggleTranscription() async {
@@ -663,11 +741,16 @@ final class AppState: ObservableObject {
             createdAt: Date(),
             attachments: []
         )
+        localOverlayMessages.append(message)
+        if localOverlayMessages.count > 200 {
+            localOverlayMessages.removeFirst(localOverlayMessages.count - 200)
+        }
         messages.append(message)
     }
 
     private func applySyncedMessages(_ synced: [ChatMessage]) {
-        if messages == synced {
+        let merged = mergedMessagesWithOverlay(synced)
+        if messages == merged {
             return
         }
         if !isChatWindowVisible {
@@ -679,7 +762,25 @@ final class AppState: ObservableObject {
                 unreadMessageCount += newAssistantCount
             }
         }
-        messages = synced
+        messages = merged
+    }
+
+    private func mergedMessagesWithOverlay(_ synced: [ChatMessage]) -> [ChatMessage] {
+        guard !localOverlayMessages.isEmpty else {
+            return synced
+        }
+        let existingIDs = Set(synced.map(\.id))
+        var merged = synced
+        for message in localOverlayMessages where !existingIDs.contains(message.id) {
+            merged.append(message)
+        }
+        merged.sort { lhs, rhs in
+            if lhs.createdAt != rhs.createdAt {
+                return lhs.createdAt < rhs.createdAt
+            }
+            return lhs.id < rhs.id
+        }
+        return merged
     }
 
     private func setError(_ error: Error?) {
@@ -774,7 +875,7 @@ final class AppState: ObservableObject {
                         let newAssistantMessages = syncedMessages.filter { $0.role == .assistant && !knownAssistantIDs.contains($0.id) }
                         unreadMessageCount += newAssistantMessages.count
                     }
-                    messages = syncedMessages
+                    applySyncedMessages(syncedMessages)
                 }
                 let hasAssistantReply = syncedMessages.contains { message in
                     message.role == .assistant && message.createdAt >= sentAt

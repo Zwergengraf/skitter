@@ -400,3 +400,16 @@ class ConfigResponse(BaseModel):
 
 class ConfigUpdate(BaseModel):
     values: dict[str, Any]
+
+
+class CommandExecuteRequest(BaseModel):
+    command: str
+    args: dict[str, Any] = Field(default_factory=dict)
+    origin: str = "api"
+    user_id: str | None = None
+
+
+class CommandExecuteOut(BaseModel):
+    ok: bool = True
+    message: str
+    data: dict[str, Any] = Field(default_factory=dict)
