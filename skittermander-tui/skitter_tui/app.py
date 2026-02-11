@@ -26,6 +26,7 @@ class AppConfig:
     access_token: str | None = None
     device_name: str | None = None
     session_id: str | None = None
+    prefer_saved_token: bool = True
 
 
 @dataclass(slots=True)
@@ -122,7 +123,19 @@ class SkitterTuiApp(App[None]):
         self._chat_entries: list[ChatEntry] = []
         self._is_replaying = False
         self._state_path = self._resolve_state_path()
-        self._saved_theme = self._load_saved_theme()
+        self._persisted_state = self._load_state()
+        saved_theme = self._persisted_state.get("theme")
+        self._saved_theme = saved_theme if isinstance(saved_theme, str) and saved_theme.strip() else None
+        saved_token = self._persisted_state.get("access_token")
+        if (
+            self.config.prefer_saved_token
+            and isinstance(saved_token, str)
+            and saved_token.strip()
+        ):
+            self.config.access_token = saved_token.strip()
+            self.api.set_token(self.config.access_token)
+        elif self.config.access_token:
+            self._save_access_token(self.config.access_token)
         self._auth_user: AuthUser | None = None
 
     def compose(self) -> ComposeResult:
@@ -405,6 +418,7 @@ class SkitterTuiApp(App[None]):
                 return
             self.api.set_token(token)
             self.config.access_token = token
+            self._save_access_token(token)
             self._session_id = None
             self._auth_user = None
             self._append_system("Access token updated. Reconnecting...")
@@ -413,6 +427,7 @@ class SkitterTuiApp(App[None]):
         if cmd == "/logout":
             self.api.set_token(None)
             self.config.access_token = None
+            self._save_access_token(None)
             self._session_id = None
             self._auth_user = None
             self._stream_stop.set()
@@ -676,6 +691,7 @@ class SkitterTuiApp(App[None]):
             return
         self._auth_user = user
         self.config.access_token = self.api.token
+        self._save_access_token(self.config.access_token)
         self._session_id = None
         self._append_system(f"Authenticated as `{user.display_name}`. Reconnecting…")
         self.run_worker(self._bootstrap(), name="bootstrap", group="bootstrap", exclusive=True)
@@ -695,6 +711,7 @@ class SkitterTuiApp(App[None]):
             return
         self._auth_user = user
         self.config.access_token = self.api.token
+        self._save_access_token(self.config.access_token)
         self._session_id = None
         self._append_system(f"Paired as `{user.display_name}`. Reconnecting…")
         self.run_worker(self._bootstrap(), name="bootstrap", group="bootstrap", exclusive=True)
@@ -705,13 +722,14 @@ class SkitterTuiApp(App[None]):
             config_home = str(Path.home() / ".config")
         return Path(config_home) / "skitter-tui" / "state.json"
 
-    def _load_saved_theme(self) -> str | None:
+    def _load_state(self) -> dict[str, Any]:
         try:
             payload = json.loads(self._state_path.read_text(encoding="utf-8"))
         except (FileNotFoundError, OSError, json.JSONDecodeError):
-            return None
-        theme = payload.get("theme")
-        return theme.strip() if isinstance(theme, str) and theme.strip() else None
+            return {}
+        if not isinstance(payload, dict):
+            return {}
+        return payload
 
     def _apply_saved_theme(self) -> None:
         if not self._saved_theme:
@@ -723,9 +741,19 @@ class SkitterTuiApp(App[None]):
             return
 
     def _save_theme(self, theme_name: str) -> None:
+        self._save_state_value("theme", theme_name)
+
+    def _save_access_token(self, token: str | None) -> None:
+        value = token.strip() if isinstance(token, str) else ""
+        self._save_state_value("access_token", value or None)
+
+    def _save_state_value(self, key: str, value: Any | None) -> None:
+        if value is None:
+            self._persisted_state.pop(key, None)
+        else:
+            self._persisted_state[key] = value
         try:
             self._state_path.parent.mkdir(parents=True, exist_ok=True)
-            payload = {"theme": theme_name}
-            self._state_path.write_text(json.dumps(payload), encoding="utf-8")
+            self._state_path.write_text(json.dumps(self._persisted_state), encoding="utf-8")
         except OSError:
             return

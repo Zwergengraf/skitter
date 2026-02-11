@@ -9,6 +9,13 @@ from .app import AppConfig, SkitterTuiApp
 
 
 def _parse_args(argv: list[str]) -> argparse.Namespace:
+    token_explicit = any(
+        arg == "--access-token"
+        or arg.startswith("--access-token=")
+        or arg == "--api-key"
+        or arg.startswith("--api-key=")
+        for arg in argv
+    )
     parser = argparse.ArgumentParser(description="Standalone TUI client for Skittermander API")
     parser.add_argument(
         "--api-url",
@@ -27,7 +34,9 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
         default=os.environ.get("SKITTER_TUI_SESSION_ID", "").strip() or None,
         help="Optional existing session id to attach to",
     )
-    return parser.parse_args(argv)
+    args = parser.parse_args(argv)
+    setattr(args, "access_token_explicit", token_explicit)
+    return args
 
 
 def main() -> None:
@@ -41,6 +50,7 @@ def main() -> None:
         access_token=args.access_token or None,
         device_name=socket.gethostname().strip() or None,
         session_id=args.session_id,
+        prefer_saved_token=not bool(getattr(args, "access_token_explicit", False)),
     )
     app = SkitterTuiApp(config)
     app.run()

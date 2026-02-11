@@ -69,3 +69,5 @@ skitter-tui --api-url http://localhost:8000 --session-id <SESSION_ID>
 - It listens for run activity through server SSE events.
 - If no token is configured, start the app and use `/bootstrap` or `/pair` in the chat.
 - `/bootstrap` requires server env `SKITTER_BOOTSTRAP_CODE`.
+- Access token is persisted in `~/.config/skitter-tui/state.json` and reused on restart.
+- Persisted token is preferred on startup; pass `--access-token` explicitly to override.
