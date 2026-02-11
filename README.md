@@ -66,33 +66,28 @@ cp config.example.yaml config.yaml
 cp .env.example .env
 ```
 
-### 2) Configure auth and optional secrets encryption (env-only)
+### 2) Configure auth, passwords and secrets encryption (env-only)
+
+Generate a valid Fernet key (SKITTER_SECRETS_MASTER_KEY):
+
+```bash
+python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+```
 
 Set these in `.env`:
 
 ```bash
 SKITTER_CONFIG_PATH=config.yaml
-SKITTER_API_KEY=replace-with-a-long-random-admin-key
-SKITTER_BOOTSTRAP_CODE=replace-with-a-one-time-setup-code
+SKITTER_API_KEY=long-random-admin-key
+SKITTER_BOOTSTRAP_CODE=one-time-setup-code
+SKITTER_POSTGRES_PASSWORD=secure-postgres-password
+SKITTER_SECRETS_MASTER_KEY=fernet-key
 ```
 
-Generate an API key and bootstrap code, for example:
+To generate random strings with openssl:
 
 ```bash
 openssl rand -hex 24
-```
-
-Optional, only if you use per-user secrets:
-
-```bash
-# generate a valid Fernet key
-python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
-```
-
-Then export before starting server:
-
-```bash
-export SKITTER_SECRETS_MASTER_KEY='<generated-fernet-key>'
 ```
 
 ### 3) Configure models and services in `config.yaml`
@@ -127,6 +122,8 @@ python -m skittermander.data.init_db
 
 ### 5) Run the server
 
+You can either run the server like this, or in Docker
+
 ```bash
 python -m skittermander.server
 ```
@@ -147,21 +144,13 @@ SKITTER_ENABLE_DISCORD=false python -m skittermander.server
 
 Use this when you want core components fully containerized.
 
-### 1) Prepare env/config
-
-- Ensure `.env` contains at least:
-  - `SKITTER_API_KEY=...`
-  - `SKITTER_BOOTSTRAP_CODE=...`
-  - `SKITTER_CONFIG_PATH=config.yaml`
-- Ensure `config.yaml` exists and has your model configuration.
-
-### 2) Build all required images (API, Admin Web, Sandbox)
+### 1) Build all required images (API, Admin Web, Sandbox)
 
 ```bash
 docker compose --profile sandbox build
 ```
 
-### 3) Start core services
+### 2) Start core services
 
 ```bash
 docker compose up -d postgres api admin-web
