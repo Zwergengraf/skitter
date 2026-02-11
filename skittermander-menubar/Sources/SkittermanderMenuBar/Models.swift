@@ -127,6 +127,12 @@ struct SessionSnapshot {
     let modelName: String
 }
 
+struct AuthUser {
+    let id: String
+    let displayName: String
+    let approved: Bool
+}
+
 struct ToolRunStatus {
     let id: String
     let sessionID: String

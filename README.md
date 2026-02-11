@@ -72,7 +72,14 @@ Set these in `.env`:
 
 ```bash
 SKITTER_CONFIG_PATH=config.yaml
-SKITTER_API_KEY=replace-with-a-long-random-key
+SKITTER_API_KEY=replace-with-a-long-random-admin-key
+SKITTER_BOOTSTRAP_CODE=replace-with-a-one-time-setup-code
+```
+
+Generate a bootstrap code, for example:
+
+```bash
+openssl rand -hex 24
 ```
 
 Optional, only if you use per-user secrets:
@@ -144,6 +151,7 @@ Use this when you want core components fully containerized.
 
 - Ensure `.env` contains at least:
   - `SKITTER_API_KEY=...`
+  - `SKITTER_BOOTSTRAP_CODE=...`
   - `SKITTER_CONFIG_PATH=config.yaml`
 - Ensure `config.yaml` exists and has your model configuration.
 
@@ -190,8 +198,13 @@ python -m venv .venv
 source .venv/bin/activate
 pip install -e .
 
-skitter-tui --api-url http://localhost:8000 --api-key <SKITTER_API_KEY> --user-id local.tui
+skitter-tui --api-url http://localhost:8000 --access-token <USER_ACCESS_TOKEN>
 ```
+
+If you do not have a token yet, start TUI and use:
+
+- `/bootstrap <setup_code> <display_name>` for first-time setup
+- `/pair <pair_code>` to connect an existing Discord-approved account
 
 ### macOS Menubar App
 
@@ -204,17 +217,46 @@ swift run
 Open app settings and provide:
 
 - API URL
-- API key
-- user id
+- Access token, or use:
+  - Register & Connect (bootstrap code + display name), or
+  - Pair Existing Account (pair code)
 
 ## API Auth
 
-All `/v1/*` routes require API key auth:
+`/v1/*` uses two auth modes:
 
-- Header: `x-api-key: <key>`
-- Or: `Authorization: Bearer <key>`
+1. Admin key (full admin scope):
+- `x-api-key: <SKITTER_API_KEY>`
+- or `Authorization: Bearer <SKITTER_API_KEY>`
 
-If `SKITTER_API_KEY` is missing, `/v1/*` returns `503`.
+2. User access token (user-scoped):
+- `Authorization: Bearer <token>`
+- tokens are issued by:
+  - `POST /v1/auth/bootstrap` (first device setup using `SKITTER_BOOTSTRAP_CODE`)
+  - `POST /v1/auth/pair/complete` (pair code flow)
+
+Anonymous access is only allowed for:
+- `POST /v1/auth/bootstrap`
+- `POST /v1/auth/pair/complete`
+
+Useful auth endpoints:
+- `GET /v1/auth/me`
+- `POST /v1/auth/pair-codes` (create pair code from an already-authenticated user token)
+
+## First-Time Account Flows
+
+### A) No Discord (menubar/TUI only)
+
+1. Set `SKITTER_BOOTSTRAP_CODE` in server env.
+2. In menubar/TUI, run bootstrap with setup code + display name.
+3. Client receives a user access token and connects.
+
+### B) Start from Discord
+
+1. DM the bot once (user is created as pending).
+2. Admin approves the user in Admin UI (`Users` page).
+3. In Discord, run `/pair` to get a short-lived pair code.
+4. Use that code in menubar/TUI pairing flow.
 
 ## Data and Workspaces
 

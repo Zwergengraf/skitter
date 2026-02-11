@@ -7,7 +7,7 @@ from pydantic import BaseModel, Field
 
 
 class SessionCreate(BaseModel):
-    user_id: str
+    user_id: str | None = None
     origin: str = "web"
     reuse_active: bool = True
     scope_type: str | None = None
@@ -108,9 +108,44 @@ class MemoryEntryOut(BaseModel):
 
 class MessageCreate(BaseModel):
     session_id: str
-    user_id: str
+    user_id: str | None = None
     text: str
     metadata: Dict[str, Any] = Field(default_factory=dict)
+
+
+class AuthBootstrapRequest(BaseModel):
+    bootstrap_code: str
+    display_name: str = Field(min_length=1, max_length=120)
+    device_name: str | None = None
+    device_type: str = "menubar"
+
+
+class AuthPairCompleteRequest(BaseModel):
+    pair_code: str
+    device_name: str | None = None
+    device_type: str = "menubar"
+
+
+class AuthPairCodeCreateRequest(BaseModel):
+    expires_minutes: int = Field(default=10, ge=1, le=60)
+    device_name: str | None = None
+
+
+class AuthUserOut(BaseModel):
+    id: str
+    display_name: str
+    approved: bool
+
+
+class AuthTokenOut(BaseModel):
+    token: str
+    user: AuthUserOut
+
+
+class AuthPairCodeOut(BaseModel):
+    code: str
+    expires_at: datetime
+    user: AuthUserOut
 
 
 class AttachmentOut(BaseModel):
@@ -130,7 +165,7 @@ class MessageOut(BaseModel):
 
 
 class ToolApprovalRequest(BaseModel):
-    approved_by: str
+    approved_by: str = ""
 
 
 class SkillOut(BaseModel):

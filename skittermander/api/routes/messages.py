@@ -7,6 +7,7 @@ from pathlib import Path
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import FileResponse, RedirectResponse
 
+from ..authz import require_session_access, resolve_target_user_id
 from ..deps import get_repo
 from ..schemas import MessageCreate, MessageOut
 from ...core.models import Attachment, MessageEnvelope
@@ -57,13 +58,14 @@ async def send_message(
     request: Request,
     repo: Repository = Depends(get_repo),
 ) -> MessageOut:
-    session = await repo.get_session(payload.session_id)
-    if session is None:
-        raise HTTPException(status_code=404, detail="Session not found")
+    session = await require_session_access(request, repo, payload.session_id)
     user = await repo.get_user_by_id(session.user_id)
     if user is None:
         raise HTTPException(status_code=404, detail="User not found")
     _require_approved_user(user.approved)
+    request_user_id = resolve_target_user_id(request, payload.user_id)
+    if request_user_id != session.user_id:
+        raise HTTPException(status_code=403, detail="Message user does not match session owner.")
     metadata_input = payload.metadata or {}
     origin_hint = str(
         metadata_input.get("origin")
@@ -75,7 +77,7 @@ async def send_message(
     envelope = MessageEnvelope(
         message_id=str(uuid.uuid4()),
         channel_id=payload.session_id,
-        user_id=payload.user_id,
+        user_id=request_user_id,
         timestamp=datetime.utcnow(),
         text=payload.text,
         origin=origin_hint,
@@ -136,14 +138,13 @@ async def send_message(
 async def get_message_attachment(
     message_id: str,
     attachment_index: int,
+    request: Request,
     repo: Repository = Depends(get_repo),
 ):
     message = await repo.get_message(message_id)
     if message is None:
         raise HTTPException(status_code=404, detail="Message not found")
-    session = await repo.get_session(message.session_id)
-    if session is None:
-        raise HTTPException(status_code=404, detail="Session not found")
+    session = await require_session_access(request, repo, message.session_id)
     meta = message.meta or {}
     attachments = meta.get("attachments")
     if not isinstance(attachments, list):

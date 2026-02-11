@@ -1,7 +1,8 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 
+from ..authz import require_admin
 from ...core.secrets import SecretsManager
 from ...data.db import SessionLocal
 from ...data.repositories import Repository
@@ -20,7 +21,8 @@ def _require_secrets() -> SecretsManager:
 
 
 @router.get("", response_model=list[SecretOut])
-async def list_secrets(user_id: str) -> list[SecretOut]:
+async def list_secrets(user_id: str, request: Request) -> list[SecretOut]:
+    require_admin(request)
     _require_secrets()
     async with SessionLocal() as session:
         repo = Repository(session)
@@ -37,7 +39,8 @@ async def list_secrets(user_id: str) -> list[SecretOut]:
 
 
 @router.post("", response_model=SecretOut)
-async def create_secret(payload: SecretCreate) -> SecretOut:
+async def create_secret(payload: SecretCreate, request: Request) -> SecretOut:
+    require_admin(request)
     manager = _require_secrets()
     encrypted = manager.encrypt(payload.value)
     async with SessionLocal() as session:
@@ -52,7 +55,8 @@ async def create_secret(payload: SecretCreate) -> SecretOut:
 
 
 @router.put("/{name}", response_model=SecretOut)
-async def update_secret(name: str, payload: SecretCreate) -> SecretOut:
+async def update_secret(name: str, payload: SecretCreate, request: Request) -> SecretOut:
+    require_admin(request)
     manager = _require_secrets()
     encrypted = manager.encrypt(payload.value)
     async with SessionLocal() as session:
@@ -67,7 +71,8 @@ async def update_secret(name: str, payload: SecretCreate) -> SecretOut:
 
 
 @router.delete("/{name}")
-async def delete_secret(name: str, user_id: str) -> dict:
+async def delete_secret(name: str, user_id: str, request: Request) -> dict:
+    require_admin(request)
     _require_secrets()
     async with SessionLocal() as session:
         repo = Repository(session)

@@ -25,6 +25,7 @@ services:
     environment:
       SKITTER_CONFIG_PATH: ${SKITTER_CONFIG_PATH:-config.yaml}
       SKITTER_API_KEY: ${SKITTER_API_KEY:-}
+      SKITTER_BOOTSTRAP_CODE: ${SKITTER_BOOTSTRAP_CODE:-}
       SKITTER_SECRETS_MASTER_KEY: ${SKITTER_SECRETS_MASTER_KEY:-}
       SKITTER_ENABLE_DISCORD: ${SKITTER_ENABLE_DISCORD:-false}
       SKITTER_DB_URL: postgresql+asyncpg://postgres:postgres@postgres:5432/skittermander

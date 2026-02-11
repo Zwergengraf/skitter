@@ -257,6 +257,10 @@ class DiscordTransport(TransportAdapter):
         async def model(interaction: discord.Interaction, model_name: Optional[str] = None) -> None:
             await self._handle_command(interaction, "model", extra={"model_name": model_name} if model_name else None)
 
+        @self.tree.command(name="pair", description="Create a short-lived code to pair another client")
+        async def pair(interaction: discord.Interaction) -> None:
+            await self._handle_command(interaction, "pair", ephemeral=True)
+
         @self.tree.command(name="info", description="Show session usage and cost info")
         async def info(interaction: discord.Interaction) -> None:
             await self._handle_command(interaction, "info")

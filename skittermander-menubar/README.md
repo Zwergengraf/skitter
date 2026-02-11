@@ -22,7 +22,9 @@ Native macOS menu bar companion for your Skittermander API server.
 
 - macOS 14+
 - Xcode / Swift toolchain
-- Running Skittermander server with API key enabled
+- Running Skittermander server with auth configured:
+  - `SKITTER_API_KEY` (admin key)
+  - `SKITTER_BOOTSTRAP_CODE` (for first-device bootstrap)
 
 ## Run
 
@@ -47,14 +49,29 @@ Useful commands:
 ./install-menubar.sh uninstall
 ```
 
-## First-time setup
+## First-time setup (new auth flow)
 
 Open menu bar icon -> right click -> `Settings` and set:
 
 - API URL (`http://localhost:8000` by default)
-- API key (`SKITTER_API_KEY` value)
-- user ID (e.g. `menubar.local`)
-- context bar target tokens (default 32000)
+- Access Token (optional if you already have one)
+- context bar target tokens
+
+Then choose one login path:
+
+1. Register first account (no Discord required):
+- Enter `Display Name`
+- Enter `Setup Code` (`SKITTER_BOOTSTRAP_CODE` from server env)
+- Click `Register & Connect`
+
+2. Pair existing account:
+- Get a pair code from an already authenticated client (e.g. Discord `/pair`)
+- Enter `Pair Code`
+- Click `Pair Existing Account`
+
+After login:
+- account setup fields are hidden
+- `Logout` is available in settings
 
 ## Notes
 

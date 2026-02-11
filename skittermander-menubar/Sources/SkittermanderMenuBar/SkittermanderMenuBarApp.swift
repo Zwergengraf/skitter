@@ -70,8 +70,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let window = NSWindow(contentViewController: host)
         window.title = "Skittermander Settings"
         window.styleMask = [.titled, .closable, .miniaturizable]
-        window.setContentSize(NSSize(width: 680, height: 420))
-        window.minSize = NSSize(width: 620, height: 360)
+        window.setContentSize(NSSize(width: 700, height: 560))
+        window.minSize = NSSize(width: 640, height: 520)
         window.center()
 
         let controller = NSWindowController(window: window)

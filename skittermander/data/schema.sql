@@ -3,6 +3,7 @@ CREATE EXTENSION IF NOT EXISTS vector;
 CREATE TABLE IF NOT EXISTS users (
     id TEXT PRIMARY KEY,
     transport_user_id TEXT NOT NULL,
+    display_name TEXT,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     meta JSONB NOT NULL DEFAULT '{}'::jsonb,
     approved BOOLEAN NOT NULL DEFAULT FALSE
@@ -13,6 +14,9 @@ ALTER TABLE users
 
 ALTER TABLE users
     ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ NOT NULL DEFAULT NOW();
+
+ALTER TABLE users
+    ADD COLUMN IF NOT EXISTS display_name TEXT;
 
 CREATE TABLE IF NOT EXISTS sessions (
     id TEXT PRIMARY KEY,
@@ -246,6 +250,49 @@ BEGIN
         ALTER TABLE secrets ADD CONSTRAINT secrets_user_id_name_key UNIQUE (user_id, name);
     END IF;
 END $$;
+
+CREATE TABLE IF NOT EXISTS auth_tokens (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL,
+    token_hash TEXT NOT NULL,
+    token_prefix TEXT NOT NULL,
+    device_name TEXT,
+    device_type TEXT,
+    created_via TEXT NOT NULL DEFAULT 'unknown',
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    last_used_at TIMESTAMPTZ,
+    revoked_at TIMESTAMPTZ,
+    expires_at TIMESTAMPTZ
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS auth_tokens_token_hash_idx
+    ON auth_tokens (token_hash);
+
+CREATE UNIQUE INDEX IF NOT EXISTS auth_tokens_token_prefix_idx
+    ON auth_tokens (token_prefix);
+
+CREATE INDEX IF NOT EXISTS auth_tokens_user_id_idx
+    ON auth_tokens (user_id);
+
+CREATE TABLE IF NOT EXISTS pair_codes (
+    id TEXT PRIMARY KEY,
+    code_hash TEXT NOT NULL,
+    user_id TEXT,
+    flow_type TEXT NOT NULL DEFAULT 'pair',
+    display_name TEXT,
+    created_by_user_id TEXT,
+    created_via TEXT NOT NULL DEFAULT 'unknown',
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    expires_at TIMESTAMPTZ NOT NULL,
+    consumed_at TIMESTAMPTZ,
+    attempts INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS pair_codes_code_hash_idx
+    ON pair_codes (code_hash);
+
+CREATE INDEX IF NOT EXISTS pair_codes_flow_expires_idx
+    ON pair_codes (flow_type, expires_at);
 
 CREATE TABLE IF NOT EXISTS channels (
     id TEXT PRIMARY KEY,

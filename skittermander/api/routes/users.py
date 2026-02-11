@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends, Query, Request
 
+from ..authz import require_admin
 from ..deps import get_repo
 from fastapi import HTTPException
 
@@ -15,16 +16,18 @@ PENDING_REQUEST_TTL_MINUTES = 15
 
 @router.get("", response_model=list[UserListItem])
 async def list_users(
+    request: Request,
     repo: Repository = Depends(get_repo),
     limit: int = Query(default=200, ge=1, le=500),
 ) -> list[UserListItem]:
+    require_admin(request)
     await repo.delete_stale_pending_users(PENDING_REQUEST_TTL_MINUTES)
     users = await repo.list_users(limit=limit)
     return [
         UserListItem(
             id=user.id,
             transport_user_id=user.transport_user_id,
-            display_name=(user.meta or {}).get("display_name"),
+            display_name=user.display_name or (user.meta or {}).get("display_name"),
             username=(user.meta or {}).get("username"),
             avatar_url=(user.meta or {}).get("avatar_url"),
             approved=user.approved,
@@ -40,6 +43,7 @@ async def update_user(
     request: Request,
     repo: Repository = Depends(get_repo),
 ) -> dict:
+    require_admin(request)
     existing = await repo.get_user_by_id(user_id)
     if existing is None:
         raise HTTPException(status_code=404, detail="User not found")
@@ -61,8 +65,10 @@ async def update_user(
 @router.delete("/{user_id}")
 async def deny_user(
     user_id: str,
+    request: Request,
     repo: Repository = Depends(get_repo),
 ) -> dict:
+    require_admin(request)
     existing = await repo.get_user_by_id(user_id)
     if existing is None:
         raise HTTPException(status_code=404, detail="User not found")

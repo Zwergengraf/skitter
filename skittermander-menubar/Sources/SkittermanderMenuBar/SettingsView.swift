@@ -6,6 +6,14 @@ struct SettingsView: View {
     var onApply: () -> Void
     var onDownloadWhisperModel: () -> Void
     var onClose: () -> Void
+    @State private var bootstrapDisplayName: String = ""
+    @State private var bootstrapCode: String = ""
+    @State private var pairCode: String = ""
+    @State private var showLogoutConfirm: Bool = false
+
+    private var isLoggedIn: Bool {
+        !state.currentUserID.isEmpty
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
@@ -20,15 +28,9 @@ struct SettingsView: View {
                         .textFieldStyle(.roundedBorder)
                 }
                 GridRow {
-                    Text("API Key")
+                    Text("Access Token")
                         .frame(width: 130, alignment: .leading)
-                    SecureField("Required", text: $settings.apiKey)
-                        .textFieldStyle(.roundedBorder)
-                }
-                GridRow {
-                    Text("User ID")
-                        .frame(width: 130, alignment: .leading)
-                    TextField("menubar.local", text: $settings.userID)
+                    SecureField("Token from bootstrap/pair flow", text: $settings.apiKey)
                         .textFieldStyle(.roundedBorder)
                 }
                 GridRow {
@@ -37,16 +39,81 @@ struct SettingsView: View {
                     TextField("32000", value: $settings.contextTokenTarget, format: .number)
                         .textFieldStyle(.roundedBorder)
                 }
-                GridRow {
-                    Text("Whisper Model")
-                        .frame(width: 130, alignment: .leading)
-                    Picker("Whisper Model", selection: $settings.whisperModel) {
-                        ForEach(SettingsStore.whisperModelOptions, id: \.self) { model in
-                            Text(model).tag(model)
+            }
+
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Account")
+                    .font(.subheadline.weight(.semibold))
+                if isLoggedIn {
+                    Text("Connected as \(state.currentUserDisplayName)")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Button("Logout") {
+                        showLogoutConfirm = true
+                    }
+                    .buttonStyle(.bordered)
+                    .tint(.red)
+                    .confirmationDialog(
+                        "Log out from this device?",
+                        isPresented: $showLogoutConfirm,
+                        titleVisibility: .visible
+                    ) {
+                        Button("Logout", role: .destructive) {
+                            Task {
+                                await state.logout()
+                            }
+                        }
+                        Button("Cancel", role: .cancel) {}
+                    } message: {
+                        Text("You will need a pair code or setup code to connect again.")
+                    }
+                } else {
+                    Grid(alignment: .leading, horizontalSpacing: 12, verticalSpacing: 8) {
+                        GridRow {
+                            Text("Display Name")
+                                .frame(width: 130, alignment: .leading)
+                            TextField("Your name", text: $bootstrapDisplayName)
+                                .textFieldStyle(.roundedBorder)
+                        }
+                        GridRow {
+                            Text("Setup Code")
+                                .frame(width: 130, alignment: .leading)
+                            SecureField("First-time setup", text: $bootstrapCode)
+                                .textFieldStyle(.roundedBorder)
+                        }
+                        GridRow {
+                            Text("")
+                                .frame(width: 130, alignment: .leading)
+                            HStack {
+                                Button("Register & Connect") {
+                                    Task {
+                                        await state.bootstrapAccount(setupCode: bootstrapCode, displayName: bootstrapDisplayName)
+                                    }
+                                }
+                                .buttonStyle(.bordered)
+                                Spacer()
+                            }
+                        }
+                        GridRow {
+                            Text("Pair Code")
+                                .frame(width: 130, alignment: .leading)
+                            TextField("ABCD-1234", text: $pairCode)
+                                .textFieldStyle(.roundedBorder)
+                        }
+                        GridRow {
+                            Text("")
+                                .frame(width: 130, alignment: .leading)
+                            HStack {
+                                Button("Pair Existing Account") {
+                                    Task {
+                                        await state.pairAccount(pairCode: pairCode)
+                                    }
+                                }
+                                .buttonStyle(.bordered)
+                                Spacer()
+                            }
                         }
                     }
-                    .pickerStyle(.menu)
-                    .frame(maxWidth: .infinity, alignment: .leading)
                 }
             }
 
@@ -55,6 +122,13 @@ struct SettingsView: View {
                     Text("Whisper Model Download")
                         .font(.subheadline.weight(.semibold))
                     Spacer()
+                    Picker("Whisper Model", selection: $settings.whisperModel) {
+                        ForEach(SettingsStore.whisperModelOptions, id: \.self) { model in
+                            Text(model).tag(model)
+                        }
+                    }
+                    .pickerStyle(.menu)
+                    .frame(width: 210, alignment: .trailing)
                     Button(state.whisperDownloadInProgress ? "Downloading…" : "Download Model") {
                         onDownloadWhisperModel()
                     }
@@ -86,7 +160,7 @@ struct SettingsView: View {
             }
         }
         .padding(18)
-        .frame(minWidth: 620, minHeight: 360)
+        .frame(minWidth: 640, minHeight: 520)
         .onChange(of: settings.whisperModel) { _, _ in
             state.clearWhisperDownloadStateForModelChange()
         }

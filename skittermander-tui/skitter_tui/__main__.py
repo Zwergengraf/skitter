@@ -1,18 +1,11 @@
 from __future__ import annotations
 
 import argparse
-import getpass
 import os
 import socket
 import sys
 
 from .app import AppConfig, SkitterTuiApp
-
-
-def _default_user_id() -> str:
-    user = getpass.getuser().strip() or "user"
-    host = socket.gethostname().strip() or "localhost"
-    return f"tui:{user}@{host}"
 
 
 def _parse_args(argv: list[str]) -> argparse.Namespace:
@@ -23,14 +16,11 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
         help="Skittermander server base URL, e.g. http://localhost:8000",
     )
     parser.add_argument(
+        "--access-token",
         "--api-key",
+        dest="access_token",
         default=os.environ.get("SKITTER_API_KEY", "").strip(),
-        help="API key for /v1/* endpoints (or set SKITTER_API_KEY).",
-    )
-    parser.add_argument(
-        "--user-id",
-        default=os.environ.get("SKITTER_TUI_USER_ID", _default_user_id()),
-        help="Stable user identifier used when creating/sending sessions",
+        help="Access token for /v1/* endpoints (or set SKITTER_API_KEY).",
     )
     parser.add_argument(
         "--session-id",
@@ -45,14 +35,11 @@ def main() -> None:
     if not args.api_url:
         print("Error: --api-url is required (or set SKITTER_API_URL).", file=sys.stderr)
         raise SystemExit(2)
-    if not args.api_key:
-        print("Error: --api-key is required (or set SKITTER_API_KEY).", file=sys.stderr)
-        raise SystemExit(2)
 
     config = AppConfig(
         api_url=args.api_url,
-        user_id=args.user_id,
-        api_key=args.api_key or None,
+        access_token=args.access_token or None,
+        device_name=socket.gethostname().strip() or None,
         session_id=args.session_id,
     )
     app = SkitterTuiApp(config)

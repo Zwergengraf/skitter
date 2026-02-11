@@ -38,6 +38,8 @@ final class AppState: ObservableObject {
     @Published private(set) var whisperDownloadInProgress: Bool = false
     @Published private(set) var whisperDownloadProgress: Double = 0
     @Published private(set) var whisperDownloadStatusText: String = ""
+    @Published private(set) var currentUserID: String = ""
+    @Published private(set) var currentUserDisplayName: String = ""
 
     let settings: SettingsStore
     private let api: APIClient
@@ -45,6 +47,7 @@ final class AppState: ObservableObject {
     private var pollTask: Task<Void, Never>?
     private var requestStartedAt: Date?
     private var lastModelFetchAt: Date?
+    private var lastAuthUserFetchAt: Date?
     private var draftPrefixBeforeTranscription: String = ""
     private var whisperDownloadRequestID = UUID()
 
@@ -93,6 +96,29 @@ final class AppState: ObservableObject {
         await refreshStatus()
     }
 
+    func logout() async {
+        stopTranscription(clearStatus: true)
+        settings.apiKey = ""
+        currentUserID = ""
+        currentUserDisplayName = ""
+        lastAuthUserFetchAt = nil
+        lastModelFetchAt = nil
+        sessionID = nil
+        messages = []
+        pendingToolApprovals = []
+        decidingToolRunIDs = []
+        unreadMessageCount = 0
+        isSending = false
+        requestStartedAt = nil
+        progressStatusText = ""
+        activity = .idle
+        hasWorkingConnection = false
+        didInitialStatusCheck = false
+        errorBanner = nil
+        health = .checking
+        await refreshStatus()
+    }
+
     var hasUnreadMessages: Bool {
         unreadMessageCount > 0
     }
@@ -100,8 +126,7 @@ final class AppState: ObservableObject {
     var shouldShowOnboarding: Bool {
         let missingAPIURL = settings.apiURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         let missingAPIKey = settings.apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-        let missingUserID = settings.userID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-        if missingAPIURL || missingAPIKey || missingUserID {
+        if missingAPIURL || missingAPIKey {
             return true
         }
         return didInitialStatusCheck && !hasWorkingConnection
@@ -213,6 +238,56 @@ final class AppState: ObservableObject {
         }
         guard whisperDownloadRequestID == requestID else { return }
         whisperDownloadInProgress = false
+    }
+
+    func bootstrapAccount(setupCode: String, displayName: String) async {
+        let trimmedCode = setupCode.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmedName = displayName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedCode.isEmpty else {
+            errorBanner = "Setup code is required."
+            return
+        }
+        guard !trimmedName.isEmpty else {
+            errorBanner = "Display name is required."
+            return
+        }
+        do {
+            let result = try await api.bootstrap(
+                bootstrapCode: trimmedCode,
+                displayName: trimmedName,
+                deviceName: Host.current().localizedName,
+                deviceType: "menubar"
+            )
+            settings.apiKey = result.token
+            currentUserID = result.user.id
+            currentUserDisplayName = result.user.displayName
+            errorBanner = nil
+            await reconnect()
+        } catch {
+            setError(error)
+        }
+    }
+
+    func pairAccount(pairCode: String) async {
+        let trimmed = pairCode.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            errorBanner = "Pair code is required."
+            return
+        }
+        do {
+            let result = try await api.pair(
+                pairCode: trimmed,
+                deviceName: Host.current().localizedName,
+                deviceType: "menubar"
+            )
+            settings.apiKey = result.token
+            currentUserID = result.user.id
+            currentUserDisplayName = result.user.displayName
+            errorBanner = nil
+            await reconnect()
+        } catch {
+            setError(error)
+        }
     }
 
     func clearWhisperDownloadStateForModelChange() {
@@ -554,6 +629,16 @@ final class AppState: ObservableObject {
             availableModels.append(modelName)
             availableModels.sort()
         }
+        if shouldRefreshAuthUser() {
+            do {
+                let me = try await api.authMe()
+                currentUserID = me.id
+                currentUserDisplayName = me.displayName
+                lastAuthUserFetchAt = Date()
+            } catch {
+                // ignore: status checks already surface connectivity/auth errors
+            }
+        }
         hasWorkingConnection = sessionCheckSucceeded
         didInitialStatusCheck = true
     }
@@ -597,8 +682,8 @@ final class AppState: ObservableObject {
             errorBanner = text
             return
         }
-        if text.contains("HTTP 401") || text.localizedCaseInsensitiveContains("Invalid API key") {
-            errorBanner = "Invalid API key. Update Settings and reconnect."
+        if text.contains("HTTP 401") || lower.contains("invalid authentication token") || text.localizedCaseInsensitiveContains("Invalid API key") {
+            errorBanner = "Invalid access token. Use setup/pair flow in onboarding or Settings."
             return
         }
         if text.contains("HTTP 503") {
@@ -614,6 +699,17 @@ final class AppState: ObservableObject {
         }
         guard let last = lastModelFetchAt else { return true }
         return Date().timeIntervalSince(last) >= 60
+    }
+
+    private func shouldRefreshAuthUser() -> Bool {
+        if settings.apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return false
+        }
+        if currentUserID.isEmpty || lastAuthUserFetchAt == nil {
+            return true
+        }
+        guard let last = lastAuthUserFetchAt else { return true }
+        return Date().timeIntervalSince(last) >= 120
     }
 
     private func decideToolRun(id: String, approved: Bool) async {
@@ -637,8 +733,10 @@ final class AppState: ObservableObject {
     }
 
     private func decisionActor() -> String {
-        let userID = settings.userID.trimmingCharacters(in: .whitespacesAndNewlines)
-        return userID.isEmpty ? "menubar" : userID
+        if !currentUserID.isEmpty {
+            return currentUserID
+        }
+        return "menubar"
     }
 
     private func isTimeoutError(_ error: Error) -> Bool {

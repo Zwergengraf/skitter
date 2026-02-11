@@ -4,6 +4,7 @@ from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 
+from ..authz import require_admin, require_session_access, resolve_target_user_id
 from ..deps import get_repo
 from ..schemas import (
     SessionCreate,
@@ -35,10 +36,12 @@ def _require_approved_user(approved: bool) -> None:
 
 @router.get("", response_model=list[SessionListItem])
 async def list_sessions(
+    request: Request,
     repo: Repository = Depends(get_repo),
     status: str | None = Query(default=None),
     limit: int = Query(default=50, ge=1, le=200),
 ) -> list[SessionListItem]:
+    require_admin(request)
     sessions = await repo.list_sessions(limit=limit, status=status)
     return [
         SessionListItem(
@@ -63,7 +66,12 @@ async def create_session(
     request: Request,
     repo: Repository = Depends(get_repo),
 ) -> SessionOut:
-    user = await repo.get_or_create_user(payload.user_id)
+    target_user_id = resolve_target_user_id(request, payload.user_id)
+    user = await repo.get_user_by_id(target_user_id)
+    if user is None and payload.user_id:
+        user = await repo.get_or_create_user(payload.user_id)
+    if user is None:
+        raise HTTPException(status_code=404, detail="User not found")
     _require_approved_user(user.approved)
     origin = (payload.origin or "web").strip() or "web"
     scope_type = (payload.scope_type or "private").strip() or "private"
@@ -148,10 +156,8 @@ async def create_session(
 
 
 @router.get("/{session_id}", response_model=SessionOut)
-async def get_session(session_id: str, repo: Repository = Depends(get_repo)) -> SessionOut:
-    session = await repo.get_session(session_id)
-    if session is None:
-        raise HTTPException(status_code=404, detail="Session not found")
+async def get_session(session_id: str, request: Request, repo: Repository = Depends(get_repo)) -> SessionOut:
+    session = await require_session_access(request, repo, session_id)
     return SessionOut(
         id=session.id,
         user_id=session.user_id,
@@ -174,10 +180,8 @@ async def get_session(session_id: str, repo: Repository = Depends(get_repo)) -> 
 
 
 @router.get("/{session_id}/detail", response_model=SessionDetailOut)
-async def get_session_detail(session_id: str, repo: Repository = Depends(get_repo)) -> SessionDetailOut:
-    session = await repo.get_session(session_id)
-    if session is None:
-        raise HTTPException(status_code=404, detail="Session not found")
+async def get_session_detail(session_id: str, request: Request, repo: Repository = Depends(get_repo)) -> SessionDetailOut:
+    session = await require_session_access(request, repo, session_id)
     user = await repo.get_user_by_id(session.user_id)
     messages = await repo.list_messages(session_id)
     tool_runs = await repo.list_tool_runs_by_session(session_id)
@@ -185,7 +189,7 @@ async def get_session_detail(session_id: str, repo: Repository = Depends(get_rep
     return SessionDetailOut(
         id=session.id,
         user_id=session.user_id,
-        user=user.transport_user_id if user else session.user_id,
+        user=(user.display_name or user.transport_user_id) if user else session.user_id,
         status=session.status,
         scope_type=session.scope_type or "private",
         scope_id=session.scope_id or "",
@@ -233,9 +237,7 @@ async def set_session_model(
     request: Request,
     repo: Repository = Depends(get_repo),
 ) -> SessionModelSetOut:
-    session = await repo.get_session(session_id)
-    if session is None:
-        raise HTTPException(status_code=404, detail="Session not found")
+    await require_session_access(request, repo, session_id)
 
     available = list_models()
     if not available:

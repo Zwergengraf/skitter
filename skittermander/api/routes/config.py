@@ -3,8 +3,9 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 
+from ..authz import require_admin
 from ..schemas import ConfigCategoryOut, ConfigFieldOut, ConfigResponse, ConfigUpdate
 from ...core import config as config_module
 from ...core.config_schema import CATEGORIES, FIELDS, build_config_from_settings
@@ -52,12 +53,14 @@ def _build_response() -> ConfigResponse:
 
 
 @router.get("", response_model=ConfigResponse)
-async def get_config() -> ConfigResponse:
+async def get_config(request: Request) -> ConfigResponse:
+    require_admin(request)
     return _build_response()
 
 
 @router.put("", response_model=ConfigResponse)
-async def update_config(payload: ConfigUpdate) -> ConfigResponse:
+async def update_config(payload: ConfigUpdate, request: Request) -> ConfigResponse:
+    require_admin(request)
     updates: dict[str, Any] = {}
     for spec in FIELDS:
         if spec.key not in payload.values:

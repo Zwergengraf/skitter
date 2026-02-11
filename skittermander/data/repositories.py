@@ -8,10 +8,12 @@ from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from .models import (
+    AuthToken,
     Channel,
     LlmUsage,
     MemoryEntry,
     Message,
+    PairCode,
     RunTrace,
     RunTraceEvent,
     ScheduledJob,
@@ -51,6 +53,18 @@ class Repository:
         await self.session.commit()
         return user
 
+    async def get_or_create_local_primary_user(self, display_name: str | None = None) -> User:
+        user = await self.get_or_create_user("local.primary")
+        if display_name:
+            user.display_name = display_name
+            meta = dict(user.meta or {})
+            meta.setdefault("display_name", display_name)
+            user.meta = meta
+        if not user.approved:
+            user.approved = True
+        await self.session.commit()
+        return user
+
     async def get_user_by_transport_id(self, transport_user_id: str) -> Optional[User]:
         result = await self.session.execute(select(User).where(User.transport_user_id == transport_user_id))
         return result.scalar_one_or_none()
@@ -65,6 +79,7 @@ class Repository:
         user = await self.get_or_create_user(transport_user_id)
         meta = dict(user.meta or {})
         if display_name:
+            user.display_name = display_name
             meta["display_name"] = display_name
         if username:
             meta["username"] = username
@@ -386,6 +401,20 @@ class Repository:
         result = await self.session.execute(stmt)
         return list(result.all())
 
+    async def list_tool_runs_for_user(self, user_id: str, limit: int = 50, status: str | None = None) -> List[tuple]:
+        stmt = (
+            select(ToolRun, User.transport_user_id)
+            .join(Session, Session.id == ToolRun.session_id)
+            .join(User, User.id == Session.user_id)
+            .where(Session.user_id == user_id)
+            .order_by(ToolRun.created_at.desc())
+            .limit(limit)
+        )
+        if status:
+            stmt = stmt.where(ToolRun.status == status)
+        result = await self.session.execute(stmt)
+        return list(result.all())
+
     async def list_tool_runs_by_session(self, session_id: str) -> List[ToolRun]:
         result = await self.session.execute(
             select(ToolRun).where(ToolRun.session_id == session_id).order_by(ToolRun.created_at.asc())
@@ -539,6 +568,22 @@ class Repository:
         result = await self.session.execute(select(User).order_by(User.transport_user_id.asc()).limit(limit))
         return list(result.scalars().all())
 
+    async def update_user_display_name(self, user_id: str, display_name: str | None) -> Optional[User]:
+        result = await self.session.execute(select(User).where(User.id == user_id))
+        user = result.scalar_one_or_none()
+        if user is None:
+            return None
+        cleaned = (display_name or "").strip() or None
+        user.display_name = cleaned
+        meta = dict(user.meta or {})
+        if cleaned:
+            meta["display_name"] = cleaned
+        elif "display_name" in meta:
+            meta.pop("display_name", None)
+        user.meta = meta
+        await self.session.commit()
+        return user
+
     async def delete_pending_user(self, user_id: str) -> bool:
         result = await self.session.execute(select(User).where(User.id == user_id))
         user = result.scalar_one_or_none()
@@ -606,6 +651,10 @@ class Repository:
                 },
             )
         return tool_run
+
+    async def get_tool_run(self, tool_run_id: str) -> Optional[ToolRun]:
+        result = await self.session.execute(select(ToolRun).where(ToolRun.id == tool_run_id))
+        return result.scalar_one_or_none()
 
     async def approve_tool_run(self, tool_run_id: str, approved_by: str) -> Optional[ToolRun]:
         result = await self.session.execute(select(ToolRun).where(ToolRun.id == tool_run_id))
@@ -875,3 +924,112 @@ class Repository:
         secret.last_used_at = self._utcnow()
         await self.session.commit()
         return secret
+
+    async def create_auth_token(
+        self,
+        user_id: str,
+        token_hash: str,
+        token_prefix: str,
+        device_name: str | None,
+        device_type: str | None,
+        created_via: str,
+        expires_at: datetime | None = None,
+    ) -> AuthToken:
+        token = AuthToken(
+            id=str(uuid.uuid4()),
+            user_id=user_id,
+            token_hash=token_hash,
+            token_prefix=token_prefix,
+            device_name=(device_name or "").strip() or None,
+            device_type=(device_type or "").strip() or None,
+            created_via=(created_via or "").strip() or "unknown",
+            created_at=self._utcnow(),
+            expires_at=expires_at,
+        )
+        self.session.add(token)
+        await self.session.commit()
+        return token
+
+    async def get_auth_token_by_hash(self, token_hash: str) -> Optional[AuthToken]:
+        result = await self.session.execute(select(AuthToken).where(AuthToken.token_hash == token_hash))
+        return result.scalar_one_or_none()
+
+    async def touch_auth_token(self, token: AuthToken) -> AuthToken:
+        token.last_used_at = self._utcnow()
+        await self.session.commit()
+        return token
+
+    async def revoke_auth_token(self, token_id: str) -> bool:
+        result = await self.session.execute(select(AuthToken).where(AuthToken.id == token_id))
+        token = result.scalar_one_or_none()
+        if token is None:
+            return False
+        token.revoked_at = self._utcnow()
+        await self.session.commit()
+        return True
+
+    async def list_auth_tokens(self, user_id: str) -> List[AuthToken]:
+        result = await self.session.execute(
+            select(AuthToken)
+            .where(AuthToken.user_id == user_id)
+            .order_by(AuthToken.created_at.desc())
+        )
+        return list(result.scalars().all())
+
+    async def create_pair_code(
+        self,
+        code_hash: str,
+        *,
+        flow_type: str,
+        user_id: str | None,
+        display_name: str | None,
+        created_by_user_id: str | None,
+        created_via: str,
+        expires_at: datetime,
+    ) -> PairCode:
+        pair = PairCode(
+            id=str(uuid.uuid4()),
+            code_hash=code_hash,
+            user_id=user_id,
+            flow_type=flow_type,
+            display_name=(display_name or "").strip() or None,
+            created_by_user_id=(created_by_user_id or "").strip() or None,
+            created_via=(created_via or "").strip() or "unknown",
+            created_at=self._utcnow(),
+            expires_at=expires_at,
+            consumed_at=None,
+            attempts=0,
+        )
+        self.session.add(pair)
+        await self.session.commit()
+        return pair
+
+    async def get_pair_code_by_hash(self, code_hash: str, *, flow_type: str | None = None) -> Optional[PairCode]:
+        stmt = select(PairCode).where(PairCode.code_hash == code_hash)
+        if flow_type:
+            stmt = stmt.where(PairCode.flow_type == flow_type)
+        result = await self.session.execute(stmt)
+        return result.scalar_one_or_none()
+
+    async def mark_pair_code_attempt(self, pair: PairCode) -> PairCode:
+        pair.attempts = int(pair.attempts or 0) + 1
+        await self.session.commit()
+        return pair
+
+    async def consume_pair_code(self, pair: PairCode) -> PairCode:
+        pair.consumed_at = self._utcnow()
+        await self.session.commit()
+        return pair
+
+    async def delete_expired_pair_codes(self) -> int:
+        now = self._utcnow()
+        result = await self.session.execute(
+            select(PairCode).where(PairCode.expires_at < now)
+        )
+        rows = list(result.scalars().all())
+        if not rows:
+            return 0
+        for row in rows:
+            await self.session.delete(row)
+        await self.session.commit()
+        return len(rows)
