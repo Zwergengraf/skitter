@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import json
+import os
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -101,6 +103,8 @@ class SkitterTuiApp(App[None]):
         self._stream_stop = asyncio.Event()
         self._last_attachments: list[dict[str, Any]] = []
         self._seen_message_ids: set[str] = set()
+        self._state_path = self._resolve_state_path()
+        self._saved_theme = self._load_saved_theme()
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
@@ -116,8 +120,14 @@ class SkitterTuiApp(App[None]):
     async def on_mount(self) -> None:
         self.title = "Skittermander TUI"
         self.sub_title = self.config.api_url
+        self._apply_saved_theme()
         self._update_status("Connecting", f"user={self.config.user_id}")
         self.run_worker(self._bootstrap(), name="bootstrap", group="bootstrap", exclusive=True)
+
+    def watch_theme(self, theme_name: str) -> None:
+        if not self.is_mounted:
+            return
+        self._save_theme(theme_name)
 
     async def on_unmount(self) -> None:
         self._stream_stop.set()
@@ -523,3 +533,34 @@ class SkitterTuiApp(App[None]):
             status.update(f"{title} · {detail}")
         else:
             status.update(title)
+
+    def _resolve_state_path(self) -> Path:
+        config_home = os.environ.get("XDG_CONFIG_HOME", "").strip()
+        if not config_home:
+            config_home = str(Path.home() / ".config")
+        return Path(config_home) / "skitter-tui" / "state.json"
+
+    def _load_saved_theme(self) -> str | None:
+        try:
+            payload = json.loads(self._state_path.read_text(encoding="utf-8"))
+        except (FileNotFoundError, OSError, json.JSONDecodeError):
+            return None
+        theme = payload.get("theme")
+        return theme.strip() if isinstance(theme, str) and theme.strip() else None
+
+    def _apply_saved_theme(self) -> None:
+        if not self._saved_theme:
+            return
+        try:
+            self.theme = self._saved_theme
+        except Exception:
+            # Ignore invalid or removed theme names and keep Textual default.
+            return
+
+    def _save_theme(self, theme_name: str) -> None:
+        try:
+            self._state_path.parent.mkdir(parents=True, exist_ok=True)
+            payload = {"theme": theme_name}
+            self._state_path.write_text(json.dumps(payload), encoding="utf-8")
+        except OSError:
+            return
