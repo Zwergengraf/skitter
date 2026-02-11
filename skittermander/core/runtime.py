@@ -136,6 +136,47 @@ class AgentRuntime:
             return None, None
         return match.group(1).strip(), match.group(2).strip()
 
+    async def _publish_stream_event(self, session_id: str, event_type: str, data: dict) -> None:
+        await self.event_bus.publish(
+            StreamEvent(
+                session_id=session_id,
+                type=event_type,
+                data=data,
+                created_at=datetime.now(UTC),
+            )
+        )
+
+    def _postprocess_response(
+        self,
+        *,
+        user_id: str,
+        messages: list[BaseMessage],
+        message_id: str,
+        response: object,
+        session_id: str,
+    ) -> tuple[str, list[Attachment]]:
+        response_text = self._message_content_to_text(response)
+        attachments = self._extract_attachments(user_id, messages, message_id)
+        response_text, media_attachments = self._extract_media_directive_attachments(user_id, response_text)
+        if media_attachments:
+            seen_paths = {a.path for a in attachments if a.path}
+            for attachment in media_attachments:
+                if attachment.path and attachment.path in seen_paths:
+                    continue
+                attachments.append(attachment)
+                if attachment.path:
+                    seen_paths.add(attachment.path)
+        attachments, dropped_count = self._dedupe_attachments(attachments)
+        if dropped_count > 0:
+            _logger.debug(
+                "Removed %d duplicate attachment(s) for session=%s message_id=%s",
+                dropped_count,
+                session_id,
+                message_id,
+            )
+        cleaned = self._strip_attachment_paths(response_text) if attachments else response_text
+        return cleaned, attachments
+
     async def handle_message(self, session_id: str, envelope: MessageEnvelope) -> AgentResponse:
         if not envelope.text and not envelope.command and not envelope.attachments:
             return AgentResponse(text="")
@@ -154,13 +195,10 @@ class AgentRuntime:
         run_output_tokens = 0
         run_total_tokens = 0
         run_cost = 0.0
-        await self.event_bus.publish(
-            StreamEvent(
-                session_id=session_id,
-                type="message_received",
-                data={"run_id": run_id, "message_id": envelope.message_id, "user_id": envelope.user_id},
-                created_at=datetime.now(UTC),
-            )
+        await self._publish_stream_event(
+            session_id,
+            "message_received",
+            {"run_id": run_id, "message_id": envelope.message_id, "user_id": envelope.user_id},
         )
         internal_user_id, _scope_type, _scope_id, context_tokens = self._push_request_context(
             session_id=session_id,
@@ -312,34 +350,18 @@ class AgentRuntime:
             if limit_token is not None:
                 reset_current_run_limits(limit_token)
             self._pop_request_context(context_tokens)
-        await self.event_bus.publish(
-            StreamEvent(
-                session_id=session_id,
-                type="message_response",
-                data={"run_id": run_id, "response": response},
-                created_at=datetime.now(UTC),
-            )
+        await self._publish_stream_event(
+            session_id,
+            "message_response",
+            {"run_id": run_id, "response": response},
         )
-        response_text = self._message_content_to_text(response)
-        attachments = self._extract_attachments(internal_user_id, messages, envelope.message_id)
-        response_text, media_attachments = self._extract_media_directive_attachments(internal_user_id, response_text)
-        if media_attachments:
-            seen_paths = {a.path for a in attachments if a.path}
-            for attachment in media_attachments:
-                if attachment.path and attachment.path in seen_paths:
-                    continue
-                attachments.append(attachment)
-                if attachment.path:
-                    seen_paths.add(attachment.path)
-        attachments, dropped_count = self._dedupe_attachments(attachments)
-        if dropped_count > 0:
-            _logger.debug(
-                "Removed %d duplicate attachment(s) for session=%s message_id=%s",
-                dropped_count,
-                session_id,
-                envelope.message_id,
-            )
-        cleaned = self._strip_attachment_paths(response_text) if attachments else response_text
+        cleaned, attachments = self._postprocess_response(
+            user_id=internal_user_id,
+            messages=messages,
+            message_id=envelope.message_id,
+            response=response,
+            session_id=session_id,
+        )
         if run_limit_reason is None:
             run_limit_reason, run_limit_detail = self._extract_limit_from_response(cleaned)
         if run_status == "running":

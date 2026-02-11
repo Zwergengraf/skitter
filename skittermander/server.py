@@ -139,6 +139,57 @@ async def main() -> None:
         finally:
             await transport.stop_progress_message(message)
 
+    def _should_show_progress(envelope, transport) -> bool:
+        return (
+            envelope.origin == "discord"
+            and isinstance(transport, DiscordTransport)
+            and not envelope.command
+            and settings.discord_progress_updates
+        )
+
+    async def _start_progress_tracking(envelope, transport, session_id: str) -> tuple[asyncio.Event | None, asyncio.Task | None]:
+        if not _should_show_progress(envelope, transport):
+            return None, None
+        stop_event = asyncio.Event()
+        task = asyncio.create_task(
+            _run_progress_loop(transport, envelope.channel_id, session_id, stop_event)
+        )
+        return stop_event, task
+
+    async def _stop_progress_tracking(stop_event: asyncio.Event | None, task: asyncio.Task | None) -> None:
+        if stop_event is not None:
+            stop_event.set()
+        if task is not None:
+            with contextlib.suppress(Exception):
+                await task
+
+    def _build_message_metadata(envelope, internal_user_id: str) -> dict:
+        metadata = dict(envelope.metadata)
+        metadata.update({"internal_user_id": internal_user_id})
+        metadata.update({"message_id": envelope.message_id, "origin": envelope.origin})
+        if envelope.attachments:
+            attachments_meta = _serialize_attachments(envelope.attachments)
+            if attachments_meta:
+                metadata["attachments"] = attachments_meta
+                envelope.metadata["attachments"] = attachments_meta
+        return metadata
+
+    async def _persist_user_message(session_id: str, envelope, internal_user_id: str) -> None:
+        metadata = _build_message_metadata(envelope, internal_user_id)
+        async with SessionLocal() as session:
+            repo = Repository(session)
+            await repo.add_message(session_id, role="user", content=envelope.text, metadata=metadata)
+
+    async def _persist_assistant_message(session_id: str, response_text: str, response_to: str) -> None:
+        async with SessionLocal() as session:
+            repo = Repository(session)
+            await repo.add_message(
+                session_id,
+                role="assistant",
+                content=response_text,
+                metadata={"response_to": response_to},
+            )
+
     async def _resolve_internal_user_id(envelope, transport) -> str | None:
         if envelope.origin != "discord":
             return envelope.user_id
@@ -385,46 +436,16 @@ async def main() -> None:
             cache_key=scope.scope_id if scope.is_private else envelope.channel_id,
         )
 
-        progress_stop: asyncio.Event | None = None
-        progress_task: asyncio.Task | None = None
-        if (
-            envelope.origin == "discord"
-            and isinstance(transport, DiscordTransport)
-            and not envelope.command
-            and settings.discord_progress_updates
-        ):
-            progress_stop = asyncio.Event()
-            progress_task = asyncio.create_task(
-                _run_progress_loop(transport, envelope.channel_id, session_id, progress_stop)
-            )
-
-        async with SessionLocal() as session:
-            repo = Repository(session)
-            metadata = dict(envelope.metadata)
-            metadata.update({"internal_user_id": internal_user_id})
-            metadata.update({"message_id": envelope.message_id, "origin": envelope.origin})
-            if envelope.attachments:
-                attachments_meta = _serialize_attachments(envelope.attachments)
-                if attachments_meta:
-                    metadata["attachments"] = attachments_meta
-                    envelope.metadata["attachments"] = attachments_meta
-            await repo.add_message(session_id, role="user", content=envelope.text, metadata=metadata)
+        progress_stop, progress_task = await _start_progress_tracking(envelope, transport, session_id)
+        await _persist_user_message(session_id, envelope, internal_user_id)
 
         try:
             response = await runtime.handle_message(session_id, envelope)
         finally:
-            if progress_stop is not None:
-                progress_stop.set()
-            if progress_task is not None:
-                with contextlib.suppress(Exception):
-                    await progress_task
+            await _stop_progress_tracking(progress_stop, progress_task)
         if response.text or response.attachments:
             await transport.send_message(envelope.channel_id, response.text, attachments=response.attachments)
-            async with SessionLocal() as session:
-                repo = Repository(session)
-                await repo.add_message(
-                    session_id, role="assistant", content=response.text, metadata={"response_to": envelope.message_id}
-                )
+            await _persist_assistant_message(session_id, response.text, envelope.message_id)
 
     manager.on_event(handler)
 
