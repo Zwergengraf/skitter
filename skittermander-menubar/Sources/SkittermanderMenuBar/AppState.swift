@@ -428,6 +428,9 @@ final class AppState: ObservableObject {
     }
 
     private func applySyncedMessages(_ synced: [ChatMessage]) {
+        if messages == synced {
+            return
+        }
         if !isChatWindowVisible {
             let previousAssistantIDs = Set(messages.filter { $0.role == .assistant }.map(\.id))
             let newAssistantCount = synced

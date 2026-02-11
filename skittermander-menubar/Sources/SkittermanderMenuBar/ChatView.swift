@@ -3,10 +3,12 @@ import SwiftUI
 
 struct ChatView: View {
     @ObservedObject var state: AppState
+    @Environment(\.colorScheme) private var colorScheme
     @State private var visibleLimit: Int = 160
     @State private var onboardingChecking: Bool = false
     @State private var onboardingStatusText: String?
     private static let progressMessageID = "temporary-progress-message"
+    private static let bottomAnchorID = "chat-bottom-anchor"
     private static let relativeTimeFormatter: RelativeDateTimeFormatter = {
         let formatter = RelativeDateTimeFormatter()
         formatter.unitsStyle = .abbreviated
@@ -28,10 +30,38 @@ struct ChatView: View {
         state.filteredCommands(for: state.draft)
     }
 
+    private var panelBackground: Color {
+        Color(nsColor: .controlBackgroundColor).opacity(colorScheme == .dark ? 0.45 : 0.80)
+    }
+
+    private var panelStroke: Color {
+        Color(nsColor: .separatorColor).opacity(colorScheme == .dark ? 0.45 : 0.30)
+    }
+
+    private var assistantBubbleColor: Color {
+        if colorScheme == .dark {
+            return Color(red: 0.19, green: 0.30, blue: 0.46).opacity(0.62)
+        }
+        return Color(red: 0.88, green: 0.94, blue: 1.00)
+    }
+
+    private var userBubbleColor: Color {
+        if colorScheme == .dark {
+            return Color.white.opacity(0.08)
+        }
+        return Color.black.opacity(0.035)
+    }
+
+    private var bubbleStrokeColor: Color {
+        Color(nsColor: .separatorColor).opacity(colorScheme == .dark ? 0.50 : 0.20)
+    }
+
     var body: some View {
         VStack(spacing: 0) {
+            headerBar
+            Divider()
+
             if let banner = state.errorBanner {
-                Divider()
                 HStack(spacing: 8) {
                     Image(systemName: "exclamationmark.triangle")
                         .foregroundStyle(.red)
@@ -50,11 +80,11 @@ struct ChatView: View {
                 }
                 .padding(.horizontal, 12)
                 .padding(.vertical, 8)
-                .background(Color.red.opacity(0.08))
+                .background(Color.red.opacity(colorScheme == .dark ? 0.16 : 0.08))
+                Divider()
             }
 
             if !state.pendingToolApprovals.isEmpty {
-                Divider()
                 VStack(alignment: .leading, spacing: 8) {
                     HStack {
                         Label("Tool approval required", systemImage: "hand.raised.fill")
@@ -70,15 +100,14 @@ struct ChatView: View {
                 }
                 .padding(.horizontal, 12)
                 .padding(.vertical, 8)
-                .background(Color.orange.opacity(0.08))
+                .background(Color.orange.opacity(colorScheme == .dark ? 0.16 : 0.08))
+                Divider()
             }
 
             if state.shouldShowOnboarding {
-                Divider()
                 onboardingCard()
+                Divider()
             }
-
-            Divider()
 
             ScrollViewReader { proxy in
                 ScrollView {
@@ -97,17 +126,22 @@ struct ChatView: View {
                         if !state.progressStatusText.isEmpty {
                             progressMessageRow()
                         }
+                        Color.clear
+                            .frame(height: 12)
+                            .id(Self.bottomAnchorID)
                     }
-                    .padding(12)
+                    .padding(.horizontal, 12)
+                    .padding(.top, 12)
+                }
+                .background(Color.clear)
+                .onAppear {
+                    scrollToBottom(proxy, animated: false)
                 }
                 .onChange(of: state.messages.count) { _, _ in
                     scrollToBottom(proxy)
                 }
                 .onChange(of: state.chatOpenSignal) { _, _ in
-                    scrollToBottom(proxy)
-                }
-                .onChange(of: state.progressStatusText) { _, _ in
-                    scrollToBottom(proxy)
+                    scrollToBottom(proxy, animated: false)
                 }
             }
 
@@ -136,7 +170,11 @@ struct ChatView: View {
                         }
                     }
                     .padding(8)
-                    .background(RoundedRectangle(cornerRadius: 8).fill(Color.secondary.opacity(0.08)))
+                    .background(RoundedRectangle(cornerRadius: 8).fill(panelBackground))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 8)
+                            .stroke(panelStroke, lineWidth: 1)
+                    )
                 }
 
                 HStack(alignment: .bottom, spacing: 8) {
@@ -158,11 +196,11 @@ struct ChatView: View {
                     .frame(minHeight: 54, idealHeight: 96, maxHeight: 130)
                     .background(
                         RoundedRectangle(cornerRadius: 10)
-                            .fill(Color.secondary.opacity(0.09))
+                            .fill(panelBackground)
                     )
                     .overlay(
                         RoundedRectangle(cornerRadius: 10)
-                            .stroke(Color.secondary.opacity(0.18), lineWidth: 1)
+                            .stroke(panelStroke, lineWidth: 1)
                     )
                     .clipShape(RoundedRectangle(cornerRadius: 10))
 
@@ -233,8 +271,12 @@ struct ChatView: View {
             minWidth: 500,
             minHeight: 620
         )
-        .background(.ultraThinMaterial)
-        .preferredColorScheme(.light)
+        .background(
+            ZStack {
+                Color(nsColor: .windowBackgroundColor)
+                Color(nsColor: .textBackgroundColor).opacity(colorScheme == .dark ? 0.08 : 0.12)
+            }
+        )
         .task {
             do {
                 _ = try await state.ensureSession(forceNew: false)
@@ -243,6 +285,28 @@ struct ChatView: View {
                 // Status strip already shows health errors.
             }
         }
+    }
+
+    @ViewBuilder
+    private var headerBar: some View {
+        HStack(spacing: 10) {
+            Image(systemName: "bolt.circle.fill")
+                .font(.title3)
+                .foregroundStyle(Color.accentColor)
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Skittermander")
+                    .font(.headline)
+                Text("\(state.health.label.capitalized) · \(state.activity.label.capitalized)")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            Spacer(minLength: 8)
+            statusChip(label: state.health.label.capitalized, color: healthChipColor)
+            statusChip(label: state.activity.label.capitalized, color: activityChipColor)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 10)
+        .background(Color(nsColor: .windowBackgroundColor).opacity(0.92))
     }
 
     @ViewBuilder
@@ -335,49 +399,61 @@ struct ChatView: View {
     @ViewBuilder
     private func messageRow(_ message: ChatMessage) -> some View {
         let isUser = message.role == .user
-        VStack(alignment: .leading, spacing: 6) {
-            HStack {
-                Text(label(for: message.role))
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                Spacer()
-                if message.role == .assistant {
-                    Button {
-                        copyToPasteboard(message.content)
-                    } label: {
-                        Label("Copy", systemImage: "doc.on.doc")
-                            .labelStyle(.titleAndIcon)
-                    }
-                    .buttonStyle(.borderless)
-                    .font(.caption)
+        HStack(alignment: .bottom) {
+            if isUser {
+                Spacer(minLength: 44)
+            }
+            VStack(alignment: .leading, spacing: 6) {
+                HStack {
+                    Text(label(for: message.role))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    if message.role == .assistant {
+                        Button {
+                            copyToPasteboard(message.content)
+                        } label: {
+                            Label("Copy", systemImage: "doc.on.doc")
+                                .labelStyle(.titleAndIcon)
+                        }
+                        .buttonStyle(.borderless)
+                        .font(.caption)
 
-                    Button {
-                        copyToPasteboard(markdownForMessage(message))
-                    } label: {
-                        Label("Copy MD", systemImage: "doc.text")
-                            .labelStyle(.titleAndIcon)
+                        Button {
+                            copyToPasteboard(markdownForMessage(message))
+                        } label: {
+                            Label("Copy MD", systemImage: "doc.text")
+                                .labelStyle(.titleAndIcon)
+                        }
+                        .buttonStyle(.borderless)
+                        .font(.caption)
                     }
-                    .buttonStyle(.borderless)
-                    .font(.caption)
+                }
+
+                MarkdownMessageText(message.content.isEmpty ? "(empty)" : message.content)
+
+                if !message.attachments.isEmpty {
+                    VStack(alignment: .leading, spacing: 8) {
+                        ForEach(Array(message.attachments.enumerated()), id: \.offset) { _, attachment in
+                            attachmentView(attachment)
+                        }
+                    }
                 }
             }
-
-            MarkdownMessageText(message.content.isEmpty ? "(empty)" : message.content)
-
-            if !message.attachments.isEmpty {
-                VStack(alignment: .leading, spacing: 8) {
-                    ForEach(Array(message.attachments.enumerated()), id: \.offset) { idx, attachment in
-                        attachmentView(attachment)
-                    }
-                }
+            .padding(11)
+            .frame(maxWidth: 470, alignment: .leading)
+            .background(
+                RoundedRectangle(cornerRadius: 12)
+                    .fill(isUser ? userBubbleColor : assistantBubbleColor)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 12)
+                            .stroke(bubbleStrokeColor, lineWidth: 1)
+                    )
+            )
+            if !isUser {
+                Spacer(minLength: 44)
             }
         }
-        .padding(11)
-        .frame(maxWidth: .infinity, alignment: isUser ? .trailing : .leading)
-        .background(
-            RoundedRectangle(cornerRadius: 10)
-                .fill(isUser ? Color.secondary.opacity(0.10) : Color.blue.opacity(0.10))
-        )
         .id(message.id)
     }
 
@@ -410,7 +486,14 @@ struct ChatView: View {
             }
         }
         .padding(8)
-        .background(RoundedRectangle(cornerRadius: 8).fill(Color.secondary.opacity(0.08)))
+        .background(
+            RoundedRectangle(cornerRadius: 8)
+                .fill(panelBackground)
+                .overlay(
+                    RoundedRectangle(cornerRadius: 8)
+                        .stroke(panelStroke, lineWidth: 1)
+                )
+        )
     }
 
     @ViewBuilder
@@ -462,7 +545,14 @@ struct ChatView: View {
             }
         }
         .padding(9)
-        .background(RoundedRectangle(cornerRadius: 8).fill(Color.white.opacity(0.65)))
+        .background(
+            RoundedRectangle(cornerRadius: 8)
+                .fill(panelBackground)
+                .overlay(
+                    RoundedRectangle(cornerRadius: 8)
+                        .stroke(panelStroke, lineWidth: 1)
+                )
+        )
     }
 
     @ViewBuilder
@@ -493,20 +583,63 @@ struct ChatView: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(
             RoundedRectangle(cornerRadius: 10)
-                .fill(Color.secondary.opacity(0.08))
+                .fill(panelBackground)
                 .overlay(
                     RoundedRectangle(cornerRadius: 10)
-                        .stroke(Color.secondary.opacity(0.35), style: StrokeStyle(lineWidth: 1, dash: [5, 3]))
+                        .stroke(panelStroke, style: StrokeStyle(lineWidth: 1, dash: [5, 3]))
                 )
         )
         .id(Self.progressMessageID)
     }
 
-    private func scrollToBottom(_ proxy: ScrollViewProxy) {
-        let targetID = !state.progressStatusText.isEmpty ? Self.progressMessageID : state.messages.last?.id
-        guard let targetID else { return }
+    private var healthChipColor: Color {
+        switch state.health {
+        case .checking:
+            return .orange
+        case .healthy:
+            return .green
+        case .error:
+            return .red
+        }
+    }
+
+    private var activityChipColor: Color {
+        switch state.activity {
+        case .idle:
+            return .secondary
+        case .thinking:
+            return .blue
+        case .activeTasks:
+            return .orange
+        }
+    }
+
+    @ViewBuilder
+    private func statusChip(label: String, color: Color) -> some View {
+        Text(label)
+            .font(.caption2.weight(.semibold))
+            .lineLimit(1)
+            .padding(.horizontal, 8)
+            .padding(.vertical, 4)
+            .background(
+                Capsule()
+                    .fill(color.opacity(colorScheme == .dark ? 0.22 : 0.14))
+                    .overlay(
+                        Capsule()
+                            .stroke(color.opacity(colorScheme == .dark ? 0.55 : 0.30), lineWidth: 1)
+                    )
+            )
+            .foregroundStyle(colorScheme == .dark ? .white : color)
+    }
+
+    private func scrollToBottom(_ proxy: ScrollViewProxy, animated: Bool = true) {
+        let targetID = Self.bottomAnchorID
         DispatchQueue.main.async {
-            withAnimation(.easeOut(duration: 0.15)) {
+            if animated {
+                withAnimation(.easeOut(duration: 0.15)) {
+                    proxy.scrollTo(targetID, anchor: .bottom)
+                }
+            } else {
                 proxy.scrollTo(targetID, anchor: .bottom)
             }
         }

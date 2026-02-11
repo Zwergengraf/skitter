@@ -103,7 +103,7 @@ indirect enum JSONValue: Equatable, Decodable {
     }
 }
 
-struct MessageAttachment: Identifiable {
+struct MessageAttachment: Identifiable, Equatable {
     let id = UUID()
     let filename: String
     let contentType: String
@@ -111,7 +111,7 @@ struct MessageAttachment: Identifiable {
     let sourceURL: String?
 }
 
-struct ChatMessage: Identifiable {
+struct ChatMessage: Identifiable, Equatable {
     let id: String
     let role: ChatRole
     let content: String

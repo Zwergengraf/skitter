@@ -291,10 +291,7 @@ struct APIClient {
     }
 
     private func url(path: String) throws -> URL {
-        let base = settings.apiURL.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard let baseURL = URL(string: base) else {
-            throw APIError.invalidBaseURL
-        }
+        let baseURL = try normalizedBaseURL()
         let trimmed = path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
         let parts = trimmed.split(separator: "?", maxSplits: 1, omittingEmptySubsequences: false)
         let pathPart = String(parts[0])
@@ -313,9 +310,27 @@ struct APIClient {
     private func resolveURL(from rawURL: String) throws -> URL {
         let trimmed = rawURL.trimmingCharacters(in: .whitespacesAndNewlines)
         if let url = URL(string: trimmed), url.scheme != nil {
-            return url
+            return normalizeLocalhost(url)
         }
         return try url(path: trimmed)
+    }
+
+    private func normalizedBaseURL() throws -> URL {
+        let base = settings.apiURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let raw = URL(string: base) else {
+            throw APIError.invalidBaseURL
+        }
+        return normalizeLocalhost(raw)
+    }
+
+    private func normalizeLocalhost(_ url: URL) -> URL {
+        guard var components = URLComponents(url: url, resolvingAgainstBaseURL: false) else {
+            return url
+        }
+        if components.host?.lowercased() == "localhost" {
+            components.host = "127.0.0.1"
+        }
+        return components.url ?? url
     }
 
     private func ensureHTTP200(response: URLResponse, data: Data) throws {
