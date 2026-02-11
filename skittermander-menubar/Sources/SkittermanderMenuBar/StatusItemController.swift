@@ -1,15 +1,14 @@
 import AppKit
 import Foundation
-import SwiftUI
 
 @MainActor
-final class StatusItemController: NSObject {
+final class StatusItemController: NSObject, NSMenuDelegate {
     private let statusItem: NSStatusItem
     private let state: AppState
     private let chatWindowController: ChatWindowController
     private let openSettings: () -> Void
     private let openAbout: () -> Void
-    private let statusPopover = NSPopover()
+    private let statusMenu = NSMenu()
     private let unreadBadgeView = NSView(frame: .zero)
     private var refreshTimer: Timer?
 
@@ -26,7 +25,6 @@ final class StatusItemController: NSObject {
         self.statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         super.init()
         configureButton()
-        configurePopover()
         refreshAppearance()
         refreshTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
             Task { @MainActor [weak self] in
@@ -69,7 +67,6 @@ final class StatusItemController: NSObject {
     @objc
     private func handleClick(_ sender: Any?) {
         guard let event = NSApp.currentEvent else {
-            statusPopover.performClose(nil)
             chatWindowController.toggle(relativeTo: statusItem.button)
             return
         }
@@ -77,45 +74,85 @@ final class StatusItemController: NSObject {
         switch event.type {
         case .rightMouseUp:
             chatWindowController.close()
-            toggleStatusPopover()
+            showStatusMenu(with: event)
         default:
-            statusPopover.performClose(nil)
             chatWindowController.toggle(relativeTo: statusItem.button)
         }
     }
 
-    private func configurePopover() {
-        let view = StatusPopoverView(
-            state: state,
-            openSettings: { [weak self] in
-                self?.openSettings()
-                self?.statusPopover.performClose(nil)
-            },
-            openAbout: { [weak self] in
-                self?.openAbout()
-                self?.statusPopover.performClose(nil)
-            },
-            quitApp: {
-                NSApp.terminate(nil)
-            }
-        )
-        let host = NSHostingController(rootView: view)
-        statusPopover.contentViewController = host
-        statusPopover.behavior = .transient
-        statusPopover.animates = true
+    private func showStatusMenu(with event: NSEvent) {
+        guard let button = statusItem.button else { return }
+        _ = event
+        rebuildStatusMenu()
+        statusItem.menu = statusMenu
+        button.performClick(nil)
     }
 
-    private func toggleStatusPopover() {
-        guard let button = statusItem.button else { return }
-        if statusPopover.isShown {
-            statusPopover.performClose(nil)
-            return
+    private func rebuildStatusMenu() {
+        statusMenu.removeAllItems()
+        statusMenu.autoenablesItems = false
+        statusMenu.delegate = self
+
+        let title = NSMenuItem(title: "Skittermander", action: nil, keyEquivalent: "")
+        title.isEnabled = false
+        statusMenu.addItem(title)
+        statusMenu.addItem(.separator())
+
+        statusMenu.addItem(disabledInfoItem(label: "Status", value: "\(state.health.label), \(state.activity.label)"))
+        statusMenu.addItem(disabledInfoItem(label: "Model", value: state.modelName))
+        statusMenu.addItem(disabledInfoItem(label: "Context", value: "\(state.contextTokens) tokens"))
+        statusMenu.addItem(disabledInfoItem(label: "Session cost", value: "$\(String(format: "%.2f", state.sessionCost))"))
+        if let sessionID = state.sessionID, !sessionID.isEmpty {
+            statusMenu.addItem(disabledInfoItem(label: "Session", value: sessionID))
         }
-        NSApp.activate(ignoringOtherApps: true)
-        statusPopover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
-        statusPopover.contentViewController?.view.window?.makeKey()
-        DispatchQueue.main.async { [weak self] in
-            self?.statusPopover.contentViewController?.view.window?.makeKey()
+        if !state.pendingToolApprovals.isEmpty {
+            statusMenu.addItem(disabledInfoItem(label: "Approvals", value: "\(state.pendingToolApprovals.count) pending"))
+        }
+
+        statusMenu.addItem(.separator())
+        statusMenu.addItem(actionItem(title: "Open Chat", action: #selector(openChatFromMenu)))
+        statusMenu.addItem(actionItem(title: "Settings…", action: #selector(openSettingsFromMenu)))
+        statusMenu.addItem(actionItem(title: "About…", action: #selector(openAboutFromMenu)))
+        statusMenu.addItem(.separator())
+        statusMenu.addItem(actionItem(title: "Quit", action: #selector(quitFromMenu)))
+    }
+
+    private func disabledInfoItem(label: String, value: String) -> NSMenuItem {
+        let item = NSMenuItem(title: "\(label): \(value)", action: nil, keyEquivalent: "")
+        item.isEnabled = false
+        return item
+    }
+
+    private func actionItem(title: String, action: Selector) -> NSMenuItem {
+        let item = NSMenuItem(title: title, action: action, keyEquivalent: "")
+        item.target = self
+        item.isEnabled = true
+        return item
+    }
+
+    @objc
+    private func openChatFromMenu() {
+        chatWindowController.toggle(relativeTo: statusItem.button)
+    }
+
+    @objc
+    private func openSettingsFromMenu() {
+        openSettings()
+    }
+
+    @objc
+    private func openAboutFromMenu() {
+        openAbout()
+    }
+
+    @objc
+    private func quitFromMenu() {
+        NSApp.terminate(nil)
+    }
+
+    func menuDidClose(_ menu: NSMenu) {
+        if menu === statusMenu {
+            statusItem.menu = nil
         }
     }
 
