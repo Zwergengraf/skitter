@@ -17,7 +17,26 @@ from ..observability.logging import configure_logging
 from ..tools.approval_service import ToolApprovalService
 from ..tools.sandbox_manager import sandbox_manager
 from .security import AuthPrincipal, extract_credential, hash_secret, utcnow
-from .routes import auth, channels, commands, events, memory, messages, overview, schedules, sessions, skills, tools, users, sandbox, config, secrets, models, runs
+from .routes import (
+    agent_jobs,
+    auth,
+    channels,
+    commands,
+    config,
+    events,
+    memory,
+    messages,
+    models,
+    overview,
+    runs,
+    sandbox,
+    schedules,
+    secrets,
+    sessions,
+    skills,
+    tools,
+    users,
+)
 
 
 def create_app() -> FastAPI:
@@ -37,6 +56,7 @@ def create_app() -> FastAPI:
     app.state.runtime = AgentRuntime(app.state.event_bus, approval_service=app.state.approval_service)
     app.state.scheduler_service = SchedulerService(app.state.runtime)
     app.state.runtime.set_scheduler_service(app.state.scheduler_service)
+    app.state.job_service = None
     app.state.user_notifier = None
     app.state.started_at = datetime.utcnow()
 
@@ -91,6 +111,7 @@ def create_app() -> FastAPI:
     app.include_router(messages.router)
     app.include_router(events.router)
     app.include_router(tools.router)
+    app.include_router(agent_jobs.router)
     app.include_router(runs.router)
     app.include_router(skills.router)
     app.include_router(models.router)

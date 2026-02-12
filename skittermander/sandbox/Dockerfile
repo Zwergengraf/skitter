@@ -28,6 +28,7 @@ COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
 
 # Install Codex using Homebrew
 RUN brew install codex
+RUN mkdir -p /workspace/.codex
 ENV CODEX_HOME=/workspace/.codex
 
 RUN mkdir -p /tmp/tmux-sockets

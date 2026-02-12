@@ -60,10 +60,12 @@ class AgentRuntime:
         graph: Optional[object] = None,
         approval_service: ToolApprovalService | None = None,
         scheduler_service=None,
+        job_service=None,
     ) -> None:
         self.event_bus = event_bus
         self._approval_service = approval_service
         self._scheduler_service = scheduler_service
+        self._job_service = job_service
         self._fixed_graph = graph
         self._graphs: dict[str, object] = {}
         if graph is None:
@@ -71,6 +73,7 @@ class AgentRuntime:
             self._graphs[default_name] = build_graph(
                 approval_service=approval_service,
                 scheduler_service=scheduler_service,
+                job_service=job_service,
                 model_name=default_name,
                 purpose="main",
             )
@@ -80,6 +83,11 @@ class AgentRuntime:
     def set_scheduler_service(self, scheduler_service) -> None:
         self._scheduler_service = scheduler_service
         # Force graph rebuild so scheduler-aware tools are wired correctly.
+        self._graphs.clear()
+
+    def set_job_service(self, job_service) -> None:
+        self._job_service = job_service
+        # Force graph rebuild so job tools are wired correctly.
         self._graphs.clear()
 
     @staticmethod
@@ -484,6 +492,7 @@ class AgentRuntime:
             self._graphs[model_name] = build_graph(
                 approval_service=self._approval_service,
                 scheduler_service=self._scheduler_service,
+                job_service=self._job_service,
                 model_name=model_name,
                 purpose=purpose,
             )

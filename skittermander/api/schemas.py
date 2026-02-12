@@ -329,6 +329,40 @@ class ScheduledJobOut(BaseModel):
     next_run_at: datetime | None = None
 
 
+class AgentJobListItem(BaseModel):
+    id: str
+    user_id: str
+    session_id: str | None = None
+    kind: str
+    name: str
+    status: str
+    model: str | None = None
+    target_scope_type: str = "private"
+    target_scope_id: str = ""
+    target_origin: str | None = None
+    target_destination_id: str | None = None
+    cancel_requested: bool = False
+    tool_calls_used: int = 0
+    input_tokens: int = 0
+    output_tokens: int = 0
+    total_tokens: int = 0
+    cost: float = 0.0
+    error: str | None = None
+    created_at: datetime
+    started_at: datetime | None = None
+    finished_at: datetime | None = None
+    delivered_at: datetime | None = None
+    delivery_error: str | None = None
+
+
+class AgentJobDetailOut(AgentJobListItem):
+    run_id: str
+    payload: dict = Field(default_factory=dict)
+    limits: dict = Field(default_factory=dict)
+    result: dict = Field(default_factory=dict)
+    tool_runs: list[SessionToolRunOut] = Field(default_factory=list)
+
+
 class UserListItem(BaseModel):
     id: str
     transport_user_id: str

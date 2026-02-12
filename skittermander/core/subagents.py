@@ -10,7 +10,13 @@ from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, System
 
 from .config import settings
 from .llm import resolve_model
-from .run_limits import RunBudgetUsageCallback
+from .run_limits import (
+    RunBudgetUsageCallback,
+    RunLimitsState,
+    get_current_run_limits,
+    reset_current_run_limits,
+    set_current_run_limits,
+)
 from .usage import collect_usage, record_usage
 
 
@@ -31,7 +37,7 @@ class SubAgentResult:
     status: str
     final_text: str = ""
     error: str | None = None
-    usage: dict[str, int] = field(default_factory=dict)
+    usage: dict[str, Any] = field(default_factory=dict)
     transcript: list[dict[str, str]] = field(default_factory=list)
     artifacts: list[str] = field(default_factory=list)
 
@@ -59,19 +65,30 @@ class SubAgentService:
         model_name: str,
         system_prompt: str,
         spec: SubAgentTaskSpec,
+        *,
+        max_runtime_seconds: int | None = None,
+        limits_override: dict[str, float | int] | None = None,
     ) -> SubAgentResult:
         name = (spec.name or "").strip() or "sub-agent"
+        timeout_seconds = max(1, int(max_runtime_seconds or settings.subagent_timeout_seconds))
         try:
             async with self._semaphore:
                 return await asyncio.wait_for(
-                    self._run_one_internal(user_id, session_id, model_name, system_prompt, spec),
-                    timeout=max(1, int(settings.subagent_timeout_seconds)),
+                    self._run_one_internal(
+                        user_id,
+                        session_id,
+                        model_name,
+                        system_prompt,
+                        spec,
+                        limits_override=limits_override,
+                    ),
+                    timeout=timeout_seconds,
                 )
         except asyncio.TimeoutError:
             return SubAgentResult(
                 name=name,
                 status="timeout",
-                error=f"Timed out after {int(settings.subagent_timeout_seconds)} seconds.",
+                error=f"Timed out after {timeout_seconds} seconds.",
             )
         except Exception as exc:
             return SubAgentResult(name=name, status="failed", error=str(exc))
@@ -94,6 +111,8 @@ class SubAgentService:
         model_name: str,
         system_prompt: str,
         spec: SubAgentTaskSpec,
+        *,
+        limits_override: dict[str, float | int] | None = None,
     ) -> SubAgentResult:
         graph = self._worker_graph(model_name)
         worker_name = (spec.name or "").strip() or "sub-agent"
@@ -101,12 +120,31 @@ class SubAgentService:
         worker_prompt = self._build_worker_prompt(spec)
         request_id = str(uuid.uuid4())
         resolved_model = resolve_model(model_name, purpose="main")
+        active_limits = get_current_run_limits()
+        applied_limits = active_limits
+        limit_token = None
+        if limits_override is not None:
+            applied_limits = RunLimitsState(
+                max_tool_calls=max(0, int(limits_override.get("max_tool_calls", settings.job_limits_max_tool_calls))),
+                max_runtime_seconds=max(
+                    1,
+                    int(limits_override.get("max_runtime_seconds", settings.job_limits_max_runtime_seconds)),
+                ),
+                max_cost_usd=max(0.0, float(limits_override.get("max_cost_usd", settings.job_limits_max_cost_usd))),
+                input_cost_per_1m=float(resolved_model.input_cost_per_1m),
+                output_cost_per_1m=float(resolved_model.output_cost_per_1m),
+                start_time=asyncio.get_running_loop().time(),
+            )
+            limit_token = set_current_run_limits(applied_limits)
         input_messages: list[BaseMessage] = []
         if system_prompt:
             input_messages.append(SystemMessage(content=system_prompt))
         input_messages.append(SystemMessage(content=worker_instruction))
         input_messages.append(HumanMessage(content=worker_prompt, additional_kwargs={"message_id": request_id}))
-        per_worker_tool_budget = max(1, int(settings.limits_max_tool_calls))
+        per_worker_tool_budget = max(
+            1,
+            int(applied_limits.max_tool_calls if applied_limits is not None else settings.limits_max_tool_calls),
+        )
         invoke_config = {
             "callbacks": [
                 RunBudgetUsageCallback(
@@ -116,26 +154,39 @@ class SubAgentService:
             ],
             "recursion_limit": max(16, per_worker_tool_budget * 2 + 8),
         }
-        result = await graph.ainvoke({"messages": input_messages}, config=invoke_config)
-        messages = result.get("messages", input_messages)
-        final_text = self._extract_final_text(messages)
-        usage = collect_usage(messages, request_id) or {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
-        if usage:
-            await record_usage(session_id, user_id, model_name, usage)
-        transcript = self._compact_transcript(messages)
-        artifacts = self._extract_artifacts(messages)
-        return SubAgentResult(
-            name=worker_name,
-            status="completed",
-            final_text=final_text,
-            usage={
-                "input_tokens": int(usage.get("input_tokens") or 0),
-                "output_tokens": int(usage.get("output_tokens") or 0),
-                "total_tokens": int(usage.get("total_tokens") or 0),
-            },
-            transcript=transcript,
-            artifacts=artifacts,
-        )
+        try:
+            result = await graph.ainvoke({"messages": input_messages}, config=invoke_config)
+            messages = result.get("messages", input_messages)
+            final_text = self._extract_final_text(messages)
+            usage = collect_usage(messages, request_id) or {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
+            if usage:
+                await record_usage(session_id, user_id, model_name, usage)
+            input_tokens = int(usage.get("input_tokens") or 0)
+            output_tokens = int(usage.get("output_tokens") or 0)
+            total_tokens = int(usage.get("total_tokens") or 0)
+            run_cost = (input_tokens / 1_000_000.0) * float(resolved_model.input_cost_per_1m) + (
+                output_tokens / 1_000_000.0
+            ) * float(resolved_model.output_cost_per_1m)
+            transcript = self._compact_transcript(messages)
+            artifacts = self._extract_artifacts(messages)
+            return SubAgentResult(
+                name=worker_name,
+                status="completed",
+                final_text=final_text,
+                usage={
+                    "input_tokens": input_tokens,
+                    "output_tokens": output_tokens,
+                    "total_tokens": total_tokens,
+                    "cost_usd": run_cost,
+                    "tool_calls_used": int(applied_limits.tool_calls_used) if applied_limits is not None else 0,
+                    "spent_cost_usd": float(applied_limits.spent_cost_usd) if applied_limits is not None else run_cost,
+                },
+                transcript=transcript,
+                artifacts=artifacts,
+            )
+        finally:
+            if limit_token is not None:
+                reset_current_run_limits(limit_token)
 
     def _worker_instruction(self) -> str:
         return (

@@ -373,3 +373,118 @@ CREATE TABLE IF NOT EXISTS scheduled_runs (
     attachments JSONB NOT NULL DEFAULT '{}'::jsonb,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+
+CREATE TABLE IF NOT EXISTS agent_jobs (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL,
+    session_id TEXT,
+    kind TEXT NOT NULL DEFAULT 'sub_agent',
+    name TEXT NOT NULL DEFAULT 'Background job',
+    status TEXT NOT NULL DEFAULT 'queued',
+    model TEXT,
+    target_scope_type TEXT NOT NULL DEFAULT 'private',
+    target_scope_id TEXT NOT NULL DEFAULT '',
+    target_origin TEXT,
+    target_destination_id TEXT,
+    payload JSONB NOT NULL DEFAULT '{}'::jsonb,
+    limits JSONB NOT NULL DEFAULT '{}'::jsonb,
+    result JSONB NOT NULL DEFAULT '{}'::jsonb,
+    error TEXT,
+    cancel_requested BOOLEAN NOT NULL DEFAULT FALSE,
+    tool_calls_used INTEGER NOT NULL DEFAULT 0,
+    input_tokens INTEGER NOT NULL DEFAULT 0,
+    output_tokens INTEGER NOT NULL DEFAULT 0,
+    total_tokens INTEGER NOT NULL DEFAULT 0,
+    cost DOUBLE PRECISION NOT NULL DEFAULT 0,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    started_at TIMESTAMPTZ,
+    finished_at TIMESTAMPTZ,
+    delivered_at TIMESTAMPTZ,
+    delivery_error TEXT
+);
+
+ALTER TABLE agent_jobs
+    ADD COLUMN IF NOT EXISTS session_id TEXT;
+
+ALTER TABLE agent_jobs
+    ADD COLUMN IF NOT EXISTS kind TEXT NOT NULL DEFAULT 'sub_agent';
+
+ALTER TABLE agent_jobs
+    ADD COLUMN IF NOT EXISTS name TEXT NOT NULL DEFAULT 'Background job';
+
+ALTER TABLE agent_jobs
+    ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'queued';
+
+ALTER TABLE agent_jobs
+    ADD COLUMN IF NOT EXISTS model TEXT;
+
+ALTER TABLE agent_jobs
+    ADD COLUMN IF NOT EXISTS target_scope_type TEXT NOT NULL DEFAULT 'private';
+
+ALTER TABLE agent_jobs
+    ADD COLUMN IF NOT EXISTS target_scope_id TEXT NOT NULL DEFAULT '';
+
+ALTER TABLE agent_jobs
+    ADD COLUMN IF NOT EXISTS target_origin TEXT;
+
+ALTER TABLE agent_jobs
+    ADD COLUMN IF NOT EXISTS target_destination_id TEXT;
+
+ALTER TABLE agent_jobs
+    ADD COLUMN IF NOT EXISTS payload JSONB NOT NULL DEFAULT '{}'::jsonb;
+
+ALTER TABLE agent_jobs
+    ADD COLUMN IF NOT EXISTS limits JSONB NOT NULL DEFAULT '{}'::jsonb;
+
+ALTER TABLE agent_jobs
+    ADD COLUMN IF NOT EXISTS result JSONB NOT NULL DEFAULT '{}'::jsonb;
+
+ALTER TABLE agent_jobs
+    ADD COLUMN IF NOT EXISTS error TEXT;
+
+ALTER TABLE agent_jobs
+    ADD COLUMN IF NOT EXISTS cancel_requested BOOLEAN NOT NULL DEFAULT FALSE;
+
+ALTER TABLE agent_jobs
+    ADD COLUMN IF NOT EXISTS tool_calls_used INTEGER NOT NULL DEFAULT 0;
+
+ALTER TABLE agent_jobs
+    ADD COLUMN IF NOT EXISTS input_tokens INTEGER NOT NULL DEFAULT 0;
+
+ALTER TABLE agent_jobs
+    ADD COLUMN IF NOT EXISTS output_tokens INTEGER NOT NULL DEFAULT 0;
+
+ALTER TABLE agent_jobs
+    ADD COLUMN IF NOT EXISTS total_tokens INTEGER NOT NULL DEFAULT 0;
+
+ALTER TABLE agent_jobs
+    ADD COLUMN IF NOT EXISTS cost DOUBLE PRECISION NOT NULL DEFAULT 0;
+
+ALTER TABLE agent_jobs
+    ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ NOT NULL DEFAULT NOW();
+
+ALTER TABLE agent_jobs
+    ADD COLUMN IF NOT EXISTS started_at TIMESTAMPTZ;
+
+ALTER TABLE agent_jobs
+    ADD COLUMN IF NOT EXISTS finished_at TIMESTAMPTZ;
+
+ALTER TABLE agent_jobs
+    ADD COLUMN IF NOT EXISTS delivered_at TIMESTAMPTZ;
+
+ALTER TABLE agent_jobs
+    ADD COLUMN IF NOT EXISTS delivery_error TEXT;
+
+UPDATE agent_jobs
+SET target_scope_type = 'private'
+WHERE target_scope_type IS NULL OR target_scope_type = '';
+
+UPDATE agent_jobs
+SET target_scope_id = 'private:' || user_id
+WHERE target_scope_id IS NULL OR target_scope_id = '';
+
+CREATE INDEX IF NOT EXISTS agent_jobs_user_created_idx
+    ON agent_jobs (user_id, created_at DESC);
+
+CREATE INDEX IF NOT EXISTS agent_jobs_status_created_idx
+    ON agent_jobs (status, created_at ASC);

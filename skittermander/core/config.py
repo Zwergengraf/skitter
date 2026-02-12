@@ -200,7 +200,7 @@ class Settings(BaseSettings):
     subagent_transcript_chars: int = Field(default=12000)
     tool_approval_required: bool = Field(default=True)
     tool_approval_tools: str = Field(
-        default="read,write,edit,list,delete,download,browser,browser_action,sub_agent,sub_agent_batch,shell,create_secret"
+        default="read,write,edit,list,delete,download,browser,browser_action,sub_agent,sub_agent_batch,job_start,shell,create_secret"
     )
     cors_origins: str = Field(default="http://localhost:5173")
     # Env-only: API key required for /v1/* HTTP endpoints.
@@ -218,6 +218,12 @@ class Settings(BaseSettings):
     limits_max_tool_calls: int = Field(default=12)
     limits_max_runtime_seconds: int = Field(default=180)
     limits_max_cost_usd: float = Field(default=2.0)
+    jobs_enabled: bool = Field(default=True)
+    jobs_poll_interval_seconds: int = Field(default=2)
+    jobs_max_concurrent: int = Field(default=2)
+    job_limits_max_tool_calls: int = Field(default=32)
+    job_limits_max_runtime_seconds: int = Field(default=900)
+    job_limits_max_cost_usd: float = Field(default=5.0)
     discord_progress_updates: bool = Field(default=True)
     discord_progress_interval_seconds: int = Field(default=3)
 

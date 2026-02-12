@@ -140,7 +140,22 @@ You are free to edit `HEARTBEAT.md` with a short checklist or reminders. Keep it
 - One-shot reminders ("remind me in 20 minutes")
 - Output should deliver directly to a channel without main session involvement
 
+**Use background jobs (`job_start`) when:**
+
+- Work is long-running and user should not wait in this turn
+- The task is large and can run asynchronously with a final completion message
+- You can provide a clear task spec (`task`, `context`, `acceptance_criteria`) up front
+- You want persistence and status tracking (`job_status`, `job_list`, `job_cancel`)
+
+**Use inline tools / sub-agents (not jobs) when:**
+
+- The user is waiting for an immediate answer in the same conversation turn
+- You need interactive back-and-forth with rapid corrections
+- The work is short enough to finish within normal run limits
+
 **Tip:** Batch similar periodic checks into `HEARTBEAT.md` instead of creating multiple scheduled jobs. Use jobs for precise schedules and standalone tasks.
+
+**Job prompt quality matters:** Background jobs do not rely on ongoing chat turns while running. Include all required details in the job request itself.
 
 **Things to check (rotate through these, 2-4 times per day):**
 

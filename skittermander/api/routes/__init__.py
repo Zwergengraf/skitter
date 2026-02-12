@@ -1,6 +1,26 @@
-from . import auth, channels, commands, events, memory, messages, overview, schedules, sessions, skills, tools, users, sandbox, config, secrets, models, runs
+from . import (
+    agent_jobs,
+    auth,
+    channels,
+    commands,
+    config,
+    events,
+    memory,
+    messages,
+    models,
+    overview,
+    runs,
+    sandbox,
+    schedules,
+    secrets,
+    sessions,
+    skills,
+    tools,
+    users,
+)
 
 __all__ = [
+    "agent_jobs",
     "channels",
     "commands",
     "auth",

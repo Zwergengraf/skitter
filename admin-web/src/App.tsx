@@ -35,6 +35,8 @@ import { api } from "@/lib/api";
 import { incidents } from "@/lib/mock";
 import type { NavItemId } from "@/components/navigation";
 import type {
+  AgentJobDetail,
+  AgentJobListItem,
   ChannelListItem,
   MemoryEntry,
   OverviewResponse,
@@ -53,6 +55,7 @@ const views: Record<NavItemId, string> = {
   overview: "Overview",
   sessions: "Sessions",
   tools: "Tool Runs",
+  "agent-jobs": "Background Jobs",
   jobs: "Scheduled Jobs",
   memory: "Memory",
   secrets: "Secrets",
@@ -107,6 +110,15 @@ export default function App() {
   const [jobsData, setJobsData] = useState<ScheduledJobItem[]>([]);
   const [jobsError, setJobsError] = useState<string | null>(null);
   const [jobsLoading, setJobsLoading] = useState<boolean>(false);
+  const [agentJobsData, setAgentJobsData] = useState<AgentJobListItem[]>([]);
+  const [agentJobsError, setAgentJobsError] = useState<string | null>(null);
+  const [agentJobsLoading, setAgentJobsLoading] = useState<boolean>(false);
+  const [agentJobStatusFilter, setAgentJobStatusFilter] = useState<string>("all");
+  const [agentJobUserFilter, setAgentJobUserFilter] = useState<string>("all");
+  const [selectedAgentJobId, setSelectedAgentJobId] = useState<string | null>(null);
+  const [selectedAgentJob, setSelectedAgentJob] = useState<AgentJobDetail | null>(null);
+  const [selectedAgentJobLoading, setSelectedAgentJobLoading] = useState<boolean>(false);
+  const [selectedAgentJobError, setSelectedAgentJobError] = useState<string | null>(null);
   const [usersData, setUsersData] = useState<UserListItem[]>([]);
   const [usersLoading, setUsersLoading] = useState<boolean>(false);
   const [usersError, setUsersError] = useState<string | null>(null);
@@ -300,6 +312,27 @@ export default function App() {
   }, [selectedRunId]);
 
   useEffect(() => {
+    if (!selectedAgentJobId) {
+      setSelectedAgentJob(null);
+      setSelectedAgentJobError(null);
+      return;
+    }
+    setSelectedAgentJobLoading(true);
+    setSelectedAgentJobError(null);
+    api
+      .getAgentJob(selectedAgentJobId)
+      .then((data) => {
+        setSelectedAgentJob(data);
+      })
+      .catch((error: Error) => {
+        setSelectedAgentJobError(error.message);
+      })
+      .finally(() => {
+        setSelectedAgentJobLoading(false);
+      });
+  }, [selectedAgentJobId]);
+
+  useEffect(() => {
     if (active !== "memory") {
       return;
     }
@@ -479,6 +512,22 @@ export default function App() {
       });
   };
 
+  const refreshAgentJobs = () => {
+    setAgentJobsLoading(true);
+    setAgentJobsError(null);
+    api
+      .getAgentJobs()
+      .then((data) => {
+        setAgentJobsData(data);
+      })
+      .catch((error: Error) => {
+        setAgentJobsError(error.message);
+      })
+      .finally(() => {
+        setAgentJobsLoading(false);
+      });
+  };
+
   const refreshDirectories = () => {
     setDirectoryError(null);
     Promise.all([api.getUsers(), api.getChannels()])
@@ -646,6 +695,9 @@ export default function App() {
       case "tools":
         refreshToolRuns();
         break;
+      case "agent-jobs":
+        refreshAgentJobs();
+        break;
       case "jobs":
         refreshJobs();
         break;
@@ -672,6 +724,14 @@ export default function App() {
   useEffect(() => {
     refreshDirectories();
   }, []);
+
+  useEffect(() => {
+    if (active !== "agent-jobs") {
+      setSelectedAgentJobId(null);
+      return;
+    }
+    refreshAgentJobs();
+  }, [active]);
 
   useEffect(() => {
     if (active !== "jobs") {
@@ -790,12 +850,72 @@ export default function App() {
     });
   }, [toolRunsData, toolRunToolFilter, toolRunUserFilter]);
 
+  const agentJobUsers = useMemo(() => {
+    return Array.from(
+      new Set(
+        agentJobsData
+          .map((job) => job.user_id)
+          .filter((userId): userId is string => Boolean(userId))
+      )
+    ).sort((a, b) => userLabelFor(a).localeCompare(userLabelFor(b)));
+  }, [agentJobsData, usersData]);
+
+  const agentJobStatuses = useMemo(() => {
+    return Array.from(
+      new Set(
+        agentJobsData
+          .map((job) => job.status)
+          .filter((status): status is string => Boolean(status))
+      )
+    ).sort((a, b) => a.localeCompare(b));
+  }, [agentJobsData]);
+
+  const filteredAgentJobs = useMemo(() => {
+    return agentJobsData.filter((job) => {
+      if (agentJobStatusFilter !== "all" && job.status !== agentJobStatusFilter) {
+        return false;
+      }
+      if (agentJobUserFilter !== "all" && job.user_id !== agentJobUserFilter) {
+        return false;
+      }
+      return true;
+    });
+  }, [agentJobsData, agentJobStatusFilter, agentJobUserFilter]);
+
+  const agentJobStatusCounts = useMemo(() => {
+    return agentJobsData.reduce<Record<string, number>>((acc, job) => {
+      acc[job.status] = (acc[job.status] ?? 0) + 1;
+      return acc;
+    }, {});
+  }, [agentJobsData]);
+
   const formatFullJson = (value: unknown) => {
     try {
       return JSON.stringify(value ?? {}, null, 2);
     } catch {
       return String(value ?? "");
     }
+  };
+
+  const extractAgentJobTranscript = (job: AgentJobDetail | null): Array<{ role: string; content: string }> => {
+    if (!job) {
+      return [];
+    }
+    const worker = (job.result as Record<string, unknown>)?.worker;
+    if (!worker || typeof worker !== "object") {
+      return [];
+    }
+    const transcript = (worker as Record<string, unknown>).transcript;
+    if (!Array.isArray(transcript)) {
+      return [];
+    }
+    return transcript
+      .filter((item): item is Record<string, unknown> => Boolean(item && typeof item === "object"))
+      .map((item) => ({
+        role: String(item.role ?? "message"),
+        content: String(item.content ?? ""),
+      }))
+      .filter((item) => Boolean(item.content));
   };
 
   const formatDuration = (durationMs?: number | null) => {
@@ -812,6 +932,21 @@ export default function App() {
     const minutes = Math.floor(seconds / 60);
     const rem = Math.round(seconds % 60);
     return `${minutes}m ${rem}s`;
+  };
+
+  const computeAgentJobDurationMs = (job: AgentJobListItem): number | null => {
+    if (!job.started_at) {
+      return null;
+    }
+    const startMs = new Date(job.started_at).getTime();
+    if (!Number.isFinite(startMs)) {
+      return null;
+    }
+    const endMs = job.finished_at ? new Date(job.finished_at).getTime() : Date.now();
+    if (!Number.isFinite(endMs) || endMs < startMs) {
+      return null;
+    }
+    return endMs - startMs;
   };
 
   useEffect(() => {
@@ -1394,6 +1529,172 @@ export default function App() {
                     {toolRunsData.length ? "No tool runs match the selected filters." : "No tool runs found."}
                   </div>
                 )}
+              </CardContent>
+            </Card>
+          </div>
+        )}
+
+        {active === "agent-jobs" && (
+          <div className="grid gap-6">
+            <div className="grid gap-4 md:grid-cols-4">
+              <Card>
+                <CardHeader className="pb-2">
+                  <CardDescription>Total</CardDescription>
+                  <CardTitle>{formatNumber(agentJobsData.length)}</CardTitle>
+                </CardHeader>
+              </Card>
+              <Card>
+                <CardHeader className="pb-2">
+                  <CardDescription>Queued</CardDescription>
+                  <CardTitle>{formatNumber(agentJobStatusCounts.queued ?? 0)}</CardTitle>
+                </CardHeader>
+              </Card>
+              <Card>
+                <CardHeader className="pb-2">
+                  <CardDescription>Running</CardDescription>
+                  <CardTitle>{formatNumber(agentJobStatusCounts.running ?? 0)}</CardTitle>
+                </CardHeader>
+              </Card>
+              <Card>
+                <CardHeader className="pb-2">
+                  <CardDescription>Failed / Timeout</CardDescription>
+                  <CardTitle>
+                    {formatNumber((agentJobStatusCounts.failed ?? 0) + (agentJobStatusCounts.timeout ?? 0))}
+                  </CardTitle>
+                </CardHeader>
+              </Card>
+            </div>
+
+            <Card>
+              <CardHeader>
+                <SectionHeader
+                  title="Background jobs"
+                  subtitle="Queued and completed long-running tasks started by the agent."
+                  actionLabel="Refresh"
+                  onAction={refreshAgentJobs}
+                />
+              </CardHeader>
+              <CardContent className="space-y-4">
+                <div className="grid gap-3 md:grid-cols-2">
+                  <Select value={agentJobStatusFilter} onValueChange={setAgentJobStatusFilter}>
+                    <SelectTrigger>
+                      <SelectValue placeholder="Filter by status" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="all">All statuses</SelectItem>
+                      {agentJobStatuses.map((status) => (
+                        <SelectItem key={status} value={status}>
+                          {status}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  <Select value={agentJobUserFilter} onValueChange={setAgentJobUserFilter}>
+                    <SelectTrigger>
+                      <SelectValue placeholder="Filter by user" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="all">All users</SelectItem>
+                      {agentJobUsers.map((userId) => (
+                        <SelectItem key={userId} value={userId}>
+                          {userLabelFor(userId)}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead>Name</TableHead>
+                      <TableHead>User</TableHead>
+                      <TableHead>Status</TableHead>
+                      <TableHead>Scope</TableHead>
+                      <TableHead>Created</TableHead>
+                      <TableHead>Duration</TableHead>
+                      <TableHead>Tokens</TableHead>
+                      <TableHead>Cost</TableHead>
+                      <TableHead>Delivery</TableHead>
+                      <TableHead>Actions</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {agentJobsLoading ? (
+                      <TableRow>
+                        <TableCell colSpan={10} className="text-center text-sm text-mutedForeground">
+                          Loading background jobs...
+                        </TableCell>
+                      </TableRow>
+                    ) : agentJobsError ? (
+                      <TableRow>
+                        <TableCell colSpan={10} className="text-center text-sm text-mutedForeground">
+                          {agentJobsError}
+                        </TableCell>
+                      </TableRow>
+                    ) : filteredAgentJobs.length ? (
+                      filteredAgentJobs.map((job) => (
+                        <TableRow key={job.id}>
+                          <TableCell className="max-w-[240px]">
+                            <p className="truncate font-semibold">{job.name}</p>
+                            <p className="text-xs text-mutedForeground">{job.kind}</p>
+                          </TableCell>
+                          <TableCell>{renderUser(job.user_id)}</TableCell>
+                          <TableCell>
+                            <Badge
+                              variant={
+                                job.status === "failed" || job.status === "cancelled"
+                                  ? "danger"
+                                  : job.status === "timeout"
+                                  ? "warning"
+                                  : job.status === "running"
+                                  ? "secondary"
+                                  : job.status === "queued"
+                                  ? "warning"
+                                  : "success"
+                              }
+                            >
+                              {job.status}
+                            </Badge>
+                          </TableCell>
+                          <TableCell className="text-xs text-mutedForeground">
+                            {job.target_scope_type}:{job.target_scope_id}
+                          </TableCell>
+                          <TableCell className="text-mutedForeground">
+                            {formatRelativeTime(job.created_at)}
+                          </TableCell>
+                          <TableCell className="text-mutedForeground">
+                            {formatDuration(computeAgentJobDurationMs(job))}
+                          </TableCell>
+                          <TableCell>{formatNumber(job.total_tokens ?? 0)}</TableCell>
+                          <TableCell>{formatCurrency(job.cost ?? 0)}</TableCell>
+                          <TableCell>
+                            {job.delivery_error ? (
+                              <Badge variant="danger">failed</Badge>
+                            ) : job.delivered_at ? (
+                              <Badge variant="success">delivered</Badge>
+                            ) : (
+                              <Badge variant="secondary">pending</Badge>
+                            )}
+                          </TableCell>
+                          <TableCell>
+                            <Button size="sm" variant="outline" onClick={() => setSelectedAgentJobId(job.id)}>
+                              Details
+                            </Button>
+                          </TableCell>
+                        </TableRow>
+                      ))
+                    ) : (
+                      <TableRow>
+                        <TableCell colSpan={10} className="text-center text-sm text-mutedForeground">
+                          {agentJobsData.length
+                            ? "No background jobs match the selected filters."
+                            : "No background jobs found."}
+                        </TableCell>
+                      </TableRow>
+                    )}
+                  </TableBody>
+                </Table>
               </CardContent>
             </Card>
           </div>
@@ -2251,7 +2552,7 @@ export default function App() {
           </div>
         )}
 
-        {active !== "overview" && active !== "sessions" && active !== "tools" && active !== "jobs" && active !== "memory" && active !== "secrets" && active !== "users" && active !== "sandbox" && active !== "settings" && active !== "activity" && (
+        {active !== "overview" && active !== "sessions" && active !== "tools" && active !== "agent-jobs" && active !== "jobs" && active !== "memory" && active !== "secrets" && active !== "users" && active !== "sandbox" && active !== "settings" && active !== "activity" && (
           <Card>
             <CardHeader>
               <CardTitle>Coming soon</CardTitle>
@@ -2283,6 +2584,210 @@ export default function App() {
               </ScrollArea>
             </CardContent>
           </Card>
+        )}
+
+        {selectedAgentJobId && (
+          <Dialog
+            open={Boolean(selectedAgentJobId)}
+            onOpenChange={(open) => {
+              if (!open) {
+                setSelectedAgentJobId(null);
+              }
+            }}
+          >
+            <DialogContent className="w-[98vw] max-w-[1700px] max-h-[92vh] overflow-hidden p-0">
+              <div className="border-b border-border p-6">
+                <DialogHeader>
+                  <DialogTitle>Background Job Detail</DialogTitle>
+                  <DialogDescription>
+                    Full execution details for job `{selectedAgentJobId}`.
+                  </DialogDescription>
+                </DialogHeader>
+              </div>
+              {selectedAgentJobLoading ? (
+                <div className="p-6 text-sm text-mutedForeground">Loading background job detail...</div>
+              ) : selectedAgentJobError ? (
+                <div className="p-6 text-sm text-mutedForeground">{selectedAgentJobError}</div>
+              ) : selectedAgentJob ? (
+                <>
+                  <div className="grid gap-4 border-b border-border p-6 md:grid-cols-5">
+                    <div className="rounded-2xl border border-border bg-card p-4">
+                      <p className="text-xs uppercase tracking-[0.2em] text-mutedForeground">Status</p>
+                      <div className="mt-2">
+                        <Badge
+                          variant={
+                            selectedAgentJob.status === "failed" || selectedAgentJob.status === "cancelled"
+                              ? "danger"
+                              : selectedAgentJob.status === "timeout"
+                              ? "warning"
+                              : selectedAgentJob.status === "running"
+                              ? "secondary"
+                              : selectedAgentJob.status === "queued"
+                              ? "warning"
+                              : "success"
+                          }
+                        >
+                          {selectedAgentJob.status}
+                        </Badge>
+                      </div>
+                      <p className="mt-2 text-xs text-mutedForeground">
+                        Duration: {formatDuration(computeAgentJobDurationMs(selectedAgentJob))}
+                      </p>
+                    </div>
+                    <div className="rounded-2xl border border-border bg-card p-4">
+                      <p className="text-xs uppercase tracking-[0.2em] text-mutedForeground">Model</p>
+                      <p className="mt-2 text-sm">{selectedAgentJob.model ?? "—"}</p>
+                      <p className="mt-1 text-xs text-mutedForeground">{selectedAgentJob.kind}</p>
+                    </div>
+                    <div className="rounded-2xl border border-border bg-card p-4">
+                      <p className="text-xs uppercase tracking-[0.2em] text-mutedForeground">Usage</p>
+                      <p className="mt-2 text-sm">{formatNumber(selectedAgentJob.total_tokens ?? 0)} tokens</p>
+                      <p className="mt-1 text-xs text-mutedForeground">
+                        {formatNumber(selectedAgentJob.tool_calls_used ?? 0)} tools ·{" "}
+                        {formatCurrency(selectedAgentJob.cost ?? 0)}
+                      </p>
+                    </div>
+                    <div className="rounded-2xl border border-border bg-card p-4">
+                      <p className="text-xs uppercase tracking-[0.2em] text-mutedForeground">Target</p>
+                      <p className="mt-2 text-sm">
+                        {selectedAgentJob.target_scope_type}:{selectedAgentJob.target_scope_id}
+                      </p>
+                      <p className="mt-1 text-xs text-mutedForeground">
+                        {selectedAgentJob.target_origin ?? "—"} · {selectedAgentJob.target_destination_id ?? "—"}
+                      </p>
+                    </div>
+                    <div className="rounded-2xl border border-border bg-card p-4">
+                      <p className="text-xs uppercase tracking-[0.2em] text-mutedForeground">Delivery</p>
+                      {selectedAgentJob.delivery_error ? (
+                        <Badge className="mt-2" variant="danger">
+                          failed
+                        </Badge>
+                      ) : selectedAgentJob.delivered_at ? (
+                        <Badge className="mt-2" variant="success">
+                          delivered
+                        </Badge>
+                      ) : (
+                        <Badge className="mt-2" variant="secondary">
+                          pending
+                        </Badge>
+                      )}
+                      <p className="mt-2 text-xs text-mutedForeground">
+                        {selectedAgentJob.delivered_at
+                          ? formatRelativeTime(selectedAgentJob.delivered_at)
+                          : "Not delivered yet"}
+                      </p>
+                    </div>
+                    <div className="rounded-2xl border border-border bg-card p-4 md:col-span-5">
+                      <p className="text-xs uppercase tracking-[0.2em] text-mutedForeground">Run ID</p>
+                      <p className="mt-2 text-sm font-mono">{selectedAgentJob.run_id}</p>
+                    </div>
+                  </div>
+                  {(selectedAgentJob.error || selectedAgentJob.delivery_error) && (
+                    <div className="border-b border-border px-6 py-4 text-sm">
+                      {selectedAgentJob.error ? (
+                        <p className="text-foreground">Execution error: {selectedAgentJob.error}</p>
+                      ) : null}
+                      {selectedAgentJob.delivery_error ? (
+                        <p className="text-foreground">Delivery error: {selectedAgentJob.delivery_error}</p>
+                      ) : null}
+                    </div>
+                  )}
+                  <div className="grid min-h-0 flex-1 gap-4 p-6 md:grid-cols-3">
+                    <div className="min-h-0">
+                      <p className="text-xs font-semibold uppercase tracking-[0.2em] text-mutedForeground">
+                        Payload
+                      </p>
+                      <ScrollArea className="mt-2 h-[52vh] rounded-2xl border border-border bg-muted/40 p-3">
+                        <pre className="text-xs text-foreground whitespace-pre-wrap">
+                          {formatFullJson(selectedAgentJob.payload)}
+                        </pre>
+                      </ScrollArea>
+                    </div>
+                    <div className="min-h-0">
+                      <p className="text-xs font-semibold uppercase tracking-[0.2em] text-mutedForeground">
+                        Limits
+                      </p>
+                      <ScrollArea className="mt-2 h-[52vh] rounded-2xl border border-border bg-muted/40 p-3">
+                        <pre className="text-xs text-foreground whitespace-pre-wrap">
+                          {formatFullJson(selectedAgentJob.limits)}
+                        </pre>
+                      </ScrollArea>
+                    </div>
+                    <div className="min-h-0">
+                      <p className="text-xs font-semibold uppercase tracking-[0.2em] text-mutedForeground">
+                        Result
+                      </p>
+                      <ScrollArea className="mt-2 h-[52vh] rounded-2xl border border-border bg-muted/40 p-3">
+                        <pre className="text-xs text-foreground whitespace-pre-wrap">
+                          {formatFullJson(selectedAgentJob.result)}
+                        </pre>
+                      </ScrollArea>
+                    </div>
+                  </div>
+                  <div className="grid gap-4 border-t border-border px-6 py-4 md:grid-cols-2">
+                    <div>
+                      <p className="text-xs font-semibold uppercase tracking-[0.2em] text-mutedForeground">
+                        Worker transcript
+                      </p>
+                      <ScrollArea className="mt-2 h-[30vh] rounded-2xl border border-border bg-muted/40 p-3">
+                        <div className="space-y-3">
+                          {extractAgentJobTranscript(selectedAgentJob).length ? (
+                            extractAgentJobTranscript(selectedAgentJob).map((turn, index) => (
+                              <div key={`${turn.role}-${index}`} className="rounded-xl border border-border bg-card p-3">
+                                <p className="text-[11px] uppercase tracking-[0.2em] text-mutedForeground">{turn.role}</p>
+                                <pre className="mt-2 text-xs text-foreground whitespace-pre-wrap">{turn.content}</pre>
+                              </div>
+                            ))
+                          ) : (
+                            <p className="text-xs text-mutedForeground">No transcript captured.</p>
+                          )}
+                        </div>
+                      </ScrollArea>
+                    </div>
+                    <div>
+                      <p className="text-xs font-semibold uppercase tracking-[0.2em] text-mutedForeground">
+                        Tool runs
+                      </p>
+                      <ScrollArea className="mt-2 h-[30vh] rounded-2xl border border-border bg-muted/40 p-3">
+                        <div className="space-y-3">
+                          {selectedAgentJob.tool_runs.length ? (
+                            selectedAgentJob.tool_runs.map((tool) => (
+                              <div key={tool.id} className="rounded-xl border border-border bg-card p-3">
+                                <div className="flex items-center justify-between">
+                                  <p className="text-sm font-semibold">{tool.tool}</p>
+                                  <Badge variant={tool.status === "failed" ? "danger" : "secondary"}>
+                                    {tool.status}
+                                  </Badge>
+                                </div>
+                                <p className="mt-1 text-xs text-mutedForeground">{formatRelativeTime(tool.created_at)}</p>
+                                <div className="mt-2 grid gap-2 md:grid-cols-2">
+                                  <pre className="rounded-lg border border-border bg-muted/40 p-2 text-[11px] text-mutedForeground whitespace-pre-wrap">
+                                    {formatJsonPreview(tool.input, 800)}
+                                  </pre>
+                                  <pre className="rounded-lg border border-border bg-muted/40 p-2 text-[11px] text-mutedForeground whitespace-pre-wrap">
+                                    {formatJsonPreview(tool.output, 800)}
+                                  </pre>
+                                </div>
+                              </div>
+                            ))
+                          ) : (
+                            <p className="text-xs text-mutedForeground">No tool runs recorded for this job yet.</p>
+                          )}
+                        </div>
+                      </ScrollArea>
+                    </div>
+                  </div>
+                </>
+              ) : (
+                <div className="p-6 text-sm text-mutedForeground">Background job not found.</div>
+              )}
+              <div className="flex justify-end border-t border-border p-4">
+                <Button variant="outline" onClick={() => setSelectedAgentJobId(null)}>
+                  Close
+                </Button>
+              </div>
+            </DialogContent>
+          </Dialog>
         )}
 
         {selectedToolRun && (

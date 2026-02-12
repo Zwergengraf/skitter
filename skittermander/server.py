@@ -11,9 +11,11 @@ import uvicorn
 from .api.app import create_app
 from .api.security import hash_pair_code, make_pair_code
 from .core.runtime import AgentRuntime
+from .core.graph import build_graph
 from .core.llm import list_models, resolve_model_name
 from .core.scheduler import SchedulerService
 from .core.heartbeat import HeartbeatService
+from .core.jobs import JobService
 from .core.conversation_scope import resolve_conversation_scope
 from .core.config import settings
 from .core.models import StreamEvent
@@ -65,6 +67,19 @@ async def main() -> None:
     approval_service = app.state.approval_service
     scheduler: SchedulerService = app.state.scheduler_service
     heartbeat_service = HeartbeatService(runtime)
+    job_service = JobService(
+        runtime=runtime,
+        graph_factory=lambda worker_model: build_graph(
+            approval_service=approval_service,
+            scheduler_service=scheduler,
+            job_service=None,
+            model_name=worker_model,
+            purpose="main",
+            include_subagent_tools=False,
+        ),
+    )
+    app.state.job_service = job_service
+    runtime.set_job_service(job_service)
     session_manager = SessionManager(runtime, settings.workspace_root)
     if sandbox_manager is not None:
         await sandbox_manager.start()
@@ -90,8 +105,10 @@ async def main() -> None:
 
     scheduler.set_deliver(_deliver)
     heartbeat_service.set_deliver(_deliver)
+    job_service.set_deliver(_deliver)
     await scheduler.start()
     await heartbeat_service.start()
+    await job_service.start()
 
     manager = TransportManager(transports)
 
@@ -486,7 +503,10 @@ async def main() -> None:
     config = uvicorn.Config(app, host="0.0.0.0", port=8000, log_level="info")
     server = uvicorn.Server(config)
 
-    await asyncio.gather(server.serve(), manager.start())
+    try:
+        await asyncio.gather(server.serve(), manager.start())
+    finally:
+        await job_service.stop()
 
 
 if __name__ == "__main__":

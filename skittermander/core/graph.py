@@ -12,6 +12,7 @@ from bs4 import BeautifulSoup
 from readability import Document
 from markdownify import markdownify as md
 from langchain.agents import create_agent
+from langchain.agents.middleware import ToolRetryMiddleware, ModelRetryMiddleware
 from langchain.tools import tool
 
 from .config import settings
@@ -187,6 +188,7 @@ async def _maybe_approve(
 def build_graph(
     approval_service: ToolApprovalService | None = None,
     scheduler_service: SchedulerService | None = None,
+    job_service=None,
     model_name: str | None = None,
     purpose: str = "main",
     include_subagent_tools: bool = True,
@@ -202,6 +204,7 @@ def build_graph(
             graph_factory=lambda worker_model: build_graph(
                 approval_service=approval_service,
                 scheduler_service=scheduler_service,
+                job_service=None,
                 model_name=worker_model,
                 purpose="main",
                 include_subagent_tools=False,
@@ -318,6 +321,34 @@ def build_graph(
                 text = text[:317].rstrip() + "..."
             return text or "Completed with no final text."
         return result.error or "Sub-agent did not complete."
+
+    def _serialize_job(job: Any) -> dict[str, Any]:
+        return {
+            "id": job.id,
+            "name": job.name,
+            "kind": job.kind,
+            "status": job.status,
+            "model": job.model,
+            "target_scope_type": job.target_scope_type,
+            "target_scope_id": job.target_scope_id,
+            "target_origin": job.target_origin,
+            "target_destination_id": job.target_destination_id,
+            "payload": job.payload or {},
+            "limits": job.limits or {},
+            "result": job.result or {},
+            "error": job.error,
+            "cancel_requested": bool(job.cancel_requested),
+            "tool_calls_used": int(job.tool_calls_used or 0),
+            "input_tokens": int(job.input_tokens or 0),
+            "output_tokens": int(job.output_tokens or 0),
+            "total_tokens": int(job.total_tokens or 0),
+            "cost": float(job.cost or 0.0),
+            "created_at": job.created_at.isoformat() if job.created_at else None,
+            "started_at": job.started_at.isoformat() if job.started_at else None,
+            "finished_at": job.finished_at.isoformat() if job.finished_at else None,
+            "delivered_at": job.delivered_at.isoformat() if job.delivered_at else None,
+            "delivery_error": job.delivery_error,
+        }
 
     async def _create_auto_tool_run(tool_name: str, payload: dict[str, Any]) -> str:
         async with SessionLocal() as session:
@@ -1026,6 +1057,120 @@ def build_graph(
         await _complete_tool_run(tool_run_id, "completed", output)
         return json.dumps(output)
 
+    @tool("job_start")
+    async def job_start(
+        task: str,
+        name: Optional[str] = None,
+        context: Optional[str] = None,
+        acceptance_criteria: Optional[str] = None,
+        model_name: Optional[str] = None,
+    ) -> str:
+        """Start a background sub-agent job for long-running work and return a job ID immediately."""
+        payload: dict[str, Any] = {
+            "task": task,
+            "name": name,
+            "context": context,
+            "acceptance_criteria": acceptance_criteria,
+            "model_name": model_name,
+        }
+        budget_message = await _enforce_tool_budget("job_start", payload)
+        if budget_message:
+            return budget_message
+        if not task or not task.strip():
+            return await _fail_untracked_call("job_start", payload, "job_start error: task is required")
+        if not settings.jobs_enabled:
+            return await _fail_untracked_call("job_start", payload, "job_start error: background jobs are disabled")
+        if job_service is None:
+            return await _fail_untracked_call("job_start", payload, "job_start error: job service unavailable")
+        selected_model = resolve_model_name(model_name or worker_model_name, purpose="main")
+        decision = await _maybe_approve("job_start", payload, approval_service, policy)
+        if not decision.approved:
+            return _denied_message("job_start")
+        try:
+            job_id = await job_service.enqueue_subagent_job(
+                user_id=_user_id(),
+                session_id=_session_id(),
+                name=(name or "").strip() or "Background sub-agent job",
+                task=task.strip(),
+                context=(context or "").strip() or None,
+                acceptance_criteria=(acceptance_criteria or "").strip() or None,
+                model_name=selected_model,
+                target_scope_type=_scope_type(),
+                target_scope_id=_scope_id(),
+                target_origin=_origin(),
+                target_destination_id=_channel_id(),
+            )
+        except Exception as exc:
+            await _complete_tool_run(decision.tool_run_id, "failed", {"error": str(exc)})
+            return f"job_start error: {exc}"
+        output = {
+            "job_id": job_id,
+            "status": "queued",
+            "model": selected_model,
+        }
+        await _complete_tool_run(decision.tool_run_id, "completed", output)
+        return json.dumps(output)
+
+    @tool("job_status")
+    async def job_status(job_id: str) -> str:
+        """Get current status and result details for a background job."""
+        payload: dict[str, Any] = {"job_id": job_id}
+        budget_message = await _enforce_tool_budget("job_status", payload)
+        if budget_message:
+            return budget_message
+        tool_run_id = await _create_auto_tool_run("job_status", payload)
+        if not job_id.strip():
+            await _complete_tool_run(tool_run_id, "failed", {"error": "job_id is required"})
+            return "job_status error: job_id is required"
+        if job_service is None:
+            await _complete_tool_run(tool_run_id, "failed", {"error": "job service unavailable"})
+            return "job_status error: job service unavailable"
+        job = await job_service.get_job(_user_id(), job_id.strip())
+        if job is None:
+            await _complete_tool_run(tool_run_id, "failed", {"error": "job not found"})
+            return "job_status error: job not found"
+        output = {"job": _serialize_job(job)}
+        await _complete_tool_run(tool_run_id, "completed", output)
+        return json.dumps(output)
+
+    @tool("job_list")
+    async def job_list(status: Optional[str] = None, limit: int = 10) -> str:
+        """List recent background jobs for the current user."""
+        payload: dict[str, Any] = {"status": status, "limit": limit}
+        budget_message = await _enforce_tool_budget("job_list", payload)
+        if budget_message:
+            return budget_message
+        tool_run_id = await _create_auto_tool_run("job_list", payload)
+        if job_service is None:
+            await _complete_tool_run(tool_run_id, "failed", {"error": "job service unavailable"})
+            return "job_list error: job service unavailable"
+        jobs = await job_service.list_jobs(_user_id(), limit=max(1, min(int(limit), 100)), status=(status or "").strip() or None)
+        output = {"jobs": [_serialize_job(job) for job in jobs]}
+        await _complete_tool_run(tool_run_id, "completed", output)
+        return json.dumps(output)
+
+    @tool("job_cancel")
+    async def job_cancel(job_id: str) -> str:
+        """Cancel a queued background job or request cancellation for a running one."""
+        payload: dict[str, Any] = {"job_id": job_id}
+        budget_message = await _enforce_tool_budget("job_cancel", payload)
+        if budget_message:
+            return budget_message
+        tool_run_id = await _create_auto_tool_run("job_cancel", payload)
+        if not job_id.strip():
+            await _complete_tool_run(tool_run_id, "failed", {"error": "job_id is required"})
+            return "job_cancel error: job_id is required"
+        if job_service is None:
+            await _complete_tool_run(tool_run_id, "failed", {"error": "job service unavailable"})
+            return "job_cancel error: job service unavailable"
+        job = await job_service.cancel_job(_user_id(), job_id.strip())
+        if job is None:
+            await _complete_tool_run(tool_run_id, "failed", {"error": "job not found"})
+            return "job_cancel error: job not found"
+        output = {"job": _serialize_job(job)}
+        await _complete_tool_run(tool_run_id, "completed", output)
+        return json.dumps(output)
+
     @tool("sub_agent")
     async def sub_agent(
         task: str,
@@ -1187,9 +1332,21 @@ def build_graph(
         schedule_list,
     ]
     if include_subagent_tools:
-        tools.extend([sub_agent, sub_agent_batch])
+        tools.extend([job_start, job_status, job_list, job_cancel, sub_agent, sub_agent_batch])
     return create_agent(
         model,
         tools=tools,
         system_prompt=None,
+        middleware=[
+            ModelRetryMiddleware(
+                max_retries=3,
+                backoff_factor=2.0,
+                initial_delay=3.0,
+            ),
+            ToolRetryMiddleware(
+                max_retries=3,
+                backoff_factor=2.0,
+                initial_delay=3.0,
+            )
+        ]
     )

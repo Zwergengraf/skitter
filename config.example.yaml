@@ -15,6 +15,14 @@ limits:
   max_tool_calls: 16
   max_runtime_seconds: 600
   max_cost_usd: 0.10
+jobs:
+  enabled: true
+  poll_interval_seconds: 2
+  max_concurrent: 2
+  limits:
+    max_tool_calls: 32
+    max_runtime_seconds: 900
+    max_cost_usd: 5.0
 providers:
   - name: local
     # api_type: openai   # optional (default)
@@ -93,6 +101,7 @@ tools:
   - browser
   - sub_agent
   - sub_agent_batch
+  - job_start
   - shell
   - create_secret
 sub_agents:

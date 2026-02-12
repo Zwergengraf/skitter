@@ -8,6 +8,7 @@ from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from .models import (
+    AgentJob,
     AuthToken,
     Channel,
     LlmUsage,
@@ -867,6 +868,159 @@ class Repository:
                 setattr(run, key, value)
         await self.session.commit()
         return run
+
+    async def create_agent_job(
+        self,
+        *,
+        user_id: str,
+        session_id: str | None,
+        kind: str,
+        name: str,
+        model: str | None,
+        payload: dict[str, Any] | None = None,
+        limits: dict[str, Any] | None = None,
+        target_scope_type: str = "private",
+        target_scope_id: str = "",
+        target_origin: str | None = None,
+        target_destination_id: str | None = None,
+    ) -> AgentJob:
+        job = AgentJob(
+            id=str(uuid.uuid4()),
+            user_id=user_id,
+            session_id=session_id,
+            kind=kind,
+            name=name,
+            status="queued",
+            model=model,
+            payload=payload or {},
+            limits=limits or {},
+            target_scope_type=target_scope_type,
+            target_scope_id=target_scope_id,
+            target_origin=target_origin,
+            target_destination_id=target_destination_id,
+            created_at=self._utcnow(),
+        )
+        self.session.add(job)
+        await self.session.commit()
+        return job
+
+    async def get_agent_job(self, job_id: str) -> Optional[AgentJob]:
+        result = await self.session.execute(select(AgentJob).where(AgentJob.id == job_id))
+        return result.scalar_one_or_none()
+
+    async def list_agent_jobs(
+        self,
+        user_id: str,
+        limit: int = 50,
+        status: str | None = None,
+    ) -> List[AgentJob]:
+        stmt = (
+            select(AgentJob)
+            .where(AgentJob.user_id == user_id)
+            .order_by(AgentJob.created_at.desc())
+            .limit(limit)
+        )
+        if status:
+            stmt = stmt.where(AgentJob.status == status)
+        result = await self.session.execute(stmt)
+        return list(result.scalars().all())
+
+    async def list_agent_jobs_all(
+        self,
+        *,
+        limit: int = 100,
+        status: str | None = None,
+        user_id: str | None = None,
+    ) -> List[AgentJob]:
+        stmt = select(AgentJob).order_by(AgentJob.created_at.desc()).limit(limit)
+        if status:
+            stmt = stmt.where(AgentJob.status == status)
+        if user_id:
+            stmt = stmt.where(AgentJob.user_id == user_id)
+        result = await self.session.execute(stmt)
+        return list(result.scalars().all())
+
+    async def claim_next_agent_job(self) -> Optional[AgentJob]:
+        stmt = (
+            select(AgentJob)
+            .where(
+                AgentJob.status == "queued",
+                AgentJob.cancel_requested == False,  # noqa: E712
+            )
+            .order_by(AgentJob.created_at.asc())
+            .limit(1)
+            .with_for_update(skip_locked=True)
+        )
+        result = await self.session.execute(stmt)
+        job = result.scalars().first()
+        if job is None:
+            return None
+        job.status = "running"
+        job.started_at = self._utcnow()
+        await self.session.commit()
+        return job
+
+    async def complete_agent_job(
+        self,
+        job_id: str,
+        *,
+        status: str,
+        result_payload: dict[str, Any] | None = None,
+        error: str | None = None,
+        tool_calls_used: int | None = None,
+        input_tokens: int | None = None,
+        output_tokens: int | None = None,
+        total_tokens: int | None = None,
+        cost: float | None = None,
+    ) -> Optional[AgentJob]:
+        result = await self.session.execute(select(AgentJob).where(AgentJob.id == job_id))
+        job = result.scalar_one_or_none()
+        if job is None:
+            return None
+        job.status = status
+        job.result = result_payload or {}
+        job.error = error
+        job.finished_at = self._utcnow()
+        if tool_calls_used is not None:
+            job.tool_calls_used = int(tool_calls_used)
+        if input_tokens is not None:
+            job.input_tokens = int(input_tokens)
+        if output_tokens is not None:
+            job.output_tokens = int(output_tokens)
+        if total_tokens is not None:
+            job.total_tokens = int(total_tokens)
+        if cost is not None:
+            job.cost = float(cost)
+        await self.session.commit()
+        return job
+
+    async def mark_agent_job_delivered(self, job_id: str, delivery_error: str | None = None) -> Optional[AgentJob]:
+        result = await self.session.execute(select(AgentJob).where(AgentJob.id == job_id))
+        job = result.scalar_one_or_none()
+        if job is None:
+            return None
+        job.delivered_at = self._utcnow()
+        job.delivery_error = delivery_error
+        await self.session.commit()
+        return job
+
+    async def request_cancel_agent_job(self, user_id: str, job_id: str) -> Optional[AgentJob]:
+        result = await self.session.execute(
+            select(AgentJob).where(AgentJob.id == job_id, AgentJob.user_id == user_id)
+        )
+        job = result.scalar_one_or_none()
+        if job is None:
+            return None
+        if job.status in {"completed", "failed", "timeout", "cancelled"}:
+            return job
+        if job.status == "queued":
+            job.status = "cancelled"
+            job.cancel_requested = True
+            job.finished_at = self._utcnow()
+        else:
+            job.cancel_requested = True
+        await self.session.commit()
+        return job
 
     async def list_secrets(self, user_id: str) -> List[Secret]:
         result = await self.session.execute(select(Secret).where(Secret.user_id == user_id))
