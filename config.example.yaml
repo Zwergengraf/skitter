@@ -38,13 +38,32 @@ models:
     model_id: local-main
     input_cost_per_1m: 0
     output_cost_per_1m: 0
+    # Optional per-model override (deep-merged over global reasoning settings):
+    # reasoning:
+    #   openai:
+    #     effort: high
+    #     summary: detailed
   - name: heartbeat
     provider: local
     model_id: local-heartbeat
     input_cost_per_1m: 0
     output_cost_per_1m: 0
+    # reasoning:
+    #   anthropic:
+    #     thinking:
+    #       budget_tokens: 4096
 main_model: local/main
 heartbeat_model: local/heartbeat
+reasoning:
+  enabled: true
+  openai:
+    use_responses_api: true
+    output_version: responses/v1
+    effort: medium
+    summary: auto
+  anthropic:
+    budget_tokens: 2048
+    output_version: ""
 embeddings:
   api_base: http://127.0.0.1:1234/v1
   api_key: ""

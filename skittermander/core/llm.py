@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Any
 
 from langchain_core.language_models import BaseChatModel
 from langchain_openai import ChatOpenAI
@@ -18,6 +19,7 @@ class ResolvedModel:
     api_key: str
     input_cost_per_1m: float = 0.0
     output_cost_per_1m: float = 0.0
+    reasoning: dict[str, Any] | None = None
 
 
 def _normalized_name(provider: str, model_name: str) -> str:
@@ -43,9 +45,68 @@ def _resolve_all_models() -> list[ResolvedModel]:
                 api_key=provider.api_key,
                 input_cost_per_1m=model.input_cost_per_1m,
                 output_cost_per_1m=model.output_cost_per_1m,
+                reasoning=dict(model.reasoning or {}),
             )
         )
     return resolved
+
+
+def _deep_merge_dict(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
+    merged = dict(base)
+    for key, value in override.items():
+        if (
+            key in merged
+            and isinstance(merged[key], dict)
+            and isinstance(value, dict)
+        ):
+            merged[key] = _deep_merge_dict(merged[key], value)
+        else:
+            merged[key] = value
+    return merged
+
+
+def _model_reasoning_override(resolved: ResolvedModel, provider_api_type: str) -> dict[str, Any]:
+    raw = resolved.reasoning or {}
+    if not isinstance(raw, dict):
+        return {}
+    provider = provider_api_type.lower().strip()
+    scoped: dict[str, Any] = {}
+    provider_specific = raw.get(provider)
+    if isinstance(provider_specific, dict):
+        scoped = _deep_merge_dict(scoped, provider_specific)
+    top_level = {k: v for k, v in raw.items() if k not in {"openai", "anthropic"}}
+    if top_level:
+        scoped = _deep_merge_dict(scoped, top_level)
+    return scoped
+
+
+def _openai_reasoning_config(resolved: ResolvedModel) -> dict[str, Any]:
+    defaults = {
+        "enabled": bool(settings.reasoning_enabled),
+        "use_responses_api": bool(settings.openai_use_responses_api),
+        "output_version": str(settings.openai_output_version or "").strip(),
+        "effort": str(settings.openai_reasoning_effort or "").strip(),
+        "summary": str(settings.openai_reasoning_summary or "").strip(),
+    }
+    return _deep_merge_dict(defaults, _model_reasoning_override(resolved, "openai"))
+
+
+def _anthropic_reasoning_config(resolved: ResolvedModel) -> dict[str, Any]:
+    defaults = {
+        "enabled": bool(settings.reasoning_enabled),
+        "output_version": str(settings.anthropic_output_version or "").strip(),
+        "thinking": {
+            "type": "enabled",
+            "budget_tokens": max(256, int(settings.anthropic_thinking_budget_tokens)),
+        },
+    }
+    merged = _deep_merge_dict(defaults, _model_reasoning_override(resolved, "anthropic"))
+    # Allow direct budget_tokens override without nesting.
+    if "budget_tokens" in merged:
+        thinking = dict(merged.get("thinking") or {})
+        thinking["budget_tokens"] = merged["budget_tokens"]
+        merged["thinking"] = thinking
+    return merged
 
 
 def list_models() -> list[ResolvedModel]:
@@ -100,11 +161,30 @@ def resolve_model(name: str | None = None, purpose: str = "main") -> ResolvedMod
 
 
 def _build_openai_llm(resolved: ResolvedModel) -> BaseChatModel:
-    return ChatOpenAI(
-        model=resolved.model,
-        base_url=resolved.api_base,
-        api_key=resolved.api_key,
-    )
+    kwargs: dict[str, object] = {
+        "model": resolved.model,
+        "base_url": resolved.api_base,
+        "api_key": resolved.api_key,
+    }
+    reasoning_cfg = _openai_reasoning_config(resolved)
+    if bool(reasoning_cfg.get("enabled")):
+        effort = str(reasoning_cfg.get("effort") or "").strip()
+        summary = str(reasoning_cfg.get("summary") or "").strip()
+        if bool(reasoning_cfg.get("use_responses_api")):
+            kwargs["use_responses_api"] = True
+            output_version = str(reasoning_cfg.get("output_version") or "").strip()
+            if output_version:
+                kwargs["output_version"] = output_version
+            reasoning: dict[str, str] = {}
+            if effort:
+                reasoning["effort"] = effort
+            if summary:
+                reasoning["summary"] = summary
+            if reasoning:
+                kwargs["reasoning"] = reasoning
+        elif effort:
+            kwargs["reasoning_effort"] = effort
+    return ChatOpenAI(**kwargs)
 
 
 def _build_anthropic_llm(resolved: ResolvedModel) -> BaseChatModel:
@@ -116,20 +196,39 @@ def _build_anthropic_llm(resolved: ResolvedModel) -> BaseChatModel:
             "Install it to use providers with api_type=anthropic."
         ) from exc
 
-    kwargs = {"model": resolved.model}
+    kwargs: dict[str, object] = {"model": resolved.model}
     if resolved.api_key:
         kwargs["api_key"] = resolved.api_key
     if resolved.api_base:
         kwargs["base_url"] = resolved.api_base
+    reasoning_cfg = _anthropic_reasoning_config(resolved)
+    if bool(reasoning_cfg.get("enabled")):
+        thinking = dict(reasoning_cfg.get("thinking") or {})
+        budget_tokens = max(256, int(thinking.get("budget_tokens", settings.anthropic_thinking_budget_tokens)))
+        thinking["budget_tokens"] = budget_tokens
+        thinking["type"] = str(thinking.get("type") or "enabled")
+        kwargs["thinking"] = thinking
+        output_version = str(reasoning_cfg.get("output_version") or "").strip()
+        if output_version:
+            kwargs["output_version"] = output_version
     try:
         return ChatAnthropic(**kwargs)
     except TypeError:
         # Compatibility fallback for older versions that use anthropic_* keyword names.
-        fallback = {"model": resolved.model}
+        fallback: dict[str, object] = {"model": resolved.model}
         if resolved.api_key:
             fallback["anthropic_api_key"] = resolved.api_key
         if resolved.api_base:
             fallback["anthropic_api_url"] = resolved.api_base
+        if bool(reasoning_cfg.get("enabled")):
+            thinking = dict(reasoning_cfg.get("thinking") or {})
+            budget_tokens = max(256, int(thinking.get("budget_tokens", settings.anthropic_thinking_budget_tokens)))
+            thinking["budget_tokens"] = budget_tokens
+            thinking["type"] = str(thinking.get("type") or "enabled")
+            fallback["thinking"] = thinking
+            output_version = str(reasoning_cfg.get("output_version") or "").strip()
+            if output_version:
+                fallback["output_version"] = output_version
         return ChatAnthropic(**fallback)
 
 

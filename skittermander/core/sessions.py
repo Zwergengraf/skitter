@@ -122,13 +122,19 @@ class SessionManager:
     async def search_memories(self, user_id: str, query: str, top_k: int = 5) -> list[dict]:
         return await self.memory_service.search(user_id, query, top_k)
 
-    def _write_summary(self, user_id: str, summary: str, session_id: str) -> tuple[Path, str]:
+    def _write_summary(self, user_id: str, summary: object, session_id: str) -> tuple[Path, str]:
         memory_root = user_workspace_root(user_id) / "memory"
         memory_root.mkdir(parents=True, exist_ok=True)
         filename = f"{datetime.utcnow().date().isoformat()}.md"
         path = memory_root / filename
         header = f"# Session Summary ({session_id})\n\n"
-        body = summary.strip() + "\n"
+        if isinstance(summary, str):
+            normalized = summary
+        elif isinstance(summary, list):
+            normalized = "\n".join(str(item) for item in summary)
+        else:
+            normalized = str(summary)
+        body = normalized.strip() + "\n"
         if path.exists():
             content = f"\n---\n\n{header}{body}"
             path.write_text(path.read_text(encoding="utf-8") + content, encoding="utf-8")

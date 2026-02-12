@@ -21,6 +21,7 @@ class ModelConfig(BaseModel):
     model: str = Field(alias="model_id")
     input_cost_per_1m: float = Field(default=0.0)
     output_cost_per_1m: float = Field(default=0.0)
+    reasoning: dict[str, Any] = Field(default_factory=dict)
 
     model_config = ConfigDict(populate_by_name=True, extra="ignore")
 
@@ -95,6 +96,7 @@ def _convert_legacy_model_layout(raw_models: list[Any]) -> tuple[list[dict[str, 
                 "model_id": item.get("model_id") or item.get("model") or "",
                 "input_cost_per_1m": item.get("input_cost_per_1m", 0.0),
                 "output_cost_per_1m": item.get("output_cost_per_1m", 0.0),
+                "reasoning": item.get("reasoning") if isinstance(item.get("reasoning"), dict) else {},
             }
         )
     return list(providers.values()), converted_models
@@ -148,6 +150,13 @@ class Settings(BaseSettings):
     models: list[ModelConfig] = Field(default_factory=list)
     main_model: str = Field(default="")
     heartbeat_model: str = Field(default="")
+    reasoning_enabled: bool = Field(default=True)
+    openai_use_responses_api: bool = Field(default=True)
+    openai_output_version: str = Field(default="responses/v1")
+    openai_reasoning_effort: str = Field(default="medium")
+    openai_reasoning_summary: str = Field(default="auto")
+    anthropic_thinking_budget_tokens: int = Field(default=2048)
+    anthropic_output_version: str = Field(default="")
 
     embeddings_api_base: str = Field(default="")
     embeddings_api_key: str = Field(default="")

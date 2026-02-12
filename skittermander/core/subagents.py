@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import uuid
 from dataclasses import asdict, dataclass, field
 from typing import Any, Callable
@@ -10,6 +11,7 @@ from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, System
 
 from .config import settings
 from .llm import resolve_model
+from .llm_debug import ThinkingDebugCallback
 from .run_limits import (
     RunBudgetUsageCallback,
     RunCancelledError,
@@ -22,6 +24,7 @@ from .usage import collect_usage, record_usage
 
 
 GraphFactory = Callable[[str], object]
+_logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -153,7 +156,14 @@ class SubAgentService:
                 RunBudgetUsageCallback(
                     input_cost_per_1m=float(resolved_model.input_cost_per_1m),
                     output_cost_per_1m=float(resolved_model.output_cost_per_1m),
-                )
+                ),
+                ThinkingDebugCallback(
+                    logger=_logger,
+                    provider_api_type=resolved_model.provider_api_type,
+                    model_name=model_name,
+                    session_id=session_id,
+                    run_id=request_id,
+                ),
             ],
             "recursion_limit": max(16, per_worker_tool_budget * 2 + 8),
         }

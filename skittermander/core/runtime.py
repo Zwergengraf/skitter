@@ -38,6 +38,7 @@ from .graph import (
 )
 from .models import AgentResponse, Attachment, MessageEnvelope, StreamEvent
 from .llm import build_llm, list_models, resolve_model, resolve_model_name
+from .llm_debug import ThinkingDebugCallback
 from .prompting import build_system_prompt
 from .usage import collect_usage, record_usage
 from .run_limits import RunBudgetUsageCallback, RunLimitsState, reset_current_run_limits, set_current_run_limits
@@ -50,6 +51,8 @@ _MEDIA_DIRECTIVE_RE = re.compile(
     r"MEDIA\s*:\s*(?P<path>`[^`\n]+`|'[^'\n]+'|\"[^\"\n]+\"|[^\s]+)",
     re.IGNORECASE,
 )
+_THINKING_TAG_RE = re.compile(r"<thinking>.*?</thinking>", re.IGNORECASE | re.DOTALL)
+_REASONING_TAG_RE = re.compile(r"<reasoning>.*?</reasoning>", re.IGNORECASE | re.DOTALL)
 _logger = logging.getLogger(__name__)
 
 
@@ -152,6 +155,118 @@ class AgentRuntime:
                 data=data,
                 created_at=datetime.now(UTC),
             )
+        )
+
+    @staticmethod
+    def _collect_debug_text(value: object, *, max_chunks: int = 32) -> list[str]:
+        chunks: list[str] = []
+
+        def visit(node: object) -> None:
+            if len(chunks) >= max_chunks:
+                return
+            if node is None:
+                return
+            if isinstance(node, str):
+                text = node.strip()
+                if text:
+                    chunks.append(text)
+                return
+            if isinstance(node, list):
+                for item in node:
+                    visit(item)
+                    if len(chunks) >= max_chunks:
+                        return
+                return
+            if isinstance(node, dict):
+                for key in (
+                    "text",
+                    "content",
+                    "summary",
+                    "thinking",
+                    "reasoning",
+                    "explanation",
+                    "output_text",
+                ):
+                    if key in node:
+                        visit(node.get(key))
+                        if len(chunks) >= max_chunks:
+                            return
+
+        visit(value)
+        return chunks
+
+    def _extract_thinking_from_ai_message(self, message: AIMessage) -> list[str]:
+        chunks: list[str] = []
+        content = getattr(message, "content", None)
+        if isinstance(content, list):
+            for block in content:
+                if not isinstance(block, dict):
+                    continue
+                block_type = str(block.get("type") or "").lower()
+                if "thinking" in block_type or "reasoning" in block_type:
+                    chunks.extend(self._collect_debug_text(block))
+
+        additional = getattr(message, "additional_kwargs", {}) or {}
+        if isinstance(additional, dict):
+            for key in ("thinking", "reasoning", "reasoning_content", "thinking_content", "reasoning_text"):
+                if key in additional:
+                    chunks.extend(self._collect_debug_text(additional.get(key)))
+
+        metadata = getattr(message, "response_metadata", {}) or {}
+        if isinstance(metadata, dict):
+            for key in ("thinking", "reasoning", "reasoning_content", "thinking_content", "reasoning_text"):
+                if key in metadata:
+                    chunks.extend(self._collect_debug_text(metadata.get(key)))
+
+        deduped: list[str] = []
+        seen: set[str] = set()
+        for chunk in chunks:
+            normalized = chunk.strip()
+            if not normalized or normalized in seen:
+                continue
+            seen.add(normalized)
+            deduped.append(normalized)
+        return deduped
+
+    def _log_model_thinking_debug(
+        self,
+        *,
+        model_name: str,
+        run_id: str,
+        session_id: str,
+        messages: list[BaseMessage],
+    ) -> None:
+        ai_messages = [msg for msg in messages if isinstance(msg, AIMessage)]
+        if not ai_messages:
+            return
+
+        thinking_lines: list[str] = []
+        for idx, message in enumerate(ai_messages, start=1):
+            extracted = self._extract_thinking_from_ai_message(message)
+            if not extracted:
+                continue
+            joined = " | ".join(text.replace("\n", " ") for text in extracted)
+            thinking_lines.append(f"ai#{idx}: {joined}")
+
+        if not thinking_lines:
+            return
+
+        try:
+            resolved = resolve_model(model_name)
+            provider_type = resolved.provider_api_type
+        except Exception:
+            provider_type = "unknown"
+
+        preview = "\n".join(thinking_lines)
+        if len(preview) > 8000:
+            preview = preview[:7997] + "..."
+        _logger.info(
+            "LLM thinking output (provider=%s session=%s run=%s model=%s):\n%s",
+            provider_type,
+            session_id,
+            run_id,
+            model_name,
+            preview,
         )
 
     def _postprocess_response(
@@ -276,7 +391,14 @@ class AgentRuntime:
                 RunBudgetUsageCallback(
                     input_cost_per_1m=float(resolved_model.input_cost_per_1m),
                     output_cost_per_1m=float(resolved_model.output_cost_per_1m),
-                )
+                ),
+                ThinkingDebugCallback(
+                    logger=_logger,
+                    provider_api_type=resolved_model.provider_api_type,
+                    model_name=model_name,
+                    session_id=session_id,
+                    run_id=run_id,
+                ),
             ]
             invoke_config = {
                 "callbacks": callbacks,
@@ -311,6 +433,12 @@ class AgentRuntime:
                 }
             messages = result.get("messages", history)
             self._history[session_id] = list(messages)
+            self._log_model_thinking_debug(
+                model_name=model_name,
+                run_id=run_id,
+                session_id=session_id,
+                messages=messages,
+            )
 
             for msg in reversed(messages):
                 if isinstance(msg, AIMessage):
@@ -611,24 +739,58 @@ class AgentRuntime:
         history[:] = sanitized
 
     def _message_content_to_text(self, content: object) -> str:
+        def strip_reasoning_markup(text: str) -> str:
+            cleaned = _THINKING_TAG_RE.sub("", text)
+            cleaned = _REASONING_TAG_RE.sub("", cleaned)
+            return cleaned.strip()
+
+        def block_text(item: dict) -> str | None:
+            kind = str(item.get("type") or "").lower()
+            # Drop provider reasoning/thinking blocks from user-visible output.
+            if kind in {
+                "thinking",
+                "reasoning",
+                "reasoning_text",
+                "reasoning_summary",
+                "reasoning_content",
+                "summary_text",
+            }:
+                return None
+            if kind in {"text", "output_text"}:
+                text = item.get("text")
+                if isinstance(text, str):
+                    return strip_reasoning_markup(text)
+                content_value = item.get("content")
+                if isinstance(content_value, str):
+                    return strip_reasoning_markup(content_value)
+                return None
+            if kind == "image":
+                return "[image]"
+            if kind == "file":
+                return "[file]"
+            # Fallback: include plain text-like fields for unknown blocks, but never stringify full dicts.
+            text = item.get("text")
+            if isinstance(text, str):
+                return strip_reasoning_markup(text)
+            content_value = item.get("content")
+            if isinstance(content_value, str):
+                return strip_reasoning_markup(content_value)
+            return None
+
         if isinstance(content, str):
-            return content
+            return strip_reasoning_markup(content)
         if isinstance(content, list):
             parts: list[str] = []
             for item in content:
                 if isinstance(item, str):
-                    parts.append(item)
+                    stripped = strip_reasoning_markup(item)
+                    if stripped:
+                        parts.append(stripped)
                     continue
                 if isinstance(item, dict):
-                    kind = str(item.get("type") or "").lower()
-                    if kind == "text":
-                        parts.append(str(item.get("text") or ""))
-                    elif kind == "image":
-                        parts.append("[image]")
-                    elif kind == "file":
-                        parts.append("[file]")
-                    else:
-                        parts.append(str(item))
+                    text = block_text(item)
+                    if text:
+                        parts.append(text)
                     continue
                 parts.append(str(item))
             return "\n".join(part for part in parts if part).strip()
@@ -837,7 +999,8 @@ class AgentRuntime:
         transcript_lines = []
         for msg in messages[-50:]:
             role = msg.type if hasattr(msg, "type") else msg.__class__.__name__
-            content = msg.content if hasattr(msg, "content") else str(msg)
+            raw_content = msg.content if hasattr(msg, "content") else str(msg)
+            content = self._message_content_to_text(raw_content)
             transcript_lines.append(f"{role}: {content}")
         transcript = "\n".join(transcript_lines)
 
@@ -872,7 +1035,9 @@ Each bullet must be self-contained, explicit, and searchable.
             HumanMessage(content=transcript),
         ]
         result = await llm.ainvoke(prompt)
-        return result.content if hasattr(result, "content") else str(result)
+        if hasattr(result, "content"):
+            return self._message_content_to_text(result.content)
+        return str(result)
 
     async def _ensure_history(self, session_id: str) -> None:
         if session_id in self._history:
