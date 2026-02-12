@@ -112,6 +112,10 @@ cors:
   - http://localhost:5173
 tools:
   approval_required: false
+  # Default keeps forced approvals for shell calls that use secret_refs.
+  # Set this EXACT value to disable the forced secrets-approval override (very unsafe):
+  # i_have_read_the_warnings_and_im_probably_doing_something_cursed
+  approval_secrets_required: always
   approval_tools:
   - write
   - edit

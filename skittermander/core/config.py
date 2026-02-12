@@ -14,6 +14,8 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from .config_schema import flatten_config, build_config_from_settings
 
+SECRETS_APPROVAL_BYPASS_MAGIC = "i_have_read_the_warnings_and_im_probably_doing_something_cursed"
+
 
 class ModelConfig(BaseModel):
     name: str
@@ -211,6 +213,7 @@ class Settings(BaseSettings):
     tool_approval_tools: str = Field(
         default="read,write,edit,list,delete,download,browser,browser_action,sub_agent,sub_agent_batch,job_start,shell,create_secret"
     )
+    approval_secrets_required: str = Field(default="always")
     cors_origins: str = Field(default="http://localhost:5173")
     # Env-only: API key required for /v1/* HTTP endpoints.
     api_key: str = Field(default="", exclude=True)

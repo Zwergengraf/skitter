@@ -7,7 +7,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from ..authz import resolve_target_user_id
 from ..deps import get_repo
 from ..schemas import CommandExecuteOut, CommandExecuteRequest
-from ...core.config import settings
+from ...core.config import SECRETS_APPROVAL_BYPASS_MAGIC, settings
 from ...core.conversation_scope import private_scope_id
 from ...core.llm import list_models, resolve_model_name
 from ...core.models import StreamEvent
@@ -153,11 +153,25 @@ async def execute_command(
     if command == "tools":
         tool_list = [item.strip() for item in settings.tool_approval_tools.split(",") if item.strip()]
         mode = "required" if settings.tool_approval_required else "optional"
+        secrets_mode = (
+            "bypassed (unsafe)"
+            if str(settings.approval_secrets_required or "").strip() == SECRETS_APPROVAL_BYPASS_MAGIC
+            else "forced"
+        )
         text = (
             f"Tool approvals are {mode}.\n"
+            f"Secret-ref approvals are {secrets_mode}.\n"
             f"Configured approval tools ({len(tool_list)}): {', '.join(tool_list) if tool_list else '(none)'}"
         )
-        return CommandExecuteOut(message=text, data={"approval_required": settings.tool_approval_required, "tools": tool_list})
+        return CommandExecuteOut(
+            message=text,
+            data={
+                "approval_required": settings.tool_approval_required,
+                "approval_secrets_required": settings.approval_secrets_required,
+                "secrets_forced": secrets_mode.startswith("forced"),
+                "tools": tool_list,
+            },
+        )
 
     if command == "model":
         requested = str(args.get("model_name") or "").strip()

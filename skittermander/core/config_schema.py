@@ -558,6 +558,17 @@ FIELDS: list[ConfigFieldSpec] = [
         description="Comma-separated tool names.",
     ),
     ConfigFieldSpec(
+        key="approval_secrets_required",
+        path=("tools", "approval_secrets_required"),
+        category="tools",
+        label="Secrets approval mode",
+        field_type="string",
+        description=(
+            "Set to the magic bypass token to disable forced approval for secret_refs shell runs. "
+            "Any other value keeps forced approval enabled."
+        ),
+    ),
+    ConfigFieldSpec(
         key="max_sub_agents",
         path=("sub_agents", "max_concurrent"),
         category="sub_agents",

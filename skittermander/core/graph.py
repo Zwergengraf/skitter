@@ -15,7 +15,7 @@ from langchain.agents import create_agent
 from langchain.agents.middleware import ToolRetryMiddleware, ModelRetryMiddleware
 from langchain.tools import tool
 
-from .config import settings
+from .config import SECRETS_APPROVAL_BYPASS_MAGIC, settings
 from .llm import build_llm
 from .llm import resolve_model_name
 from .prompting import build_system_prompt
@@ -254,6 +254,10 @@ def build_graph(
         if isinstance(secret_refs, list):
             return [str(item).strip() for item in secret_refs if str(item).strip()]
         return []
+
+    def _secrets_approval_required() -> bool:
+        value = str(settings.approval_secrets_required or "").strip()
+        return value != SECRETS_APPROVAL_BYPASS_MAGIC
 
     def _secret_env_key(name: str) -> str:
         key = "".join(ch if ch.isalnum() else "_" for ch in name.strip()).upper()
@@ -713,8 +717,6 @@ def build_graph(
         if secrets:
             if background:
                 return await _fail_untracked_call("shell", payload, "shell error: secret_refs cannot be used with background commands")
-            if approval_service is None:
-                return await _fail_untracked_call("shell", payload, "shell error: secret execution requires approval")
             manager = SecretsManager()
             try:
                 manager.ensure_ready()
@@ -741,13 +743,20 @@ def build_graph(
             if missing:
                 return await _fail_untracked_call("shell", payload, f"shell error: missing secrets: {', '.join(missing)}")
             approval_payload = {**payload, "secret_refs": secrets}
-            decision = await approval_service.request(
-                session_id=_session_id(),
-                channel_id=_channel_id(),
-                tool_name="shell",
-                payload=approval_payload,
-                requested_by=_user_id(),
-            )
+            if _secrets_approval_required():
+                if approval_service is None:
+                    return await _fail_untracked_call("shell", payload, "shell error: secret execution requires approval")
+                decision = await approval_service.request(
+                    session_id=_session_id(),
+                    channel_id=_channel_id(),
+                    tool_name="shell",
+                    payload=approval_payload,
+                    requested_by=_user_id(),
+                    run_id=_run_id() or None,
+                    message_id=_message_id() or None,
+                )
+            else:
+                decision = await _maybe_approve("shell", approval_payload, approval_service, policy)
             if not decision.approved:
                 return _denied_message("shell")
             exec_payload = {**payload, "env": env, "redact": redact}

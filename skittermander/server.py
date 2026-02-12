@@ -17,7 +17,7 @@ from .core.scheduler import SchedulerService
 from .core.heartbeat import HeartbeatService
 from .core.jobs import JobService
 from .core.conversation_scope import resolve_conversation_scope
-from .core.config import settings
+from .core.config import SECRETS_APPROVAL_BYPASS_MAGIC, settings
 from .core.models import StreamEvent
 from .core.sessions import SessionManager
 from .data.db import SessionLocal
@@ -347,8 +347,14 @@ async def main() -> None:
         if envelope.command == "tools":
             tool_list = [item.strip() for item in settings.tool_approval_tools.split(",") if item.strip()]
             mode = "required" if settings.tool_approval_required else "optional"
+            secrets_mode = (
+                "bypassed (unsafe)"
+                if str(settings.approval_secrets_required or "").strip() == SECRETS_APPROVAL_BYPASS_MAGIC
+                else "forced"
+            )
             text = (
                 f"Tool approvals are {mode}.\n"
+                f"Secret-ref approvals are {secrets_mode}.\n"
                 f"Configured approval tools ({len(tool_list)}): {', '.join(tool_list) if tool_list else '(none)'}"
             )
             await transport.send_message(envelope.channel_id, text)
