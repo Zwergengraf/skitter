@@ -20,7 +20,7 @@ from .llm import build_llm
 from .llm import resolve_model_name
 from .prompting import build_system_prompt
 from .subagents import SubAgentResult, SubAgentService, SubAgentTaskSpec
-from .run_limits import get_current_run_limits
+from .run_limits import RunCancelledError, get_current_run_limits
 from ..tools.approval_service import ApprovalDecision, ToolApprovalService
 from ..core.scheduler import SchedulerService
 from ..tools.middleware import ToolApprovalPolicy
@@ -281,7 +281,21 @@ def build_graph(
             "Stop calling tools and provide the best possible final response from current context."
         )
 
-    def _consume_tool_budget(tool_name: str) -> str | None:
+    async def _job_cancel_requested() -> bool:
+        run_id = (_run_id() or "").strip()
+        if not run_id.startswith("job:"):
+            return False
+        job_id = run_id.split(":", 1)[1].strip()
+        if not job_id:
+            return False
+        async with SessionLocal() as session:
+            repo = Repository(session)
+            job = await repo.get_agent_job(job_id)
+        return bool(job and job.cancel_requested)
+
+    async def _consume_tool_budget(tool_name: str) -> str | None:
+        if await _job_cancel_requested():
+            raise RunCancelledError("Background job cancellation requested by user.")
         limits = get_current_run_limits()
         if limits is None:
             return None
@@ -365,7 +379,16 @@ def build_graph(
         return tool_run.id
 
     async def _enforce_tool_budget(tool_name: str, payload: dict[str, Any]) -> str | None:
-        message = _consume_tool_budget(tool_name)
+        try:
+            message = await _consume_tool_budget(tool_name)
+        except RunCancelledError as exc:
+            tool_run_id = await _create_auto_tool_run(tool_name, payload)
+            await _complete_tool_run(
+                tool_run_id,
+                "denied",
+                {"error": str(exc), "reason": "cancelled"},
+            )
+            raise
         if message is None:
             return None
         tool_run_id = await _create_auto_tool_run(tool_name, payload)

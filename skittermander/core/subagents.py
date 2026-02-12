@@ -12,6 +12,7 @@ from .config import settings
 from .llm import resolve_model
 from .run_limits import (
     RunBudgetUsageCallback,
+    RunCancelledError,
     RunLimitsState,
     get_current_run_limits,
     reset_current_run_limits,
@@ -91,6 +92,8 @@ class SubAgentService:
                 error=f"Timed out after {timeout_seconds} seconds.",
             )
         except Exception as exc:
+            if isinstance(exc, RunCancelledError) or "cancellation requested" in str(exc).lower():
+                return SubAgentResult(name=name, status="cancelled", error=str(exc))
             return SubAgentResult(name=name, status="failed", error=str(exc))
 
     async def run_batch(
@@ -159,11 +162,23 @@ class SubAgentService:
             messages = result.get("messages", input_messages)
             final_text = self._extract_final_text(messages)
             usage = collect_usage(messages, request_id) or {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
-            if usage:
-                await record_usage(session_id, user_id, model_name, usage)
             input_tokens = int(usage.get("input_tokens") or 0)
             output_tokens = int(usage.get("output_tokens") or 0)
             total_tokens = int(usage.get("total_tokens") or 0)
+            if applied_limits is not None:
+                input_tokens = max(input_tokens, int(applied_limits.input_tokens_used or 0))
+                output_tokens = max(output_tokens, int(applied_limits.output_tokens_used or 0))
+                total_tokens = max(total_tokens, int(applied_limits.total_tokens_used or (input_tokens + output_tokens)))
+            usage_for_record = {
+                "input_tokens": input_tokens,
+                "output_tokens": output_tokens,
+                "total_tokens": total_tokens,
+                "last_input_tokens": int(usage.get("last_input_tokens") or 0),
+                "last_output_tokens": int(usage.get("last_output_tokens") or 0),
+                "last_total_tokens": int(usage.get("last_total_tokens") or 0),
+            }
+            if input_tokens > 0 or output_tokens > 0 or total_tokens > 0:
+                await record_usage(session_id, user_id, model_name, usage_for_record)
             run_cost = (input_tokens / 1_000_000.0) * float(resolved_model.input_cost_per_1m) + (
                 output_tokens / 1_000_000.0
             ) * float(resolved_model.output_cost_per_1m)

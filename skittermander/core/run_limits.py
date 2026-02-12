@@ -17,7 +17,14 @@ class RunLimitsState:
     start_time: float
     tool_calls_used: int = 0
     spent_cost_usd: float = 0.0
+    input_tokens_used: int = 0
+    output_tokens_used: int = 0
+    total_tokens_used: int = 0
     seen_llm_run_ids: set[str] = field(default_factory=set)
+
+
+class RunCancelledError(RuntimeError):
+    """Raised when a run is cancelled and should terminate immediately."""
 
 
 _CURRENT_RUN_LIMITS: ContextVar[RunLimitsState | None] = ContextVar("skitter_run_limits", default=None)
@@ -83,6 +90,9 @@ class RunBudgetUsageCallback(BaseCallbackHandler):
         if input_tokens == 0 and output_tokens == 0:
             return
 
+        limits.input_tokens_used += int(input_tokens)
+        limits.output_tokens_used += int(output_tokens)
+        limits.total_tokens_used += int(input_tokens + output_tokens)
         input_cost_per_1m = (
             limits.input_cost_per_1m if self._input_cost_per_1m is None else float(self._input_cost_per_1m)
         )
