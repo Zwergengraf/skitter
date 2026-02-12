@@ -296,6 +296,8 @@ class SchedulerService:
                 async with SessionLocal() as session:
                     repo = Repository(session)
                     meta = {"origin": "scheduler", "job_id": job.id, "run_id": run.id}
+                    if response.reasoning:
+                        meta["reasoning"] = response.reasoning
                     if attachment_meta:
                         meta["attachments"] = attachment_meta
                     await repo.add_message(

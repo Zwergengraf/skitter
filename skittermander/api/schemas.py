@@ -252,6 +252,7 @@ class ToolRunListItem(BaseModel):
     approved_by: str | None = None
     input: dict
     output: dict
+    reasoning: list[str] = Field(default_factory=list)
 
 
 class RunTraceListItem(BaseModel):

@@ -39,3 +39,5 @@ class StreamEvent:
 class AgentResponse:
     text: str
     attachments: List[Attachment] = field(default_factory=list)
+    run_id: str | None = None
+    reasoning: List[str] = field(default_factory=list)

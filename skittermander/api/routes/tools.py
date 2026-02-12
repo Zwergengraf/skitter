@@ -23,6 +23,8 @@ async def list_tool_runs(
         tool_runs = await repo.list_tool_runs_for_user(principal.user_id or "", limit=limit, status=status)
     else:
         tool_runs = await repo.list_tool_runs(limit=limit, status=status)
+    run_ids = [tool_run.run_id for tool_run, _ in tool_runs if tool_run.run_id]
+    reasoning_by_run = await repo.get_reasoning_by_run_ids([str(run_id) for run_id in run_ids])
     return [
         ToolRunListItem(
             id=tool_run.id,
@@ -35,6 +37,7 @@ async def list_tool_runs(
             approved_by=tool_run.approved_by,
             input=tool_run.input or {},
             output=tool_run.output or {},
+            reasoning=reasoning_by_run.get(str(tool_run.run_id), []) if tool_run.run_id else [],
         )
         for tool_run, transport_user_id in tool_runs
     ]

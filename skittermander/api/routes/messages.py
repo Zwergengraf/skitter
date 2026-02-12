@@ -118,6 +118,10 @@ async def send_message(
     response = await runtime.handle_message(payload.session_id, envelope)
     serialized_attachments = _serialize_runtime_attachments(response.attachments)
     assistant_meta = {"response_to": envelope.message_id}
+    if response.run_id:
+        assistant_meta["run_id"] = response.run_id
+    if response.reasoning:
+        assistant_meta["reasoning"] = response.reasoning
     if serialized_attachments:
         assistant_meta["attachments"] = serialized_attachments
     assistant_msg = await repo.add_message(

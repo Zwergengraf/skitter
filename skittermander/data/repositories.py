@@ -526,6 +526,40 @@ class Repository:
         result = await self.session.execute(stmt)
         return list(result.scalars().all())
 
+    async def get_reasoning_by_run_ids(self, run_ids: list[str]) -> dict[str, list[str]]:
+        unique_ids = [str(run_id) for run_id in dict.fromkeys(run_ids or []) if str(run_id).strip()]
+        if not unique_ids:
+            return {}
+        stmt = (
+            select(RunTraceEvent)
+            .where(
+                RunTraceEvent.run_id.in_(unique_ids),
+                RunTraceEvent.event_type == "reasoning",
+            )
+            .order_by(RunTraceEvent.created_at.asc())
+        )
+        result = await self.session.execute(stmt)
+        reasoning_by_run: dict[str, list[str]] = {run_id: [] for run_id in unique_ids}
+        for event in result.scalars().all():
+            payload = event.payload or {}
+            raw_chunks = payload.get("chunks") if isinstance(payload, dict) else None
+            if isinstance(raw_chunks, str):
+                chunks = [raw_chunks]
+            elif isinstance(raw_chunks, list):
+                chunks = [str(item).strip() for item in raw_chunks if str(item).strip()]
+            else:
+                chunks = []
+            if not chunks:
+                continue
+            bucket = reasoning_by_run.setdefault(event.run_id, [])
+            seen = set(bucket)
+            for chunk in chunks:
+                if chunk in seen:
+                    continue
+                bucket.append(chunk)
+                seen.add(chunk)
+        return {key: value for key, value in reasoning_by_run.items() if value}
+
     async def upsert_channel(
         self,
         transport_channel_id: str,

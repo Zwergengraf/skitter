@@ -260,15 +260,16 @@ class JobService:
             try:
                 async with SessionLocal() as session:
                     repo = Repository(session)
+                    meta: dict[str, object] = {
+                        "origin": "job",
+                        "job_id": job.id,
+                        "job_status": status,
+                    }
                     await repo.add_message(
                         target_session_id,
                         role="assistant",
                         content=delivery_text,
-                        metadata={
-                            "origin": "job",
-                            "job_id": job.id,
-                            "job_status": status,
-                        },
+                        metadata=meta,
                     )
                 self.runtime.clear_history(target_session_id)
                 if self._deliver is not None and job.target_origin and job.target_destination_id:

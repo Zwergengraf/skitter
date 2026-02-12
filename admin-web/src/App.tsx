@@ -85,8 +85,10 @@ export default function App() {
   const [runDetail, setRunDetail] = useState<RunTraceDetail | null>(null);
   const [runDetailLoading, setRunDetailLoading] = useState<boolean>(false);
   const [runDetailError, setRunDetailError] = useState<string | null>(null);
+  const [showRunReasoning, setShowRunReasoning] = useState<boolean>(false);
   const [toolRunToolFilter, setToolRunToolFilter] = useState<string>("all");
   const [toolRunUserFilter, setToolRunUserFilter] = useState<string>("all");
+  const [showToolRunReasoning, setShowToolRunReasoning] = useState<boolean>(false);
   const [memoryData, setMemoryData] = useState<MemoryEntry[]>([]);
   const [memoryError, setMemoryError] = useState<string | null>(null);
   const [memoryLoading, setMemoryLoading] = useState<boolean>(false);
@@ -107,6 +109,7 @@ export default function App() {
   const [sessionDetail, setSessionDetail] = useState<SessionDetail | null>(null);
   const [sessionDetailError, setSessionDetailError] = useState<string | null>(null);
   const [sessionDetailLoading, setSessionDetailLoading] = useState<boolean>(false);
+  const [showSessionReasoning, setShowSessionReasoning] = useState<boolean>(false);
   const [jobsData, setJobsData] = useState<ScheduledJobItem[]>([]);
   const [jobsError, setJobsError] = useState<string | null>(null);
   const [jobsLoading, setJobsLoading] = useState<boolean>(false);
@@ -897,6 +900,61 @@ export default function App() {
     }
   };
 
+  const normalizeReasoning = (value: unknown): string[] => {
+    if (typeof value === "string") {
+      const normalized = value.trim();
+      return normalized ? [normalized] : [];
+    }
+    if (!Array.isArray(value)) {
+      return [];
+    }
+    const chunks: string[] = [];
+    for (const item of value) {
+      if (typeof item !== "string") {
+        continue;
+      }
+      const normalized = item.trim();
+      if (normalized) {
+        chunks.push(normalized);
+      }
+    }
+    return chunks;
+  };
+
+  const messageReasoning = (meta: Record<string, unknown> | undefined): string[] => {
+    if (!meta) {
+      return [];
+    }
+    return normalizeReasoning(meta.reasoning);
+  };
+
+  const toolRunReasoning = (tool: ToolRunListItem): string[] => {
+    return normalizeReasoning(tool.reasoning);
+  };
+
+  const runDetailReasoning = useMemo(() => {
+    if (!runDetail) {
+      return [];
+    }
+    const chunks: string[] = [];
+    const seen = new Set<string>();
+    for (const event of runDetail.events) {
+      if (event.event_type !== "reasoning") {
+        continue;
+      }
+      const payload = event.payload as Record<string, unknown> | undefined;
+      const eventChunks = normalizeReasoning(payload?.chunks);
+      for (const chunk of eventChunks) {
+        if (seen.has(chunk)) {
+          continue;
+        }
+        seen.add(chunk);
+        chunks.push(chunk);
+      }
+    }
+    return chunks;
+  }, [runDetail]);
+
   const extractAgentJobTranscript = (job: AgentJobDetail | null): Array<{ role: string; content: string }> => {
     if (!job) {
       return [];
@@ -1419,6 +1477,10 @@ export default function App() {
                   >
                     Clear filters
                   </Button>
+                  <div className="ml-auto flex items-center gap-2 rounded-xl border border-border bg-muted/40 px-3 py-2">
+                    <span className="text-xs text-mutedForeground">Show reasoning</span>
+                    <Switch checked={showToolRunReasoning} onCheckedChange={setShowToolRunReasoning} />
+                  </div>
                 </div>
                 {toolRunsLoading ? (
                   <div className="rounded-2xl border border-dashed border-border bg-muted/40 px-4 py-6 text-sm text-mutedForeground">
@@ -1522,6 +1584,16 @@ export default function App() {
                           </pre>
                         </div>
                       </div>
+                      {showToolRunReasoning && toolRunReasoning(tool).length ? (
+                        <div className="mt-4">
+                          <p className="text-xs font-semibold uppercase tracking-[0.2em] text-mutedForeground">
+                            Reasoning
+                          </p>
+                          <pre className="mt-2 rounded-2xl border border-border bg-muted/40 p-3 text-xs text-mutedForeground whitespace-pre-wrap">
+                            {toolRunReasoning(tool).join("\n\n")}
+                          </pre>
+                        </div>
+                      ) : null}
                     </div>
                   ))
                 ) : (
@@ -2870,6 +2942,18 @@ export default function App() {
                     </pre>
                   </ScrollArea>
                 </div>
+                {showToolRunReasoning && toolRunReasoning(selectedToolRun).length ? (
+                  <div className="min-h-0 md:col-span-2">
+                    <p className="text-xs font-semibold uppercase tracking-[0.2em] text-mutedForeground">
+                      Reasoning
+                    </p>
+                    <ScrollArea className="mt-2 h-[24vh] rounded-2xl border border-border bg-muted/40 p-3">
+                      <pre className="text-xs text-foreground whitespace-pre-wrap">
+                        {toolRunReasoning(selectedToolRun).join("\n\n")}
+                      </pre>
+                    </ScrollArea>
+                  </div>
+                ) : null}
               </div>
               <div className="flex justify-end border-t border-border p-4">
                 <Button variant="outline" onClick={() => setSelectedToolRun(null)}>
@@ -2982,6 +3066,24 @@ export default function App() {
                       </ScrollArea>
                     </div>
                     <div className="md:col-span-2 grid gap-4">
+                      <div className="flex items-center justify-end">
+                        <div className="flex items-center gap-2 rounded-xl border border-border bg-muted/40 px-3 py-2">
+                          <span className="text-xs text-mutedForeground">Show reasoning</span>
+                          <Switch checked={showRunReasoning} onCheckedChange={setShowRunReasoning} />
+                        </div>
+                      </div>
+                      {showRunReasoning && runDetailReasoning.length ? (
+                        <div>
+                          <p className="text-xs font-semibold uppercase tracking-[0.2em] text-mutedForeground">
+                            Reasoning
+                          </p>
+                          <ScrollArea className="mt-2 h-[20vh] rounded-2xl border border-border bg-muted/40 p-3">
+                            <pre className="text-xs text-foreground whitespace-pre-wrap">
+                              {runDetailReasoning.join("\n\n")}
+                            </pre>
+                          </ScrollArea>
+                        </div>
+                      ) : null}
                       <div className="grid gap-4 md:grid-cols-2">
                         <div>
                           <p className="text-xs font-semibold uppercase tracking-[0.2em] text-mutedForeground">Input</p>
@@ -3099,17 +3201,34 @@ export default function App() {
                       <TabsTrigger value="tools">Tool runs</TabsTrigger>
                     </TabsList>
                     <TabsContent value="messages">
+                      <div className="mb-3 flex items-center justify-end">
+                        <div className="flex items-center gap-2 rounded-xl border border-border bg-muted/40 px-3 py-2">
+                          <span className="text-xs text-mutedForeground">Show reasoning</span>
+                          <Switch checked={showSessionReasoning} onCheckedChange={setShowSessionReasoning} />
+                        </div>
+                      </div>
                       <ScrollArea className="h-[60vh] md:h-[65vh] rounded-2xl border border-border bg-card p-4">
                         <div className="space-y-4">
                           {sessionTimeline.map((item) => {
                             if (item.type === "message") {
                               const message = item.data;
+                              const reasoning = messageReasoning(message.meta);
                               return (
                                 <div key={item.id} className="rounded-2xl border border-border bg-muted/40 p-4">
                                   <div className="flex items-center justify-between text-xs text-mutedForeground">
                                     <span className="uppercase tracking-[0.2em]">{message.role}</span>
                                     <span>{formatRelativeTime(message.created_at)}</span>
                                   </div>
+                                  {showSessionReasoning && reasoning.length ? (
+                                    <div className="mt-2 rounded-2xl border border-border bg-card p-3">
+                                      <p className="text-xs font-semibold uppercase tracking-[0.2em] text-mutedForeground">
+                                        Reasoning
+                                      </p>
+                                      <pre className="mt-2 text-xs text-mutedForeground whitespace-pre-wrap">
+                                        {reasoning.join("\n\n")}
+                                      </pre>
+                                    </div>
+                                  ) : null}
                                   <p className="mt-2 text-sm text-foreground whitespace-pre-wrap">{message.content}</p>
                                 </div>
                               );

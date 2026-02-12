@@ -185,23 +185,33 @@ class HeartbeatService:
 
                 async with SessionLocal() as session:
                     repo = Repository(session)
+                    assistant_meta: dict[str, object] = {"origin": "heartbeat", "response_to": envelope.message_id}
+                    if response.run_id:
+                        assistant_meta["run_id"] = response.run_id
+                    if response.reasoning:
+                        assistant_meta["reasoning"] = response.reasoning
                     await repo.add_message(
                         session_obj.id,
                         role="assistant",
                         content=response.text,
-                        metadata={"origin": "heartbeat", "response_to": envelope.message_id},
+                        metadata=assistant_meta,
                     )
                     keep_messages = max(0, int(settings.heartbeat_history_runs)) * 2
                     await repo.prune_messages_keep_latest(session_obj.id, keep_messages)
+                    private_meta: dict[str, object] = {
+                        "origin": "heartbeat",
+                        "heartbeat_session_id": session_obj.id,
+                        "response_to": envelope.message_id,
+                    }
+                    if response.run_id:
+                        private_meta["run_id"] = response.run_id
+                    if response.reasoning:
+                        private_meta["reasoning"] = response.reasoning
                     await repo.add_message(
                         private_session.id,
                         role="assistant",
                         content=response.text,
-                        metadata={
-                            "origin": "heartbeat",
-                            "heartbeat_session_id": session_obj.id,
-                            "response_to": envelope.message_id,
-                        },
+                        metadata=private_meta,
                     )
                 self.runtime.clear_history(session_obj.id)
                 if self.deliver is not None and target_origin and target_destination:

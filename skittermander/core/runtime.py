@@ -269,6 +269,35 @@ class AgentRuntime:
             preview,
         )
 
+    def _extract_reasoning_for_storage(
+        self,
+        messages: list[BaseMessage],
+        *,
+        max_chunks: int = 12,
+        max_total_chars: int = 32000,
+    ) -> list[str]:
+        chunks: list[str] = []
+        seen: set[str] = set()
+        total_chars = 0
+        for message in messages:
+            if not isinstance(message, AIMessage):
+                continue
+            for chunk in self._extract_thinking_from_ai_message(message):
+                normalized = chunk.strip()
+                if not normalized or normalized in seen:
+                    continue
+                if total_chars + len(normalized) > max_total_chars:
+                    remaining = max_total_chars - total_chars
+                    if remaining <= 0:
+                        return chunks
+                    normalized = normalized[: max(0, remaining - 3)].rstrip() + "..."
+                seen.add(normalized)
+                chunks.append(normalized)
+                total_chars += len(normalized)
+                if len(chunks) >= max_chunks or total_chars >= max_total_chars:
+                    return chunks
+        return chunks
+
     def _postprocess_response(
         self,
         *,
@@ -318,6 +347,8 @@ class AgentRuntime:
         run_output_tokens = 0
         run_total_tokens = 0
         run_cost = 0.0
+        run_reasoning: list[str] = []
+        history_len_before_invoke = 0
         await self._publish_stream_event(
             session_id,
             "message_received",
@@ -377,6 +408,7 @@ class AgentRuntime:
             model_name = await self._get_session_model(session_id, envelope)
             await self._trace_update(run_id, model=model_name)
             await self._compact_history_for_context(session_id, history, model_name)
+            history_len_before_invoke = len(history)
             resolved_model = resolve_model(model_name, purpose=purpose)
             limits = RunLimitsState(
                 max_tool_calls=max(0, int(settings.limits_max_tool_calls)),
@@ -439,6 +471,15 @@ class AgentRuntime:
                 session_id=session_id,
                 messages=messages,
             )
+            new_messages = messages[history_len_before_invoke:] if history_len_before_invoke < len(messages) else []
+            run_reasoning = self._extract_reasoning_for_storage(new_messages)
+            if run_reasoning:
+                await self._trace_event(
+                    run_id=run_id,
+                    session_id=session_id,
+                    event_type="reasoning",
+                    payload={"chunks": run_reasoning},
+                )
 
             for msg in reversed(messages):
                 if isinstance(msg, AIMessage):
@@ -528,7 +569,7 @@ class AgentRuntime:
                 "duration_ms": duration_ms,
             },
         )
-        return AgentResponse(text=cleaned, attachments=attachments)
+        return AgentResponse(text=cleaned, attachments=attachments, run_id=run_id, reasoning=run_reasoning)
 
     def clear_history(self, session_id: str) -> None:
         self._history.pop(session_id, None)

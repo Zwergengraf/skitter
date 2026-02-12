@@ -198,14 +198,25 @@ async def main() -> None:
             repo = Repository(session)
             await repo.add_message(session_id, role="user", content=envelope.text, metadata=metadata)
 
-    async def _persist_assistant_message(session_id: str, response_text: str, response_to: str) -> None:
+    async def _persist_assistant_message(
+        session_id: str,
+        response_text: str,
+        response_to: str,
+        run_id: str | None = None,
+        reasoning: list[str] | None = None,
+    ) -> None:
+        metadata: dict[str, object] = {"response_to": response_to}
+        if run_id:
+            metadata["run_id"] = run_id
+        if reasoning:
+            metadata["reasoning"] = reasoning
         async with SessionLocal() as session:
             repo = Repository(session)
             await repo.add_message(
                 session_id,
                 role="assistant",
                 content=response_text,
-                metadata={"response_to": response_to},
+                metadata=metadata,
             )
 
     async def _resolve_internal_user_id(envelope, transport) -> str | None:
@@ -496,7 +507,13 @@ async def main() -> None:
             await _stop_progress_tracking(progress_stop, progress_task)
         if response.text or response.attachments:
             await transport.send_message(envelope.channel_id, response.text, attachments=response.attachments)
-            await _persist_assistant_message(session_id, response.text, envelope.message_id)
+            await _persist_assistant_message(
+                session_id,
+                response.text,
+                envelope.message_id,
+                run_id=response.run_id,
+                reasoning=response.reasoning,
+            )
 
     manager.on_event(handler)
 
