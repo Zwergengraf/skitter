@@ -3,11 +3,12 @@ from __future__ import annotations
 import os
 from pathlib import Path
 from datetime import datetime
-from typing import Any
+from typing import Any, Literal
 
 import yaml
 from pydantic import Field, BaseModel
 from pydantic import ConfigDict
+from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -26,10 +27,21 @@ class ModelConfig(BaseModel):
 
 class ProviderConfig(BaseModel):
     name: str
+    api_type: Literal["openai", "anthropic"] = Field(default="openai")
     api_base: str = Field(default="")
     api_key: str = Field(default="")
 
     model_config = ConfigDict(extra="ignore")
+
+    @field_validator("api_type", mode="before")
+    @classmethod
+    def _normalize_api_type(cls, value: Any) -> str:
+        if value is None:
+            return "openai"
+        text = str(value).strip().lower()
+        if not text:
+            return "openai"
+        return text
 
 
 def _normalize_model_reference(provider: str, model_name: str) -> str:
@@ -60,7 +72,12 @@ def _convert_legacy_model_layout(raw_models: list[Any]) -> tuple[list[dict[str, 
         provider_key = provider_name.lower()
         provider = providers.get(provider_key)
         if provider is None:
-            provider = {"name": provider_name, "api_base": api_base, "api_key": api_key}
+            provider = {
+                "name": provider_name,
+                "api_type": str(item.get("api_type") or "openai").strip().lower() or "openai",
+                "api_base": api_base,
+                "api_key": api_key,
+            }
             providers[provider_key] = provider
         else:
             # Prefer explicit provider details if present in this entry.
@@ -68,6 +85,8 @@ def _convert_legacy_model_layout(raw_models: list[Any]) -> tuple[list[dict[str, 
                 provider["api_base"] = api_base
             if api_key:
                 provider["api_key"] = api_key
+            if item.get("api_type"):
+                provider["api_type"] = str(item.get("api_type")).strip().lower() or provider.get("api_type", "openai")
 
         converted_models.append(
             {

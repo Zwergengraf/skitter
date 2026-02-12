@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from langchain_core.language_models import BaseChatModel
 from langchain_openai import ChatOpenAI
 
 from .config import settings
@@ -11,6 +12,7 @@ from .config import settings
 class ResolvedModel:
     name: str
     provider: str
+    provider_api_type: str
     model: str
     api_base: str
     api_key: str
@@ -35,6 +37,7 @@ def _resolve_all_models() -> list[ResolvedModel]:
             ResolvedModel(
                 name=_normalized_name(provider.name, model.name),
                 provider=provider.name,
+                provider_api_type=provider.api_type,
                 model=model.model,
                 api_base=provider.api_base,
                 api_key=provider.api_key,
@@ -96,11 +99,42 @@ def resolve_model(name: str | None = None, purpose: str = "main") -> ResolvedMod
     return all_models[0]
 
 
-def build_llm(model_name: str | None = None, purpose: str = "main") -> ChatOpenAI:
-    resolved = resolve_model(model_name, purpose=purpose)
+def _build_openai_llm(resolved: ResolvedModel) -> BaseChatModel:
     return ChatOpenAI(
         model=resolved.model,
         base_url=resolved.api_base,
         api_key=resolved.api_key,
-        temperature=0.2,
     )
+
+
+def _build_anthropic_llm(resolved: ResolvedModel) -> BaseChatModel:
+    try:
+        from langchain_anthropic import ChatAnthropic
+    except ImportError as exc:
+        raise RuntimeError(
+            "Anthropic provider configured but 'langchain-anthropic' is not installed. "
+            "Install it to use providers with api_type=anthropic."
+        ) from exc
+
+    kwargs = {"model": resolved.model}
+    if resolved.api_key:
+        kwargs["api_key"] = resolved.api_key
+    if resolved.api_base:
+        kwargs["base_url"] = resolved.api_base
+    try:
+        return ChatAnthropic(**kwargs)
+    except TypeError:
+        # Compatibility fallback for older versions that use anthropic_* keyword names.
+        fallback = {"model": resolved.model}
+        if resolved.api_key:
+            fallback["anthropic_api_key"] = resolved.api_key
+        if resolved.api_base:
+            fallback["anthropic_api_url"] = resolved.api_base
+        return ChatAnthropic(**fallback)
+
+
+def build_llm(model_name: str | None = None, purpose: str = "main") -> BaseChatModel:
+    resolved = resolve_model(model_name, purpose=purpose)
+    if resolved.provider_api_type == "anthropic":
+        return _build_anthropic_llm(resolved)
+    return _build_openai_llm(resolved)

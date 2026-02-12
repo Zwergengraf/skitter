@@ -25,6 +25,7 @@ dependencies = [
   "discord.py>=2.4",
   "langchain>=0.2",
   "langchain-openai>=0.1",
+  "langchain-anthropic>=0.1",
   "langgraph>=0.2",
   "python-dotenv>=1.0",
   "beautifulsoup4>=4.12",

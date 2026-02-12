@@ -17,8 +17,13 @@ limits:
   max_cost_usd: 0.10
 providers:
   - name: local
+    # api_type: openai   # optional (default)
     api_base: http://localhost:1234/v1
     api_key: ""
+  # - name: anthropic
+  #   api_type: anthropic
+  #   api_base: https://api.anthropic.com
+  #   api_key: ""
 models:
   - name: main
     provider: local

@@ -94,7 +94,7 @@ openssl rand -hex 24
 
 At minimum, set:
 
-- `providers` (`name`, `api_base`, `api_key`)
+- `providers` (`name`, optional `api_type` = `openai|anthropic`, `api_base`, `api_key`)
 - `models` (`name`, `provider`, `model_id`, token costs)
 - `main_model` in `provider/model` format (for example `openai/gpt-5-mini`)
 - `heartbeat_model` in `provider/model` format
