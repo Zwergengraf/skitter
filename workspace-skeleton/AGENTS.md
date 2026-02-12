@@ -2,6 +2,13 @@
 
 Your workspace (root directory in the filesystem) is home. Treat it that way.
 
+## Filesystem Path Rules
+
+- `{{WORKSPACE_ROOT}}` is the absolute workspace path inside the sandbox.
+- For tools and shell commands: relative paths are resolved from `{{WORKSPACE_ROOT}}`.
+- Absolute paths are literal Linux paths. Use `{{WORKSPACE_ROOT}}/...` when you want an absolute workspace path.
+- Prefer relative paths for workspace files (`memory/today.md`, `projects/app/main.py`) to avoid mistakes.
+
 ## Every Session
 
 At session startup (new session or after restart):

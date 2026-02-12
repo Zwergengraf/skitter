@@ -33,6 +33,17 @@ def _parse_context_files() -> list[str]:
     return []
 
 
+def _render_context_template(content: str, user_id: str) -> str:
+    rendered = content
+    variables = {
+        "WORKSPACE_ROOT": "/workspace",
+        "INTERNAL_USER_ID": user_id,
+    }
+    for key, value in variables.items():
+        rendered = rendered.replace(f"{{{{{key}}}}}", value)
+    return rendered
+
+
 def build_context_block(user_id: str) -> str | None:
     files = _parse_context_files()
     if not files:
@@ -49,7 +60,7 @@ def build_context_block(user_id: str) -> str | None:
             continue
         if not content:
             continue
-        sections.append(f"###{filename}\n{content}")
+        sections.append(f"###{filename}\n{_render_context_template(content, user_id)}")
     if not sections:
         return None
     return "\n\n".join(sections)

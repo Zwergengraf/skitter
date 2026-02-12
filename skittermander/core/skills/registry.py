@@ -32,7 +32,7 @@ class SkillRegistry:
         records: List[SkillRecord] = []
         for skill in loader.list_skills():
             dir_name = skill.path.name
-            container_path = f"/skills/{dir_name}"
+            container_path = f"skills/{dir_name}"
             records.append(
                 SkillRecord(
                     name=skill.name,

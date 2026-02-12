@@ -31,7 +31,7 @@ def default_registry() -> ToolRegistry:
     registry.register(
         ToolSpec(
             name="read",
-            description="Read the contents of a file. Supports text files and images (jpg, png, gif, webp). Images are sent as attachments. For text files, output is truncated to 2000 lines or 50KB (whichever is hit first). Use offset/limit for large files. When you need the full file, continue with offset until complete.",
+            description="Read the contents of a file. Relative paths resolve from /workspace. Absolute paths are literal sandbox paths. Supports text files and images (jpg, png, gif, webp). For text files, output is truncated to 2000 lines or 50KB (whichever is hit first). Use offset/limit for large files.",
             input_schema={
                 "type": "object",
                 "properties": {
@@ -47,7 +47,7 @@ def default_registry() -> ToolRegistry:
     registry.register(
         ToolSpec(
             name="list",
-            description="List files and folders at a path in the workspace.",
+            description="List files and folders. Relative paths resolve from /workspace; absolute paths are literal sandbox paths.",
             input_schema={
                 "type": "object",
                 "properties": {
@@ -61,7 +61,7 @@ def default_registry() -> ToolRegistry:
     registry.register(
         ToolSpec(
             name="delete",
-            description="Delete a file or folder. Use recursive=true to delete non-empty folders.",
+            description="Delete a file or folder. Relative paths resolve from /workspace; absolute paths are literal sandbox paths. Use recursive=true to delete non-empty folders.",
             input_schema={
                 "type": "object",
                 "properties": {
@@ -76,7 +76,7 @@ def default_registry() -> ToolRegistry:
     registry.register(
         ToolSpec(
             name="download",
-            description="Download a file from a URL into the workspace. Optionally specify a target path.",
+            description="Download a file from a URL into the workspace. Optional path can be relative (from /workspace) or absolute sandbox path.",
             input_schema={
                 "type": "object",
                 "properties": {
@@ -91,7 +91,7 @@ def default_registry() -> ToolRegistry:
     registry.register(
         ToolSpec(
             name="edit",
-            description="Edit a file by replacing exact text. The oldText must match exactly (including whitespace). Use this for precise, surgical edits.",
+            description="Edit a file by replacing exact text. Relative paths resolve from /workspace; absolute paths are literal sandbox paths. oldText must match exactly (including whitespace).",
             input_schema={
                 "type": "object",
                 "properties": {
@@ -109,7 +109,7 @@ def default_registry() -> ToolRegistry:
     registry.register(
         ToolSpec(
             name="write",
-            description="Write content to a file. Creates the file if it doesn't exist, overwrites if it does. Automatically creates parent directories.",
+            description="Write content to a file. Relative paths resolve from /workspace; absolute paths are literal sandbox paths. Creates the file if it doesn't exist and parent directories as needed.",
             input_schema={
                 "type": "object",
                 "properties": {
@@ -216,7 +216,7 @@ def default_registry() -> ToolRegistry:
     registry.register(
         ToolSpec(
             name="shell",
-            description="Run a shell command in the workspace",
+            description="Run a shell command in the sandbox. Relative paths resolve from /workspace (default cwd). Absolute paths are literal sandbox paths.",
             input_schema={
                 "type": "object",
                 "properties": {"cmd": {"type": "string"}, "cwd": {"type": "string"}},

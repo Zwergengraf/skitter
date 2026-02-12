@@ -224,15 +224,17 @@ def build_graph(
         workspace = user_workspace_root(user_id)
         normalized = str(raw_path).strip()
         if normalized.startswith("sandbox:/workspace/"):
-            normalized = "/" + normalized.removeprefix("sandbox:/workspace/")
-        if normalized == "/workspace":
-            normalized = "/"
-        elif normalized.startswith("/workspace/"):
-            # Backward compatibility for older sandbox responses.
-            normalized = "/" + str(Path(normalized).relative_to("/workspace"))
+            normalized = str(Path("/workspace") / Path(normalized.removeprefix("sandbox:/workspace/")))
+        elif normalized == "sandbox:/workspace":
+            normalized = "/workspace"
         path = Path(normalized)
-        if path.is_absolute():
-            resolved = workspace / Path(str(path).lstrip("/"))
+        if str(path) == "/workspace":
+            resolved = workspace
+        elif str(path).startswith("/workspace/"):
+            resolved = workspace / Path(str(path).replace("/workspace/", "", 1))
+        elif path.is_absolute():
+            # Absolute paths outside /workspace cannot be resolved to host user workspace.
+            return None
         else:
             resolved = workspace / path
         try:
@@ -243,16 +245,6 @@ def build_graph(
         if workspace_resolved not in resolved.parents and resolved != workspace_resolved:
             return None
         return resolved
-
-    def _validate_virtual_workspace_path(raw_path: str) -> str | None:
-        value = (raw_path or "").strip()
-        if not value:
-            return "path is required"
-        if value == "/workspace" or value.startswith("/workspace/"):
-            return "do not use '/workspace' prefix; workspace root is '/'. Use '/memory/file.md' or 'memory/file.md'."
-        if value == "workspace" or value.startswith("workspace/"):
-            return "do not use leading 'workspace/'. Use '/memory/file.md' or 'memory/file.md'."
-        return None
 
     def _normalize_secret_refs(secret_refs: Any) -> list[str]:
         if not secret_refs:
@@ -441,13 +433,10 @@ def build_graph(
         limit: Optional[int] = None,
         file_path: Optional[str] = None,
     ) -> str:
-        """Read a workspace file. Paths must be relative ('memory/note.md') or virtual-absolute ('/memory/note.md'); never use '/workspace/...'. Supports text and common image files."""
+        """Read a file. Relative paths are resolved from workspace root (/workspace). Absolute paths are treated as literal sandbox paths."""
         target = _coalesce_path(path, file_path)
         if not target:
             return await _fail_untracked_call("read", {"path": path, "file_path": file_path}, "read error: path is required")
-        path_error = _validate_virtual_workspace_path(target)
-        if path_error:
-            return await _fail_untracked_call("read", {"path": target}, f"read error: {path_error}")
         payload: dict[str, Any] = {"path": target}
         if offset is not None:
             payload["offset"] = offset
@@ -481,13 +470,10 @@ def build_graph(
 
     @tool("write")
     async def write(path: Optional[str] = None, content: Optional[str] = None, file_path: Optional[str] = None) -> str:
-        """Write content to a workspace file. Paths must be relative ('notes/todo.md') or virtual-absolute ('/notes/todo.md'); never use '/workspace/...'. Creates parent directories automatically."""
+        """Write content to a file. Relative paths are resolved from workspace root (/workspace). Absolute paths are treated as literal sandbox paths."""
         target = _coalesce_path(path, file_path)
         if not target:
             return await _fail_untracked_call("write", {"path": path, "file_path": file_path}, "write error: path is required")
-        path_error = _validate_virtual_workspace_path(target)
-        if path_error:
-            return await _fail_untracked_call("write", {"path": target}, f"write error: {path_error}")
         if content is None:
             return await _fail_untracked_call("write", {"path": target}, "write error: content is required")
         payload = {"path": target, "content": content}
@@ -511,13 +497,10 @@ def build_graph(
         old_string: Optional[str] = None,
         new_string: Optional[str] = None,
     ) -> str:
-        """Edit a workspace file by exact text replacement. Paths must be relative ('notes/todo.md') or virtual-absolute ('/notes/todo.md'); never use '/workspace/...'. """
+        """Edit a file by exact text replacement. Relative paths are resolved from workspace root (/workspace). Absolute paths are treated as literal sandbox paths."""
         target = _coalesce_path(path, file_path)
         if not target:
             return await _fail_untracked_call("edit", {"path": path, "file_path": file_path}, "edit error: path is required")
-        path_error = _validate_virtual_workspace_path(target)
-        if path_error:
-            return await _fail_untracked_call("edit", {"path": target}, f"edit error: {path_error}")
         old_value = oldText if oldText is not None else old_string
         new_value = newText if newText is not None else new_string
         if old_value is None:
@@ -542,13 +525,10 @@ def build_graph(
         file_path: Optional[str] = None,
         show_hidden_files: Optional[bool] = None,
     ) -> str:
-        """List workspace files/folders. Paths must be relative ('memory') or virtual-absolute ('/memory'); never use '/workspace/...'. Hidden files are excluded by default."""
+        """List files/folders. Relative paths are resolved from workspace root (/workspace). Absolute paths are treated as literal sandbox paths. Hidden files are excluded by default."""
         target = _coalesce_path(path, file_path)
         if not target:
             return await _fail_untracked_call("list", {"path": path, "file_path": file_path}, "list error: path is required")
-        path_error = _validate_virtual_workspace_path(target)
-        if path_error:
-            return await _fail_untracked_call("list", {"path": target}, f"list error: {path_error}")
         payload = {"path": target, "show_hidden_files": bool(show_hidden_files)}
         budget_message = await _enforce_tool_budget("list", payload)
         if budget_message:
@@ -565,13 +545,10 @@ def build_graph(
     async def delete(
         path: Optional[str] = None, recursive: Optional[bool] = None, file_path: Optional[str] = None
     ) -> str:
-        """Delete a workspace file/folder. Paths must be relative ('tmp/file.txt') or virtual-absolute ('/tmp/file.txt'); never use '/workspace/...'. Use recursive=true for non-empty folders."""
+        """Delete a file/folder. Relative paths are resolved from workspace root (/workspace). Absolute paths are treated as literal sandbox paths. Use recursive=true for non-empty folders."""
         target = _coalesce_path(path, file_path)
         if not target:
             return await _fail_untracked_call("delete", {"path": path, "file_path": file_path}, "delete error: path is required")
-        path_error = _validate_virtual_workspace_path(target)
-        if path_error:
-            return await _fail_untracked_call("delete", {"path": target}, f"delete error: {path_error}")
         payload = {"path": target, "recursive": bool(recursive)}
         budget_message = await _enforce_tool_budget("delete", payload)
         if budget_message:
@@ -588,14 +565,11 @@ def build_graph(
 
     @tool("download")
     async def download(url: str, path: Optional[str] = None) -> str:
-        """Download a URL into the workspace. Optional path must be relative ('downloads/a.bin') or virtual-absolute ('/downloads/a.bin'); never use '/workspace/...'. """
+        """Download a URL into the workspace. Optional path can be relative (resolved from /workspace) or absolute sandbox path."""
         if not url:
             return await _fail_untracked_call("download", {"url": url, "path": path}, "download error: url is required")
         payload: dict[str, Any] = {"url": url}
         if path:
-            path_error = _validate_virtual_workspace_path(path)
-            if path_error:
-                return await _fail_untracked_call("download", {"url": url, "path": path}, f"download error: {path_error}")
             payload["path"] = path
         budget_message = await _enforce_tool_budget("download", payload)
         if budget_message:
@@ -728,7 +702,7 @@ def build_graph(
         background: bool = False,
         secret_refs: Optional[list[str]] = None,
     ) -> str:
-        """Run a shell command in the sandboxed workspace. Use background=true for long-running tasks. Use secret_refs to inject per-user secrets as env vars."""
+        """Run a shell command in the sandboxed workspace. Relative paths resolve from /workspace (default cwd). Absolute paths are literal sandbox paths. Use background=true for long-running tasks. Use secret_refs to inject per-user secrets as env vars."""
         payload = {"cmd": cmd, "background": bool(background)}
         if cwd:
             payload["cwd"] = cwd

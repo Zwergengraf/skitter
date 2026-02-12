@@ -126,24 +126,12 @@ def create_app() -> FastAPI:
         value = str(path or "").strip()
         if not value:
             raise HTTPException(status_code=400, detail="path is required")
-        if value == "/workspace" or value.startswith("/workspace/"):
-            raise HTTPException(
-                status_code=400,
-                detail="Invalid path. Do not use '/workspace/...'. Use virtual root '/' (e.g. '/memory/file.md') or a relative path ('memory/file.md').",
-            )
-        if value == "workspace" or value.startswith("workspace/"):
-            raise HTTPException(
-                status_code=400,
-                detail="Invalid path. Do not use leading 'workspace/'. Use virtual root '/' (e.g. '/memory/file.md') or a relative path ('memory/file.md').",
-            )
         raw = Path(value)
         if raw.is_absolute():
-            # Virtual absolute path: "/" maps to workspace root.
-            raw = Path(str(raw).lstrip("/"))
-        candidate = (workspace_root / raw).resolve()
-        if workspace_root not in candidate.parents and candidate != workspace_root:
-            raise HTTPException(status_code=400, detail="Invalid path")
-        return candidate
+            # Keep absolute paths literal; do not resolve symlinks.
+            return raw
+        # Relative paths are anchored at workspace root.
+        return workspace_root / raw
 
     def _payload_path(payload: Dict[str, Any]) -> str:
         return payload.get("path") or payload.get("file_path") or ""
@@ -152,7 +140,7 @@ def create_app() -> FastAPI:
         try:
             rel = target.relative_to(workspace_root)
         except ValueError:
-            rel = target.name
+            return str(target).replace("\\", "/")
         rel_str = str(rel).replace("\\", "/")
         if rel_str in {"", "."}:
             return "/"
