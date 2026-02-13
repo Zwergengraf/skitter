@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import base64
+import logging
 from pathlib import Path
 from contextvars import ContextVar, Token
 from typing import Optional, Any
@@ -31,6 +32,8 @@ from .embeddings import EmbeddingsClient
 from .memory_service import MemoryService
 from .workspace import user_workspace_root
 from .secrets import SecretsManager
+
+_logger = logging.getLogger(__name__)
 
 
 _CURRENT_SESSION_ID: ContextVar[str] = ContextVar("skitter_session_id", default="default")
@@ -233,8 +236,9 @@ def build_graph(
         elif str(path).startswith("/workspace/"):
             resolved = workspace / Path(str(path).replace("/workspace/", "", 1))
         elif path.is_absolute():
-            # Absolute paths outside /workspace cannot be resolved to host user workspace.
-            return None
+            # Sandbox responses may use "/foo/bar" as workspace-rooted virtual paths.
+            # Map those to the user's host workspace for local file reads (e.g. image blocks).
+            resolved = workspace / Path(str(path).lstrip("/"))
         else:
             resolved = workspace / path
         try:
@@ -466,6 +470,14 @@ def build_graph(
                     except OSError:
                         return json.dumps(result)
                     b64 = base64.b64encode(data).decode("ascii")
+                    _logger.debug(
+                        "read returned multimodal image block (user_id=%s session_id=%s path=%s content_type=%s bytes=%d)",
+                        _user_id(),
+                        _session_id(),
+                        file_path,
+                        content_type,
+                        len(data),
+                    )
                     return [
                         {"type": "text", "text": f"Read image: {file_path} ({content_type})"},
                         {"type": "image", "base64": b64, "mime_type": content_type},

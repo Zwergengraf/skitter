@@ -165,7 +165,7 @@ class Settings(BaseSettings):
     embeddings_model: str = Field(default="text-embedding-3-small")
     embeddings_target_chunk_chars: int = Field(default=600)
     embeddings_max_chunk_chars: int = Field(default=800)
-    memory_min_similarity: float = Field(default=0.3)
+    memory_max_distance: float = Field(default=0.7)
 
     brave_api_key: str = Field(default="")
     brave_api_base: str = Field(default="https://api.search.brave.com/res/v1/web/search")
@@ -227,6 +227,7 @@ class Settings(BaseSettings):
     context_max_tool_messages: int = Field(default=10)
     context_max_chat_messages: int = Field(default=80)
     context_compact_every_messages: int = Field(default=8)
+    log_level: str = Field(default="INFO")
     limits_max_tool_calls: int = Field(default=12)
     limits_max_runtime_seconds: int = Field(default=180)
     limits_max_cost_usd: float = Field(default=2.0)
@@ -241,6 +242,12 @@ class Settings(BaseSettings):
 
     # Env-only: do not add to config schema or UI.
     secrets_master_key: str = Field(default="", exclude=True)
+
+    @field_validator("log_level", mode="before")
+    @classmethod
+    def _normalize_log_level(cls, value: Any) -> str:
+        text = str(value or "INFO").strip().upper()
+        return text or "INFO"
 
 
 def _config_path() -> Path:

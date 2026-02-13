@@ -23,6 +23,7 @@ CATEGORIES = {
     "embeddings": "Embeddings",
     "brave": "Brave Search",
     "prompt": "Prompt",
+    "logging": "Logging",
     "context": "Context",
     "limits": "Limits",
     "jobs": "Jobs",
@@ -42,6 +43,14 @@ CATEGORIES = {
 
 
 FIELDS: list[ConfigFieldSpec] = [
+    ConfigFieldSpec(
+        key="log_level",
+        path=("logging", "level"),
+        category="logging",
+        label="Log level",
+        field_type="string",
+        description="Python + app log level (e.g. DEBUG, INFO, WARNING, ERROR).",
+    ),
     ConfigFieldSpec(
         key="prompt_path",
         path=("prompt", "path"),
@@ -311,14 +320,15 @@ FIELDS: list[ConfigFieldSpec] = [
         step=50,
     ),
     ConfigFieldSpec(
-        key="memory_min_similarity",
-        path=("embeddings", "min_similarity"),
+        key="memory_max_distance",
+        path=("embeddings", "max_distance"),
         category="embeddings",
-        label="Memory min similarity",
+        label="Memory max distance",
         field_type="number",
         minimum=0.0,
-        maximum=1.0,
-        step=0.05,
+        maximum=2.0,
+        step=0.01,
+        description="Cosine distance threshold for memory retrieval (lower is stricter).",
     ),
     ConfigFieldSpec(
         key="brave_api_key",

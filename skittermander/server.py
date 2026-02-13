@@ -523,7 +523,8 @@ async def main() -> None:
 
     manager.on_event(handler)
 
-    config = uvicorn.Config(app, host="0.0.0.0", port=8000, log_level="info")
+    uvicorn_log_level = str(settings.log_level or "INFO").lower()
+    config = uvicorn.Config(app, host="0.0.0.0", port=8000, log_level=uvicorn_log_level)
     server = uvicorn.Server(config)
 
     try:

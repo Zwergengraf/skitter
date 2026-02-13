@@ -1,5 +1,7 @@
 database:
   url: postgresql+asyncpg://postgres:postgres@localhost:5432/skittermander
+logging:
+  level: INFO
 prompt:
   path: system_prompt.md
   context_files:
@@ -70,7 +72,7 @@ embeddings:
   model: text-embedding-embeddinggemma-300m
   target_chunk_chars: 700
   max_chunk_chars: 1000
-  min_similarity: 0.3
+  max_distance: 0.45
 brave:
   api_key: ""
   api_base: https://api.search.brave.com/res/v1/web/search

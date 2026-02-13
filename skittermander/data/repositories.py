@@ -767,7 +767,7 @@ class Repository:
         user_id: str,
         query_embedding: list[float],
         top_k: int,
-        min_similarity: float,
+        max_distance: float,
     ) -> list[dict[str, Any]]:
         if not query_embedding:
             return []
@@ -775,6 +775,22 @@ class Repository:
         query_vector = "[" + ",".join(f"{float(value):.12g}" for value in query_embedding) + "]"
         stmt = text(
             """
+            WITH q AS (
+              SELECT CAST(:query_vector AS vector) AS v
+            ),
+            ranked AS (
+              SELECT
+                id,
+                user_id,
+                embedding,
+                summary,
+                tags,
+                created_at,
+                (embedding <=> q.v) AS distance
+              FROM memory_entries, q
+              WHERE user_id = :user_id
+                AND embedding IS NOT NULL
+            )
             SELECT
               id,
               user_id,
@@ -782,11 +798,11 @@ class Repository:
               summary,
               tags,
               created_at,
-              (1 - (embedding <=> CAST(:query_vector AS vector))) AS score
-            FROM memory_entries
-            WHERE user_id = :user_id
-              AND (1 - (embedding <=> CAST(:query_vector AS vector))) >= :min_similarity
-            ORDER BY (embedding <=> CAST(:query_vector AS vector)) ASC
+              distance,
+              (1 - distance) AS score
+            FROM ranked
+            WHERE distance <= :max_distance
+            ORDER BY distance ASC
             LIMIT :limit
             """
         )
@@ -795,7 +811,7 @@ class Repository:
             {
                 "user_id": user_id,
                 "query_vector": query_vector,
-                "min_similarity": float(min_similarity),
+                "max_distance": float(max_distance),
                 "limit": limit,
             },
         )

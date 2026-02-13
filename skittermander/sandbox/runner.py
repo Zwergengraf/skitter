@@ -143,8 +143,9 @@ def create_app() -> FastAPI:
             return str(target).replace("\\", "/")
         rel_str = str(rel).replace("\\", "/")
         if rel_str in {"", "."}:
-            return "/"
-        return f"/{rel_str.lstrip('/')}"
+            return "."
+        # Return workspace-local paths (relative to /workspace root), not pseudo-absolute paths.
+        return rel_str.lstrip("/")
 
     def _read_text_file(
         target: Path, offset: int | None, limit: int | None, max_lines: int = 2000, max_bytes: int = 50 * 1024

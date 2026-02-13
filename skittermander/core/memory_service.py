@@ -259,12 +259,12 @@ class MemoryService:
         limit = max(1, min(top_k, 10))
         async with SessionLocal() as session:
             repo = Repository(session)
-            min_score = settings.memory_min_similarity
+            max_distance = max(0.0, float(settings.memory_max_distance))
             rows = await repo.search_memory_entries_pgvector(
                 user_id=user_id,
                 query_embedding=query_vec,
                 top_k=limit,
-                min_similarity=min_score,
+                max_distance=max_distance,
             )
 
         results: list[dict] = []
