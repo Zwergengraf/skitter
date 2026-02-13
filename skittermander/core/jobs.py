@@ -48,6 +48,8 @@ class JobService:
         self._deliver = deliver
         self._subagents = SubAgentService(graph_factory=graph_factory)
         self._workers: list[asyncio.Task] = []
+        self._running_job_tasks: dict[str, asyncio.Task] = {}
+        self._running_job_tasks_lock = asyncio.Lock()
         self._started = False
         self._stop_event = asyncio.Event()
 
@@ -137,7 +139,30 @@ class JobService:
     async def cancel_job(self, user_id: str, job_id: str):
         async with SessionLocal() as session:
             repo = Repository(session)
-            return await repo.request_cancel_agent_job(user_id, job_id)
+            job = await repo.request_cancel_agent_job(user_id, job_id)
+        if job is not None and job.status == "running":
+            cancelled = await self._cancel_running_task(job.id)
+            if cancelled:
+                _logger.info("Cancellation signal sent to running background job %s", job.id)
+        return job
+
+    async def _set_running_task(self, job_id: str, task: asyncio.Task) -> None:
+        async with self._running_job_tasks_lock:
+            self._running_job_tasks[job_id] = task
+
+    async def _clear_running_task(self, job_id: str, task: asyncio.Task) -> None:
+        async with self._running_job_tasks_lock:
+            current = self._running_job_tasks.get(job_id)
+            if current is task:
+                self._running_job_tasks.pop(job_id, None)
+
+    async def _cancel_running_task(self, job_id: str) -> bool:
+        async with self._running_job_tasks_lock:
+            task = self._running_job_tasks.get(job_id)
+        if task is None or task.done():
+            return False
+        task.cancel()
+        return True
 
     async def _worker_loop(self, worker_index: int) -> None:
         poll_interval = max(1, int(settings.jobs_poll_interval_seconds))
@@ -147,7 +172,16 @@ class JobService:
                 if job is None:
                     await asyncio.sleep(poll_interval)
                     continue
-                await self._run_job(job)
+                job_task = asyncio.create_task(self._run_job(job), name=f"skitter-job-run-{job.id}")
+                await self._set_running_task(job.id, job_task)
+                try:
+                    await job_task
+                except asyncio.CancelledError:
+                    if self._stop_event.is_set():
+                        raise
+                    _logger.info("Background job %s cancelled", job.id)
+                finally:
+                    await self._clear_running_task(job.id, job_task)
             except asyncio.CancelledError:
                 raise
             except Exception:
@@ -281,6 +315,20 @@ class JobService:
                 async with SessionLocal() as session:
                     repo = Repository(session)
                     await repo.mark_agent_job_delivered(job.id, delivery_error=delivery_error)
+        except asyncio.CancelledError:
+            _logger.info("Background job %s interrupted by cancellation", job.id)
+            async with SessionLocal() as session:
+                repo = Repository(session)
+                current = await repo.get_agent_job(job.id)
+                if current is not None and current.status not in {"completed", "failed", "timeout", "cancelled"}:
+                    await repo.complete_agent_job(
+                        job.id,
+                        status="cancelled",
+                        result_payload=current.result or {},
+                        error="Cancellation requested by user.",
+                    )
+                await repo.mark_agent_job_delivered(job.id, delivery_error="cancelled")
+            raise
         except Exception as exc:
             _logger.exception("Background job %s failed unexpectedly", job.id)
             async with SessionLocal() as session:

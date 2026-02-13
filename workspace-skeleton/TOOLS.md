@@ -16,6 +16,9 @@ Skills define _how_ tools work. This file is for _your_ specifics — the stuff 
   - `hover` (by `selector` or `text`)
   - `move_mouse` (by `x`+`y` or `selector`/`text`)
   - `click_at` (by `x`+`y` or `selector`/`text`)
+- `browser_action` also supports `evaluate`:
+  - run JavaScript with `script`
+  - optional `arg` is passed as the evaluate argument
 - `click` also supports direct coordinates (`x`, `y`) in addition to selectors.
 - Useful when standard element click actionability fails due to overlays/animations.
 

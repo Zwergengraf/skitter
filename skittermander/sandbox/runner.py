@@ -5,6 +5,7 @@ import os
 from pathlib import Path
 import shutil
 import base64
+import json
 from typing import Any, Dict
 from contextlib import asynccontextmanager
 from urllib.parse import urlparse
@@ -489,6 +490,8 @@ def create_app() -> FastAPI:
             selector = req.payload.get("selector")
             url = req.payload.get("url")
             text = req.payload.get("text", "")
+            script = req.payload.get("script")
+            eval_arg = req.payload.get("arg")
             x = req.payload.get("x")
             y = req.payload.get("y")
             button = str(req.payload.get("button", "left")).lower()
@@ -784,6 +787,23 @@ def create_app() -> FastAPI:
                         )
                         response["elements"] = elements[: max_elements]
                     return response
+
+                if action == "evaluate":
+                    if not script or not str(script).strip():
+                        raise HTTPException(status_code=400, detail="script is required")
+                    try:
+                        value = await page.evaluate(str(script), eval_arg)
+                    except PlaywrightTimeoutError as exc:
+                        raise HTTPException(status_code=400, detail="Timeout evaluating script") from exc
+                    except Exception as exc:
+                        raise HTTPException(status_code=400, detail=f"Evaluate failed: {exc}") from exc
+                    try:
+                        # Ensure response is JSON-serializable for transport.
+                        json.dumps(value)
+                        serializable_value: Any = value
+                    except TypeError:
+                        serializable_value = str(value)
+                    return {"status": "ok", "result": serializable_value}
 
                 if action == "screenshot":
                     if selector:

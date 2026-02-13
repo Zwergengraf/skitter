@@ -650,6 +650,8 @@ def build_graph(
         url: Optional[str] = None,
         selector: Optional[str] = None,
         text: Optional[str] = None,
+        script: Optional[str] = None,
+        arg: Optional[Any] = None,
         x: Optional[float] = None,
         y: Optional[float] = None,
         button: str = "left",
@@ -680,6 +682,7 @@ def build_graph(
         - Navigation/session: open, navigate, tabs, focus, close_tab, close, status
         - Element actions: click, hover, type, fill, fill_form, login, press, wait
         - Pointer actions: move_mouse, click_at (use x/y or selector/text target)
+        - Script action: evaluate (run JavaScript with optional arg and return result)
         - Page capture: snapshot, screenshot
         """
         payload = {
@@ -687,6 +690,8 @@ def build_graph(
             "url": url,
             "selector": selector,
             "text": text,
+            "script": script,
+            "arg": arg,
             "x": x,
             "y": y,
             "button": button,
@@ -1368,6 +1373,20 @@ def build_graph(
     ]
     if include_subagent_tools:
         tools.extend([job_start, job_status, job_list, job_cancel, sub_agent, sub_agent_batch])
+
+    def _should_retry_tool_exception(exc: Exception) -> bool:
+        # Cancellation must short-circuit immediately; do not retry cancelled tool calls.
+        return not isinstance(exc, RunCancelledError)
+
+    def _tool_retry_on_failure(exc: Exception) -> str:
+        # Raise cancellation through the graph so job runs terminate promptly.
+        if isinstance(exc, RunCancelledError):
+            raise exc
+        return (
+            f"Tool call failed after retries with {type(exc).__name__}: {exc}. "
+            "Please adjust strategy and continue."
+        )
+
     return create_agent(
         model,
         tools=tools,
@@ -1382,6 +1401,8 @@ def build_graph(
                 max_retries=3,
                 backoff_factor=2.0,
                 initial_delay=3.0,
+                retry_on=_should_retry_tool_exception,
+                on_failure=_tool_retry_on_failure,
             )
         ]
     )
