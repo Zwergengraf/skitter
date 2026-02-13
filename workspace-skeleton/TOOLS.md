@@ -10,7 +10,14 @@ Skills define _how_ tools work. This file is for _your_ specifics — the stuff 
 
 ---
 
-No tool notes yet.
+## Browser Tool Notes
+
+- `browser_action` supports pointer-level actions:
+  - `hover` (by `selector` or `text`)
+  - `move_mouse` (by `x`+`y` or `selector`/`text`)
+  - `click_at` (by `x`+`y` or `selector`/`text`)
+- `click` also supports direct coordinates (`x`, `y`) in addition to selectors.
+- Useful when standard element click actionability fails due to overlays/animations.
 
 ---
 

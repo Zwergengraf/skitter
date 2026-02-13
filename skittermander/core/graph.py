@@ -650,6 +650,11 @@ def build_graph(
         url: Optional[str] = None,
         selector: Optional[str] = None,
         text: Optional[str] = None,
+        x: Optional[float] = None,
+        y: Optional[float] = None,
+        button: str = "left",
+        click_count: int = 1,
+        mouse_steps: int = 15,
         key: Optional[str] = None,
         fields: Optional[list[dict]] = None,
         username: Optional[str] = None,
@@ -669,12 +674,24 @@ def build_graph(
         include_elements: bool = False,
         max_elements: int = 50,
     ) -> str:
-        """Stateful browser automation (open/click/type/fill/press/wait/snapshot/screenshot/close/status)."""
+        """Stateful browser automation.
+
+        Actions:
+        - Navigation/session: open, navigate, tabs, focus, close_tab, close, status
+        - Element actions: click, hover, type, fill, fill_form, login, press, wait
+        - Pointer actions: move_mouse, click_at (use x/y or selector/text target)
+        - Page capture: snapshot, screenshot
+        """
         payload = {
             "action": action,
             "url": url,
             "selector": selector,
             "text": text,
+            "x": x,
+            "y": y,
+            "button": button,
+            "click_count": click_count,
+            "mouse_steps": mouse_steps,
             "key": key,
             "fields": fields,
             "username": username,

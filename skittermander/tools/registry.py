@@ -141,7 +141,7 @@ def default_registry() -> ToolRegistry:
     registry.register(
         ToolSpec(
             name="browser_action",
-            description="Stateful browser automation actions",
+            description="Stateful browser automation actions (open/navigate/click/hover/move_mouse/click_at/type/fill/press/wait/snapshot/screenshot/tabs/focus/close_tab/close/status)",
             input_schema={
                 "type": "object",
                 "properties": {
@@ -149,6 +149,11 @@ def default_registry() -> ToolRegistry:
                     "url": {"type": "string"},
                     "selector": {"type": "string"},
                     "text": {"type": "string"},
+                    "x": {"type": "number"},
+                    "y": {"type": "number"},
+                    "button": {"type": "string"},
+                    "click_count": {"type": "number"},
+                    "mouse_steps": {"type": "number"},
                     "key": {"type": "string"},
                     "fields": {"type": "array"},
                     "submit": {"type": "boolean"},

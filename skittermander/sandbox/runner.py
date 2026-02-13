@@ -489,12 +489,49 @@ def create_app() -> FastAPI:
             selector = req.payload.get("selector")
             url = req.payload.get("url")
             text = req.payload.get("text", "")
+            x = req.payload.get("x")
+            y = req.payload.get("y")
+            button = str(req.payload.get("button", "left")).lower()
+            click_count = int(req.payload.get("click_count", 1))
+            mouse_steps = max(1, int(req.payload.get("mouse_steps", 15)))
             timeout_ms = int(req.payload.get("timeout_ms", 30000))
             wait_until = req.payload.get("wait_until", "domcontentloaded")
             full_page = bool(req.payload.get("full_page", True))
             max_chars = int(req.payload.get("max_chars", 20000))
             include_elements = bool(req.payload.get("include_elements", False))
             max_elements = int(req.payload.get("max_elements", 50))
+            if button not in {"left", "right", "middle"}:
+                raise HTTPException(status_code=400, detail="button must be left, right, or middle")
+
+            async def _locator_for_pointer_target():
+                if selector:
+                    return page.locator(selector).first
+                text_value = str(text).strip() if text is not None else ""
+                if text_value:
+                    return page.get_by_text(text_value).first
+                return None
+
+            async def _pointer_xy_from_payload_or_target() -> tuple[float, float]:
+                if x is not None and y is not None:
+                    return float(x), float(y)
+                locator = await _locator_for_pointer_target()
+                if locator is None:
+                    raise HTTPException(
+                        status_code=400,
+                        detail="provide x+y coordinates or selector/text target",
+                    )
+                try:
+                    await locator.wait_for(state="visible", timeout=timeout_ms)
+                except PlaywrightTimeoutError:
+                    pass
+                try:
+                    await locator.scroll_into_view_if_needed(timeout=timeout_ms)
+                except PlaywrightTimeoutError:
+                    pass
+                box = await locator.bounding_box()
+                if not box:
+                    raise HTTPException(status_code=400, detail="target element has no visible bounding box")
+                return float(box["x"] + (box["width"] / 2.0)), float(box["y"] + (box["height"] / 2.0))
 
             async with _get_lock(profile_id):
                 context = await _get_context(profile_id, browser_data_root, width, height, browser_executable)
@@ -542,9 +579,17 @@ def create_app() -> FastAPI:
                     return {"status": "ok"}
 
                 if action == "click":
-                    if not selector:
-                        raise HTTPException(status_code=400, detail="selector is required")
-                    locator = page.locator(selector).first
+                    if x is not None and y is not None:
+                        click_x, click_y = float(x), float(y)
+                        await page.mouse.move(click_x, click_y, steps=mouse_steps)
+                        await page.mouse.click(click_x, click_y, button=button, click_count=max(1, click_count))
+                        return {"status": "ok", "x": click_x, "y": click_y, "mode": "coordinates"}
+                    locator = await _locator_for_pointer_target()
+                    if locator is None:
+                        raise HTTPException(
+                            status_code=400,
+                            detail="selector or text is required (or provide x+y coordinates)",
+                        )
                     try:
                         await locator.wait_for(state="visible", timeout=timeout_ms)
                     except PlaywrightTimeoutError:
@@ -555,17 +600,49 @@ def create_app() -> FastAPI:
                     except PlaywrightTimeoutError:
                         pass
                     try:
-                        await locator.click(timeout=timeout_ms)
-                        return {"status": "ok"}
+                        await locator.click(timeout=timeout_ms, button=button, click_count=max(1, click_count))
+                        return {"status": "ok", "mode": "locator"}
                     except PlaywrightTimeoutError:
                         # Try a forced click in case overlays or animations block normal actionability.
                         try:
-                            await locator.click(timeout=timeout_ms, force=True)
-                            return {"status": "ok", "forced": True}
+                            await locator.click(
+                                timeout=timeout_ms,
+                                force=True,
+                                button=button,
+                                click_count=max(1, click_count),
+                            )
+                            return {"status": "ok", "forced": True, "mode": "locator"}
                         except PlaywrightTimeoutError as exc:
+                            target = selector if selector else f"text:{text}"
                             raise HTTPException(
-                                status_code=400, detail=f"Timeout clicking selector: {selector}"
+                                status_code=400, detail=f"Timeout clicking target: {target}"
                             ) from exc
+
+                if action == "hover":
+                    locator = await _locator_for_pointer_target()
+                    if locator is None:
+                        raise HTTPException(status_code=400, detail="selector or text is required")
+                    try:
+                        await locator.wait_for(state="visible", timeout=timeout_ms)
+                    except PlaywrightTimeoutError:
+                        pass
+                    try:
+                        await locator.scroll_into_view_if_needed(timeout=timeout_ms)
+                    except PlaywrightTimeoutError:
+                        pass
+                    await locator.hover(timeout=timeout_ms, force=True)
+                    return {"status": "ok"}
+
+                if action == "move_mouse":
+                    move_x, move_y = await _pointer_xy_from_payload_or_target()
+                    await page.mouse.move(move_x, move_y, steps=mouse_steps)
+                    return {"status": "ok", "x": move_x, "y": move_y}
+
+                if action == "click_at":
+                    click_x, click_y = await _pointer_xy_from_payload_or_target()
+                    await page.mouse.move(click_x, click_y, steps=mouse_steps)
+                    await page.mouse.click(click_x, click_y, button=button, click_count=max(1, click_count))
+                    return {"status": "ok", "x": click_x, "y": click_y}
 
                 if action in {"type", "fill"}:
                     if not selector:
