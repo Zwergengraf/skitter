@@ -5,6 +5,52 @@ repo_url: https://github.com/gabriel/Skittermander
 
 theme:
   name: material
-
+  palette:
+    scheme: slate
+    primary: black
+    accent: teal
 nav:
   - Home: index.md
+  - Getting Started:
+      - Overview: getting-started/overview.md
+      - Quickstart: getting-started/quickstart.md
+      - Local Development: getting-started/local-development.md
+      - Docker Compose: getting-started/docker-compose.md
+      - Configuration: getting-started/configuration.md
+      - Auth and Pairing: getting-started/auth-and-pairing.md
+  - Architecture:
+      - System Overview: architecture/system-overview.md
+      - Execution Flow: architecture/execution-flow.md
+      - Data Model: architecture/data-model.md
+  - Components:
+      - API Server: components/api-server.md
+      - Admin Web UI: components/admin-web.md
+      - Discord Transport: components/discord-transport.md
+      - TUI Client: components/tui-client.md
+      - Menubar Client: components/menubar-client.md
+      - Executor Node: components/executor-node.md
+      - Sandbox Runner: components/sandbox-runner.md
+  - Core Concepts:
+      - Sessions: core-concepts/sessions.md
+      - Tools and Approvals: core-concepts/tools-and-approvals.md
+      - Jobs and Sub-Agents: core-concepts/jobs-and-sub-agents.md
+      - Scheduler and Heartbeats: core-concepts/scheduler-and-heartbeats.md
+      - Memory: core-concepts/memory.md
+      - Skills: core-concepts/skills.md
+      - Secrets: core-concepts/secrets.md
+      - Models and Reasoning: core-concepts/models-and-reasoning.md
+  - API:
+      - Overview: api/overview.md
+      - Commands: api/commands.md
+      - Executors: api/executors.md
+      - Sessions and Messages: api/sessions-and-messages.md
+      - Tools and Runs: api/tools-and-runs.md
+  - Operations:
+      - Deployment: operations/deployment.md
+      - Security: operations/security.md
+      - Observability: operations/observability.md
+      - Troubleshooting: operations/troubleshooting.md
+      - Testing: operations/testing.md
+      - Backup and Restore: operations/backup-and-restore.md
+  - Contributing: contributing.md
+  - Roadmap: roadmap.md

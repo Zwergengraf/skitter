@@ -1,5 +1,6 @@
 # Skittermander Documentation
 
-This documentation site is powered by MkDocs + Material.
-
-More content will be added here.
+- Personal AI assistant platform documentation.
+- Covers server, clients, executors, tooling, and operations.
+- Built with MkDocs Material and published via GitHub Pages.
+- This first pass intentionally keeps pages as outline bullets.
