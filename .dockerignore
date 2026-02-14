@@ -8,13 +8,13 @@ venv/
 admin-web/node_modules/
 admin-web/dist/
 
-skittermander-menubar/.build/
-skittermander-menubar/.swiftpm/
-skittermander-menubar/.module-cache/
-skittermander-menubar/.swiftpm-cache/
-skittermander-menubar/.clang-cache/
+skitter-menubar/.build/
+skitter-menubar/.swiftpm/
+skitter-menubar/.module-cache/
+skitter-menubar/.swiftpm-cache/
+skitter-menubar/.clang-cache/
 
-skittermander-tui/venv/
+skitter-tui/venv/
 
 workspace/
 browser-data/
