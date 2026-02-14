@@ -1,7 +1,7 @@
-site_name: Skittermander Docs
-site_description: Documentation for Skittermander
-repo_name: gabriel/Skittermander
-repo_url: https://github.com/gabriel/Skittermander
+site_name: Skitter Docs
+site_description: Documentation for Skitter
+repo_name: gabriel/Skitter
+repo_url: https://github.com/gabriel/Skitter
 
 theme:
   name: material

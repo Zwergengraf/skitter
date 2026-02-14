@@ -1,4 +1,4 @@
-# Skittermander Documentation
+# Skitter Documentation
 
 - Personal AI assistant platform documentation.
 - Covers server, clients, executors, tooling, and operations.

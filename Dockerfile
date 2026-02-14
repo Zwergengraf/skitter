@@ -7,4 +7,4 @@ COPY . /app
 RUN pip install --no-cache-dir --upgrade pip && \
     pip install --no-cache-dir .
 
-CMD ["python", "-m", "skittermander.server"]
+CMD ["python", "-m", "skitter.server"]

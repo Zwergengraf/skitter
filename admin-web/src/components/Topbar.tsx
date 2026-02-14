@@ -11,7 +11,7 @@ export function Topbar({ isDark, onToggleTheme }: TopbarProps) {
   return (
     <div className="flex items-center justify-between gap-4">
       <div>
-        <h2 className="text-3xl font-semibold">Skittermander Ops</h2>
+        <h2 className="text-3xl font-semibold">Skitter Ops</h2>
         <p className="text-sm text-mutedForeground">
           Keep the agent fleet aligned, safe, and well-fed.
         </p>

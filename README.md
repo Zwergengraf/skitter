@@ -1,4 +1,4 @@
-# Skittermander
+# Skitter
 
 <p align="center">
   Personal AI assistant platform with a Python agent runtime, secure tool sandbox, and multiple client apps.
@@ -16,7 +16,7 @@
 
 ## What This Is
 
-Skittermander is a personal agent system with:
+Skitter is a personal agent system with:
 
 - A Python server (`FastAPI` + `LangGraph`) that runs the assistant.
 - Distributed executors for filesystem, shell, browser, and web tools (Docker sandboxes and external node runners).
@@ -28,20 +28,20 @@ Skittermander is a personal agent system with:
 
 | App | Location | Purpose |
 | --- | --- | --- |
-| Server | `/skittermander` | Agent runtime, API, scheduling, heartbeats, tools, memory |
+| Server | `/skitter` | Agent runtime, API, scheduling, heartbeats, tools, memory |
 | Admin Web UI | `/admin-web` | Operational dashboard (sessions, tool runs, jobs, memory, sandbox, settings) |
-| Standalone TUI | `/skittermander-tui` | Remote terminal chat client over API |
-| macOS Menubar App | `/skittermander-menubar` | Native companion app with quick chat + status |
-| Executor Node | `/skittermander/node` | External host runner (macOS/Linux) that connects to API via WebSocket |
+| Standalone TUI | `/skitter-tui` | Remote terminal chat client over API |
+| macOS Menubar App | `/skitter-menubar` | Native companion app with quick chat + status |
+| Executor Node | `/skitter/node` | External host runner (macOS/Linux) that connects to API via WebSocket |
 
 ## Architecture (High Level)
 
-- `skittermander/core`: runtime, graph, sessions, memory, scheduler, heartbeats, sub-agents.
-- `skittermander/api`: `/v1/*` API routes and auth middleware.
-- `skittermander/tools`: approvals, executor router, docker sandbox manager.
-- `skittermander/sandbox`: tool runner app used by docker sandbox and external executor node.
-- `skittermander/node`: external executor process (`skitter-node`).
-- `skittermander/data`: models, repositories, schema init.
+- `skitter/core`: runtime, graph, sessions, memory, scheduler, heartbeats, sub-agents.
+- `skitter/api`: `/v1/*` API routes and auth middleware.
+- `skitter/tools`: approvals, executor router, docker sandbox manager.
+- `skitter/sandbox`: tool runner app used by docker sandbox and external executor node.
+- `skitter/node`: external executor process (`skitter-node`).
+- `skitter/data`: models, repositories, schema init.
 - `workspace-skeleton`: default per-user workspace bootstrap content.
 
 ## Prerequisites
@@ -58,7 +58,7 @@ Skittermander is a personal agent system with:
 
 ```bash
 git clone <your-repo-url>
-cd Skittermander
+cd Skitter
 
 python -m venv venv
 source venv/bin/activate
@@ -114,7 +114,7 @@ docker compose up -d postgres
 Build sandbox image used for per-user Docker executors:
 
 ```bash
-docker build -f skittermander/sandbox/Dockerfile -t skittermander-sandbox .
+docker build -f skitter/sandbox/Dockerfile -t skitter-sandbox .
 ```
 
 If you only use external executor nodes and disable Docker auto-fallback, sandbox image build is optional.
@@ -122,7 +122,7 @@ If you only use external executor nodes and disable Docker auto-fallback, sandbo
 Initialize database schema:
 
 ```bash
-python -m skittermander.data.init_db
+python -m skitter.data.init_db
 ```
 
 ### 5) Run the server
@@ -130,7 +130,7 @@ python -m skittermander.data.init_db
 You can either run the server like this, or in Docker
 
 ```bash
-python -m skittermander.server
+python -m skitter.server
 ```
 
 This starts:
@@ -142,7 +142,7 @@ This starts:
 To disable Discord:
 
 ```bash
-SKITTER_ENABLE_DISCORD=false python -m skittermander.server
+SKITTER_ENABLE_DISCORD=false python -m skitter.server
 ```
 
 ## Docker Compose (DB + API + Admin Web)
@@ -168,13 +168,13 @@ Endpoints:
 
 Notes:
 
-- `api` auto-runs DB initialization on startup (`python -m skittermander.data.init_db`).
+- `api` auto-runs DB initialization on startup (`python -m skitter.data.init_db`).
 - `sandbox` image is built but not started as a long-running service. The API spawns per-user sandbox containers on demand via Docker socket access.
 - The admin web image is built with `VITE_API_KEY`; this key is embedded in client-side assets. Do not expose this UI publicly without additional auth controls.
 
 ## Executor Workflow
 
-Skittermander routes tool execution to an executor per user.
+Skitter routes tool execution to an executor per user.
 
 - Docker executor: auto-managed per-user sandbox container (`docker-default`).
 - Node executor: external host process (`skitter-node`) connected to API over WebSocket.
@@ -253,7 +253,7 @@ By default Vite runs on `http://localhost:5173`.
 ### Standalone TUI
 
 ```bash
-cd skittermander-tui
+cd skitter-tui
 python -m venv .venv
 source .venv/bin/activate
 pip install -e .
@@ -269,7 +269,7 @@ If you do not have a token yet, start TUI and use:
 ### macOS Menubar App
 
 ```bash
-cd skittermander-menubar
+cd skitter-menubar
 swift build
 swift run
 ```
@@ -331,9 +331,9 @@ Useful auth endpoints:
 ## Development Notes
 
 - Server config is YAML (`config.yaml`) plus env-only secrets in `.env`.
-- Main API app factory: `skittermander/api/app.py`
-- End-to-end entrypoint: `python -m skittermander.server`
-- Existing tests are in `skittermander/tests`.
+- Main API app factory: `skitter/api/app.py`
+- End-to-end entrypoint: `python -m skitter.server`
+- Existing tests are in `skitter/tests`.
 
 ## License
 

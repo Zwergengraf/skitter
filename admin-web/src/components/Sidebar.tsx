@@ -11,7 +11,7 @@ export function Sidebar({ active, onSelect }: SidebarProps) {
     <aside className="fixed left-0 top-0 z-20 flex h-screen w-[260px] flex-col gap-8 border-r border-border bg-card/80 px-6 py-8 backdrop-blur">
       <div className="space-y-3">
         <div className="data-chip text-[10px] text-mutedForeground">
-          Skittermander Admin
+          Skitter Admin
         </div>
         <div>
           <h1 className="text-2xl font-semibold">Control Room</h1>

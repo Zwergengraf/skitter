@@ -1,5 +1,5 @@
 database:
-  url: postgresql+asyncpg://postgres:postgres@localhost:5432/skittermander
+  url: postgresql+asyncpg://postgres:postgres@localhost:5432/skitter
 logging:
   level: INFO
 prompt:
@@ -101,7 +101,7 @@ workspace:
 sandbox:
   base_url: http://localhost:9080
   api_key: ''
-  image: skittermander-sandbox
+  image: skitter-sandbox
   network: ''
   port: 9080
   idle_seconds: 900

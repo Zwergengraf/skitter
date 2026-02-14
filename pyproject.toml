@@ -3,14 +3,14 @@ requires = ["setuptools>=68", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "skittermander"
+name = "skitter"
 version = "0.1.0"
-description = "Skittermander AI assistant backend"
+description = "Skitter AI assistant backend"
 readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "MIT" }
 authors = [
-  { name = "Skittermander" }
+  { name = "Skitter" }
 ]
 
 dependencies = [
@@ -47,10 +47,11 @@ dev = [
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
+pythonpath = ["."]
 
 [project.scripts]
-skitter-node = "skittermander.node.__main__:main"
+skitter-node = "skitter.node.__main__:main"
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["skittermander*"]
+include = ["skitter*"]

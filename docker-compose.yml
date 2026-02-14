@@ -5,7 +5,7 @@ services:
     environment:
       POSTGRES_USER: ${SKITTER_POSTGRES_USER:-postgres}
       POSTGRES_PASSWORD: ${SKITTER_POSTGRES_PASSWORD:-postgres}
-      POSTGRES_DB: ${SKITTER_POSTGRES_DB:-skittermander}
+      POSTGRES_DB: ${SKITTER_POSTGRES_DB:-skitter}
     # For security reasons, we do not expose the Postgres port to the host machine. The API service connects to it via the Docker network.
     # DO NOT UNCOMMENT THE PORTS SECTION BELOW UNLESS YOU KNOW WHAT YOU ARE DOING AND HAVE SECURED YOUR DATABASE PROPERLY.
     # ports:
@@ -13,7 +13,7 @@ services:
     volumes:
       - skitter_pg:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${SKITTER_POSTGRES_USER:-postgres} -d ${SKITTER_POSTGRES_DB:-skittermander}"]
+      test: ["CMD-SHELL", "pg_isready -U ${SKITTER_POSTGRES_USER:-postgres} -d ${SKITTER_POSTGRES_DB:-skitter}"]
       interval: 5s
       timeout: 5s
       retries: 20
@@ -28,11 +28,11 @@ services:
       SKITTER_BOOTSTRAP_CODE: ${SKITTER_BOOTSTRAP_CODE:-}
       SKITTER_SECRETS_MASTER_KEY: ${SKITTER_SECRETS_MASTER_KEY:-}
       SKITTER_ENABLE_DISCORD: ${SKITTER_ENABLE_DISCORD:-true}
-      SKITTER_DB_URL: postgresql+asyncpg://${SKITTER_POSTGRES_USER:-postgres}:${SKITTER_POSTGRES_PASSWORD:-postgres}@postgres:5432/${SKITTER_POSTGRES_DB:-skittermander}
+      SKITTER_DB_URL: postgresql+asyncpg://${SKITTER_POSTGRES_USER:-postgres}:${SKITTER_POSTGRES_PASSWORD:-postgres}@postgres:5432/${SKITTER_POSTGRES_DB:-skitter}
       SKITTER_WORKSPACE_ROOT: /workspace
       SKITTER_HOST_WORKSPACE_ROOT: ${SKITTER_HOST_WORKSPACE_ROOT:-}
-      SKITTER_SANDBOX_IMAGE: skittermander-sandbox
-      SKITTER_SANDBOX_NETWORK: ${COMPOSE_PROJECT_NAME:-skittermander}_default
+      SKITTER_SANDBOX_IMAGE: skitter-sandbox
+      SKITTER_SANDBOX_NETWORK: ${COMPOSE_PROJECT_NAME:-skitter}_default
       SKITTER_SANDBOX_PORT: 9080
     depends_on:
       postgres:
@@ -45,7 +45,7 @@ services:
       - ./config.yaml:/app/config.yaml
       - ./system_prompt.md:/app/system_prompt.md
       - /var/run/docker.sock:/var/run/docker.sock
-    command: ["sh", "-c", "python -m skittermander.data.init_db && python -m skittermander.server"]
+    command: ["sh", "-c", "python -m skitter.data.init_db && python -m skitter.server"]
     restart: unless-stopped
 
   admin-web:
@@ -64,8 +64,8 @@ services:
   sandbox:
     build:
       context: .
-      dockerfile: skittermander/sandbox/Dockerfile
-    image: skittermander-sandbox
+      dockerfile: skitter/sandbox/Dockerfile
+    image: skitter-sandbox
     profiles:
       - sandbox
 

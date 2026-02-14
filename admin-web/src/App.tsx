@@ -3909,7 +3909,7 @@ export default function App() {
         <footer className="flex items-center justify-between border-t border-border pt-4 text-xs text-mutedForeground">
           <div className="flex items-center gap-2">
             <Activity className="h-3 w-3" />
-            Connected to Skittermander API
+            Connected to Skitter API
           </div>
           <div>v0.1.0 · Admin preview</div>
         </footer>
