@@ -156,16 +156,28 @@ final class AppState: ObservableObject {
     }
 
     func ensureSession(forceNew: Bool = false, syncWithServer: Bool = false) async throws -> String {
-        if !forceNew, let currentID = sessionID {
-            if syncWithServer {
-                let synced = try await api.sessionDetail(sessionID: currentID)
-                applySyncedMessages(synced)
+        if !forceNew {
+            let id = try await api.createOrResumeSession(origin: "menubar", reuseActive: true)
+            let previousSessionID = sessionID
+            let shouldLoadHistory = id != previousSessionID
+            if shouldLoadHistory {
+                localOverlayMessages.removeAll()
             }
-            return currentID
+            sessionID = id
+            if shouldLoadHistory || syncWithServer {
+                let synced = try await api.sessionDetail(sessionID: id)
+                if shouldLoadHistory {
+                    messages = synced
+                    unreadMessageCount = 0
+                } else {
+                    applySyncedMessages(synced)
+                }
+            }
+            return id
         }
 
         let previousSessionID = sessionID
-        let id = try await api.createOrResumeSession(origin: "menubar", reuseActive: !forceNew)
+        let id = try await api.createOrResumeSession(origin: "menubar", reuseActive: false)
         let shouldLoadHistory = id != previousSessionID
         if shouldLoadHistory {
             localOverlayMessages.removeAll()
