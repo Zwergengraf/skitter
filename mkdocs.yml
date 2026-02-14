@@ -1,0 +1,10 @@
+site_name: Skittermander Docs
+site_description: Documentation for Skittermander
+repo_name: gabriel/Skittermander
+repo_url: https://github.com/gabriel/Skittermander
+
+theme:
+  name: material
+
+nav:
+  - Home: index.md
