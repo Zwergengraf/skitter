@@ -23,12 +23,27 @@ from ..sandbox.runner import create_app
 logger = logging.getLogger("skittermander.node")
 
 
+DEFAULT_NODE_TOOLS: tuple[str, ...] = (
+    "read",
+    "write",
+    "edit",
+    "list",
+    "delete",
+    "download",
+    "http_fetch",
+    "shell",
+    "browser",
+    "browser_action",
+)
+
+
 @dataclass(slots=True)
 class NodeConfig:
     api_url: str
     token: str
     name: str
     workspace_root: str
+    enabled_tools: tuple[str, ...] = DEFAULT_NODE_TOOLS
     heartbeat_seconds: int = 10
     reconnect_seconds: int = 3
     request_timeout_seconds: int = 300
@@ -68,6 +83,27 @@ def _coalesce(*values: str | None) -> str:
     return ""
 
 
+def _normalize_tools(raw: Any) -> tuple[str, ...]:
+    if raw is None:
+        return DEFAULT_NODE_TOOLS
+    items: list[str] = []
+    if isinstance(raw, str):
+        items = [part.strip().lower() for part in raw.split(",")]
+    elif isinstance(raw, list):
+        items = [str(part).strip().lower() for part in raw]
+    allowed: list[str] = []
+    seen: set[str] = set()
+    known = set(DEFAULT_NODE_TOOLS)
+    for item in items:
+        if not item or item in seen or item not in known:
+            continue
+        seen.add(item)
+        allowed.append(item)
+    if not allowed:
+        return DEFAULT_NODE_TOOLS
+    return tuple(allowed)
+
+
 def _resolve_config(args: argparse.Namespace) -> tuple[NodeConfig, Path]:
     config_path = Path(args.config).expanduser() if args.config else _default_config_path()
     file_data = _load_yaml(config_path)
@@ -90,11 +126,19 @@ def _resolve_config(args: argparse.Namespace) -> tuple[NodeConfig, Path]:
     heartbeat_seconds = int(args.heartbeat_seconds or file_data.get("heartbeat_seconds") or 10)
     reconnect_seconds = int(args.reconnect_seconds or file_data.get("reconnect_seconds") or 3)
     request_timeout_seconds = int(args.request_timeout_seconds or file_data.get("request_timeout_seconds") or 300)
+    raw_file_tools = None
+    capabilities_raw = file_data.get("capabilities")
+    if isinstance(capabilities_raw, dict):
+        raw_file_tools = capabilities_raw.get("tools")
+    file_tools = raw_file_tools if raw_file_tools is not None else file_data.get("tools")
+    raw_tools = _coalesce(args.tools, os.environ.get("SKITTER_NODE_TOOLS"))
+    enabled_tools = _normalize_tools(raw_tools if raw_tools else file_tools)
     cfg = NodeConfig(
         api_url=api_url.rstrip("/"),
         token=token,
         name=name,
         workspace_root=workspace_root,
+        enabled_tools=enabled_tools,
         heartbeat_seconds=max(2, heartbeat_seconds),
         reconnect_seconds=max(1, reconnect_seconds),
         request_timeout_seconds=max(10, request_timeout_seconds),
@@ -110,6 +154,9 @@ def _resolve_config(args: argparse.Namespace) -> tuple[NodeConfig, Path]:
                 "heartbeat_seconds": cfg.heartbeat_seconds,
                 "reconnect_seconds": cfg.reconnect_seconds,
                 "request_timeout_seconds": cfg.request_timeout_seconds,
+                "capabilities": {
+                    "tools": list(cfg.enabled_tools),
+                },
             },
         )
     return cfg, config_path
@@ -170,6 +217,8 @@ class NodeClient:
                     heartbeat_task.cancel()
                     try:
                         await heartbeat_task
+                    except asyncio.CancelledError:
+                        pass
                     except Exception:
                         pass
                 await self._cancel_all_pending()
@@ -206,18 +255,7 @@ class NodeClient:
                 "platform": platform.system().lower(),
                 "hostname": socket.gethostname(),
                 "capabilities": {
-                    "tools": [
-                        "read",
-                        "write",
-                        "edit",
-                        "list",
-                        "delete",
-                        "download",
-                        "http_fetch",
-                        "shell",
-                        "browser",
-                        "browser_action",
-                    ],
+                    "tools": list(self._config.enabled_tools),
                     "workspace_root": self._config.workspace_root,
                 },
             }
@@ -228,6 +266,11 @@ class NodeClient:
         request_id = str(message.get("request_id") or "").strip()
         try:
             tool = str(message.get("tool") or "").strip()
+            if tool.lower() not in set(self._config.enabled_tools):
+                raise RuntimeError(
+                    f"Tool '{tool}' is not enabled on this executor. "
+                    "Update node config capabilities.tools to allow it."
+                )
             session_id = str(message.get("session_id") or "").strip() or "default"
             payload = message.get("payload") if isinstance(message.get("payload"), dict) else {}
             timeout_s = float(message.get("timeout_s") or self._config.request_timeout_seconds)
@@ -288,6 +331,11 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--heartbeat-seconds", type=int, default=0, help="Heartbeat interval seconds")
     parser.add_argument("--reconnect-seconds", type=int, default=0, help="Reconnect delay seconds")
     parser.add_argument("--request-timeout-seconds", type=int, default=0, help="Per-execute timeout")
+    parser.add_argument(
+        "--tools",
+        default="",
+        help="Comma-separated enabled tools override (e.g. read,write,shell).",
+    )
     parser.add_argument("--write-config", action="store_true", help="Persist resolved config to config file")
     return parser
 

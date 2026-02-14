@@ -645,7 +645,19 @@ export default function App() {
         `workspace_root: ${workspaceRoot}\n` +
         `heartbeat_seconds: 10\n` +
         `reconnect_seconds: 3\n` +
-        `request_timeout_seconds: 300\n`;
+        `request_timeout_seconds: 300\n` +
+        `capabilities:\n` +
+        `  tools:\n` +
+        `    - read\n` +
+        `    - write\n` +
+        `    - edit\n` +
+        `    - list\n` +
+        `    - delete\n` +
+        `    - download\n` +
+        `    - http_fetch\n` +
+        `    - shell\n` +
+        `    - browser\n` +
+        `    - browser_action\n`;
 
       setExecutorOnboardingResult({
         executorId: executor.id,
