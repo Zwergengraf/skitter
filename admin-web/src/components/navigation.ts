@@ -21,7 +21,7 @@ export const navItems = [
   { id: "memory", label: "Memory", icon: Database },
   { id: "secrets", label: "Secrets", icon: KeyRound },
   { id: "users", label: "Users", icon: Users },
-  { id: "sandbox", label: "Sandbox", icon: HardDrive },
+  { id: "sandbox", label: "Executors", icon: HardDrive },
   { id: "settings", label: "Settings", icon: Settings },
   { id: "activity", label: "Activity", icon: Activity },
 ] as const;

@@ -4,6 +4,7 @@ from . import (
     channels,
     commands,
     config,
+    executors,
     events,
     memory,
     messages,
@@ -37,5 +38,6 @@ __all__ = [
     "users",
     "sandbox",
     "config",
+    "executors",
     "models",
 ]

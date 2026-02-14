@@ -12,6 +12,8 @@ from ...core.conversation_scope import private_scope_id
 from ...core.llm import list_models, resolve_model_name
 from ...core.models import StreamEvent
 from ...core.sessions import SessionManager
+from ...tools.executors import executor_router, node_executor_hub
+from ...tools.sandbox_manager import sandbox_manager
 from ...data.repositories import Repository
 from ..security import hash_pair_code, make_pair_code
 
@@ -34,6 +36,41 @@ def _format_memory_search_results(query: str, results: list[dict]) -> str:
     if len(text) > 1900:
         text = text[:1897] + "..."
     return text
+
+
+async def _running_docker_users() -> set[str]:
+    if sandbox_manager is None:
+        return set()
+    try:
+        containers = await sandbox_manager.list_containers()
+    except Exception:
+        return set()
+    out: set[str] = set()
+    for container in containers:
+        if str(container.get("status") or "").lower() != "running":
+            continue
+        user_id = str(container.get("user_id") or "").strip()
+        if user_id:
+            out.add(user_id)
+    return out
+
+
+async def _resolve_machine_for_user(
+    repo: Repository,
+    user_id: str,
+    target_machine: str,
+):
+    target = (target_machine or "").strip()
+    if not target:
+        return None
+    if target.lower() in {"docker", "docker-default"}:
+        if settings.executors_auto_docker_default:
+            return await repo.get_or_create_docker_executor(user_id)
+        return await repo.get_docker_executor_for_user(user_id)
+    row = await repo.get_executor_for_user(user_id, target)
+    if row is not None:
+        return row
+    return await repo.get_executor_for_user_by_name(user_id, target)
 
 
 @router.post("/execute", response_model=CommandExecuteOut)
@@ -230,6 +267,54 @@ async def execute_command(
                 "Use this code in the menubar/TUI pairing flow."
             ),
             data={"code": code, "expires_at": expires_at.isoformat()},
+        )
+
+    if command == "machine":
+        requested = str(args.get("target_machine") or "").strip()
+        if requested:
+            row = await _resolve_machine_for_user(repo, user.id, requested)
+            if row is None:
+                raise HTTPException(status_code=404, detail=f"Machine not found: {requested}")
+            if row.disabled:
+                raise HTTPException(status_code=400, detail=f"Machine is disabled: {row.name}")
+            await repo.set_user_default_executor(user.id, row.id)
+            active = await repo.get_active_session_by_scope(scope_type, scope_id)
+            if active is not None:
+                await executor_router.set_session_default(active.id, row.id)
+            return CommandExecuteOut(
+                message=f"Default machine set to `{row.name}`.",
+                data={"machine_id": row.id, "machine_name": row.name},
+            )
+
+        if settings.executors_auto_docker_default:
+            await repo.get_or_create_docker_executor(user.id)
+        rows = await repo.list_executors_for_user(user.id, include_disabled=False)
+        online_ids = set(await node_executor_hub.online_executor_ids())
+        running_docker = await _running_docker_users()
+        user_default_id = await repo.get_user_default_executor_id(user.id)
+        lines: list[str] = ["Available machines:"]
+        for row in rows:
+            online = (row.id in online_ids) or (row.kind == "docker" and user.id in running_docker)
+            marker = " (default)" if user_default_id == row.id else ""
+            status = "online" if online else "offline"
+            lines.append(f"- {row.name} [{row.kind}] `{row.id}` · {status}{marker}")
+        if len(lines) == 1:
+            lines.append("(none)")
+        lines.append("Use `/machine <name_or_id>` to set the default machine.")
+        return CommandExecuteOut(
+            message="\n".join(lines),
+            data={
+                "default_executor_id": user_default_id,
+                "machines": [
+                    {
+                        "id": row.id,
+                        "name": row.name,
+                        "kind": row.kind,
+                        "online": (row.id in online_ids) or (row.kind == "docker" and user.id in running_docker),
+                    }
+                    for row in rows
+                ],
+            },
         )
 
     if command == "info":

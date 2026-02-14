@@ -19,7 +19,7 @@
 Skittermander is a personal agent system with:
 
 - A Python server (`FastAPI` + `LangGraph`) that runs the assistant.
-- A secure Docker sandbox for filesystem, shell, browser, and web tools.
+- Distributed executors for filesystem, shell, browser, and web tools (Docker sandboxes and external node runners).
 - Memory indexing and retrieval (PostgreSQL + pgvector).
 - Human-in-the-loop approvals for sensitive tools.
 - Multiple client apps over one API: Discord bot, admin web UI, standalone TUI, and a native macOS menubar app.
@@ -32,13 +32,15 @@ Skittermander is a personal agent system with:
 | Admin Web UI | `/admin-web` | Operational dashboard (sessions, tool runs, jobs, memory, sandbox, settings) |
 | Standalone TUI | `/skittermander-tui` | Remote terminal chat client over API |
 | macOS Menubar App | `/skittermander-menubar` | Native companion app with quick chat + status |
+| Executor Node | `/skittermander/node` | External host runner (macOS/Linux) that connects to API via WebSocket |
 
 ## Architecture (High Level)
 
 - `skittermander/core`: runtime, graph, sessions, memory, scheduler, heartbeats, sub-agents.
 - `skittermander/api`: `/v1/*` API routes and auth middleware.
-- `skittermander/tools`: approvals, sandbox client/manager.
-- `skittermander/sandbox`: isolated tool runner container.
+- `skittermander/tools`: approvals, executor router, docker sandbox manager.
+- `skittermander/sandbox`: tool runner app used by docker sandbox and external executor node.
+- `skittermander/node`: external executor process (`skitter-node`).
 - `skittermander/data`: models, repositories, schema init.
 - `workspace-skeleton`: default per-user workspace bootstrap content.
 
@@ -109,11 +111,13 @@ Start PostgreSQL (pgvector enabled):
 docker compose up -d postgres
 ```
 
-Build sandbox image used for per-user containers:
+Build sandbox image used for per-user Docker executors:
 
 ```bash
 docker build -f skittermander/sandbox/Dockerfile -t skittermander-sandbox .
 ```
+
+If you only use external executor nodes and disable Docker auto-fallback, sandbox image build is optional.
 
 Initialize database schema:
 
@@ -167,6 +171,72 @@ Notes:
 - `api` auto-runs DB initialization on startup (`python -m skittermander.data.init_db`).
 - `sandbox` image is built but not started as a long-running service. The API spawns per-user sandbox containers on demand via Docker socket access.
 - The admin web image is built with `VITE_API_KEY`; this key is embedded in client-side assets. Do not expose this UI publicly without additional auth controls.
+
+## Executor Workflow
+
+Skittermander routes tool execution to an executor per user.
+
+- Docker executor: auto-managed per-user sandbox container (`docker-default`).
+- Node executor: external host process (`skitter-node`) connected to API over WebSocket.
+
+Selection behavior:
+
+- User default executor is set manually with `/machine`.
+- If no default is set and `executors.auto_docker_default=true`, Docker fallback is used.
+- If `executors.auto_docker_default=false`, execution requires an explicit/default non-disabled executor.
+
+### Onboard a node executor (recommended path)
+
+1. Open Admin Web UI → **Executors**.
+2. Click **Add executor node** and create token/command.
+3. Run generated command on target host (macOS/Linux):
+
+```bash
+skitter-node --api-url "http://<api-host>:8000" --token "<token>" --name "<node-name>" --workspace-root "<path>" --write-config
+```
+
+4. Node appears online in Executors view once connected.
+
+### Configure executor tool capabilities
+
+`skitter-node` supports per-node tool allowlists in its config file:
+
+```yaml
+capabilities:
+  tools:
+    - read
+    - write
+    - list
+    - shell
+```
+
+- Omit `capabilities.tools` to use full default tool set.
+- If a tool is not enabled, API requests to that node return a clear error for that tool.
+- You can also override from CLI/env:
+  - `--tools read,write,list,shell`
+  - `SKITTER_NODE_TOOLS=read,write,list,shell`
+
+### Manage executors
+
+- **Disable**: temporarily blocks executor and disconnects active node session.
+- **Enable**: re-allows executor.
+- **Delete**: permanently removes executor and its tokens.
+
+### Set default machine as user
+
+- Discord: `/machine` (list), `/machine <name_or_id>` (set default).
+- TUI: `/machine` / `/machine <name_or_id>`.
+- Menubar: `/machine` / `/machine <name_or_id>`.
+
+The agent can inspect machines (`machine_list`, `machine_status`) but cannot change defaults directly.
+
+### About `executor.local` in node logs
+
+You may see logs like:
+
+`POST http://executor.local/execute`
+
+This is an internal in-process ASGI transport base URL used by `skitter-node`, not a real DNS host/network call.
 
 ## Run Client Apps
 

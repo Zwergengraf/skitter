@@ -4,13 +4,15 @@ import uuid
 from datetime import UTC, datetime, timedelta
 from typing import Any, List, Optional
 
-from sqlalchemy import func, select, text
+from sqlalchemy import delete, func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from .models import (
     AgentJob,
     AuthToken,
     Channel,
+    Executor,
+    ExecutorToken,
     LlmUsage,
     MemoryEntry,
     Message,
@@ -109,6 +111,18 @@ class Repository:
         user.meta = meta
         await self.session.commit()
         return user
+
+    async def set_user_default_executor(self, user_id: str, executor_id: str | None) -> Optional[User]:
+        updates = {"default_executor_id": executor_id or ""}
+        return await self.set_user_meta(user_id, updates)
+
+    async def get_user_default_executor_id(self, user_id: str) -> str | None:
+        user = await self.get_user_by_id(user_id)
+        if user is None:
+            return None
+        meta = dict(user.meta or {})
+        raw = str(meta.get("default_executor_id") or "").strip()
+        return raw or None
 
     async def mark_user_notified(self, user_id: str) -> None:
         result = await self.session.execute(select(User).where(User.id == user_id))
@@ -658,10 +672,12 @@ class Repository:
         approved_by: str | None = None,
         run_id: str | None = None,
         message_id: str | None = None,
+        executor_id: str | None = None,
     ) -> ToolRun:
         tool_run = ToolRun(
             id=str(uuid.uuid4()),
             session_id=session_id,
+            executor_id=executor_id,
             run_id=run_id,
             message_id=message_id,
             tool_name=tool_name,
@@ -725,13 +741,21 @@ class Repository:
             )
         return tool_run
 
-    async def complete_tool_run(self, tool_run_id: str, status: str, output_payload: dict | None = None) -> Optional[ToolRun]:
+    async def complete_tool_run(
+        self,
+        tool_run_id: str,
+        status: str,
+        output_payload: dict | None = None,
+        executor_id: str | None = None,
+    ) -> Optional[ToolRun]:
         result = await self.session.execute(select(ToolRun).where(ToolRun.id == tool_run_id))
         tool_run = result.scalar_one_or_none()
         if tool_run is None:
             return None
         tool_run.status = status
         tool_run.output = output_payload or {}
+        if executor_id is not None:
+            tool_run.executor_id = executor_id
         await self.session.commit()
         if tool_run.run_id:
             await self.append_run_trace_event(
@@ -742,6 +766,7 @@ class Repository:
                     "tool_run_id": tool_run.id,
                     "status": status,
                     "output": output_payload or {},
+                    "executor_id": tool_run.executor_id,
                 },
             )
         return tool_run
@@ -1179,6 +1204,236 @@ class Repository:
             .order_by(AuthToken.created_at.desc())
         )
         return list(result.scalars().all())
+
+    async def create_executor(
+        self,
+        *,
+        owner_user_id: str,
+        name: str,
+        kind: str,
+        platform: str | None = None,
+        hostname: str | None = None,
+        status: str = "offline",
+        capabilities: dict | None = None,
+        disabled: bool = False,
+    ) -> Executor:
+        normalized_name = name.strip()
+        existing = await self.get_executor_for_user_by_name(owner_user_id, normalized_name)
+        if existing is not None:
+            existing.kind = kind.strip() or existing.kind
+            existing.platform = (platform or "").strip() or existing.platform
+            existing.hostname = (hostname or "").strip() or existing.hostname
+            existing.status = (status or "").strip() or existing.status
+            existing.capabilities = capabilities or existing.capabilities or {}
+            existing.disabled = bool(disabled)
+            await self.session.commit()
+            return existing
+        row = Executor(
+            id=str(uuid.uuid4()),
+            owner_user_id=owner_user_id,
+            name=normalized_name,
+            kind=kind.strip() or "docker",
+            platform=(platform or "").strip() or None,
+            hostname=(hostname or "").strip() or None,
+            status=(status or "").strip() or "offline",
+            capabilities=capabilities or {},
+            created_at=self._utcnow(),
+            disabled=bool(disabled),
+        )
+        self.session.add(row)
+        await self.session.commit()
+        return row
+
+    async def get_executor(self, executor_id: str) -> Optional[Executor]:
+        result = await self.session.execute(select(Executor).where(Executor.id == executor_id))
+        return result.scalar_one_or_none()
+
+    async def get_executor_for_user(self, user_id: str, executor_id: str) -> Optional[Executor]:
+        result = await self.session.execute(
+            select(Executor).where(Executor.id == executor_id, Executor.owner_user_id == user_id)
+        )
+        return result.scalar_one_or_none()
+
+    async def get_executor_for_user_by_name(self, user_id: str, name: str) -> Optional[Executor]:
+        lowered = (name or "").strip().lower()
+        if not lowered:
+            return None
+        result = await self.session.execute(
+            select(Executor).where(
+                Executor.owner_user_id == user_id,
+                func.lower(Executor.name) == lowered,
+            )
+        )
+        return result.scalar_one_or_none()
+
+    async def get_docker_executor_for_user(self, user_id: str) -> Optional[Executor]:
+        result = await self.session.execute(
+            select(Executor).where(
+                Executor.owner_user_id == user_id,
+                Executor.kind == "docker",
+                func.lower(Executor.name) == "docker-default",
+            )
+        )
+        return result.scalar_one_or_none()
+
+    async def list_executors_for_user(self, user_id: str, *, include_disabled: bool = False) -> List[Executor]:
+        stmt = select(Executor).where(Executor.owner_user_id == user_id)
+        if not include_disabled:
+            stmt = stmt.where(Executor.disabled == False)  # noqa: E712
+        result = await self.session.execute(stmt.order_by(Executor.created_at.desc()))
+        return list(result.scalars().all())
+
+    async def list_executors_all(
+        self,
+        *,
+        user_id: str | None = None,
+        include_disabled: bool = True,
+        kind: str | None = None,
+        limit: int = 200,
+    ) -> List[Executor]:
+        stmt = select(Executor)
+        if user_id:
+            stmt = stmt.where(Executor.owner_user_id == user_id)
+        if kind:
+            stmt = stmt.where(Executor.kind == kind)
+        if not include_disabled:
+            stmt = stmt.where(Executor.disabled == False)  # noqa: E712
+        result = await self.session.execute(stmt.order_by(Executor.created_at.desc()).limit(limit))
+        return list(result.scalars().all())
+
+    async def update_executor(
+        self,
+        executor_id: str,
+        *,
+        name: str | None = None,
+        platform: str | None = None,
+        hostname: str | None = None,
+        status: str | None = None,
+        capabilities: dict | None = None,
+        disabled: bool | None = None,
+        last_seen_at: datetime | None = None,
+    ) -> Optional[Executor]:
+        row = await self.get_executor(executor_id)
+        if row is None:
+            return None
+        if name is not None:
+            row.name = (name or "").strip() or row.name
+        if platform is not None:
+            row.platform = (platform or "").strip() or None
+        if hostname is not None:
+            row.hostname = (hostname or "").strip() or None
+        if status is not None:
+            row.status = (status or "").strip() or row.status
+        if capabilities is not None:
+            row.capabilities = capabilities
+        if disabled is not None:
+            row.disabled = bool(disabled)
+        if last_seen_at is not None:
+            row.last_seen_at = last_seen_at
+        await self.session.commit()
+        return row
+
+    async def get_or_create_docker_executor(self, user_id: str) -> Executor:
+        result = await self.session.execute(
+            select(Executor).where(
+                Executor.owner_user_id == user_id,
+                Executor.kind == "docker",
+                func.lower(Executor.name) == "docker-default",
+            )
+        )
+        row = result.scalar_one_or_none()
+        if row is not None:
+            return row
+        return await self.create_executor(
+            owner_user_id=user_id,
+            name="docker-default",
+            kind="docker",
+            platform="linux",
+            hostname="docker",
+            status="online",
+            capabilities={"tools": "all"},
+            disabled=False,
+        )
+
+    async def create_executor_token(
+        self,
+        *,
+        executor_id: str,
+        token_hash: str,
+        token_prefix: str,
+    ) -> ExecutorToken:
+        row = ExecutorToken(
+            id=str(uuid.uuid4()),
+            executor_id=executor_id,
+            token_hash=token_hash,
+            token_prefix=token_prefix,
+            created_at=self._utcnow(),
+        )
+        self.session.add(row)
+        await self.session.commit()
+        return row
+
+    async def get_executor_token_by_hash(self, token_hash: str) -> Optional[ExecutorToken]:
+        result = await self.session.execute(select(ExecutorToken).where(ExecutorToken.token_hash == token_hash))
+        return result.scalar_one_or_none()
+
+    async def list_executor_tokens(self, executor_id: str) -> List[ExecutorToken]:
+        result = await self.session.execute(
+            select(ExecutorToken)
+            .where(ExecutorToken.executor_id == executor_id)
+            .order_by(ExecutorToken.created_at.desc())
+        )
+        return list(result.scalars().all())
+
+    async def revoke_executor_token(self, token_id: str) -> bool:
+        result = await self.session.execute(select(ExecutorToken).where(ExecutorToken.id == token_id))
+        row = result.scalar_one_or_none()
+        if row is None:
+            return False
+        row.revoked_at = self._utcnow()
+        await self.session.commit()
+        return True
+
+    async def revoke_executor_tokens(self, executor_id: str) -> int:
+        result = await self.session.execute(
+            select(ExecutorToken).where(
+                ExecutorToken.executor_id == executor_id,
+                ExecutorToken.revoked_at == None,  # noqa: E711
+            )
+        )
+        rows = list(result.scalars().all())
+        if not rows:
+            return 0
+        now = self._utcnow()
+        for row in rows:
+            row.revoked_at = now
+        await self.session.commit()
+        return len(rows)
+
+    async def restore_executor_tokens(self, executor_id: str) -> int:
+        result = await self.session.execute(
+            select(ExecutorToken).where(
+                ExecutorToken.executor_id == executor_id,
+                ExecutorToken.revoked_at != None,  # noqa: E711
+            )
+        )
+        rows = list(result.scalars().all())
+        if not rows:
+            return 0
+        for row in rows:
+            row.revoked_at = None
+        await self.session.commit()
+        return len(rows)
+
+    async def delete_executor(self, executor_id: str) -> bool:
+        result = await self.session.execute(select(Executor).where(Executor.id == executor_id))
+        row = result.scalar_one_or_none()
+        if row is None:
+            return False
+        await self.session.execute(delete(ExecutorToken).where(ExecutorToken.executor_id == executor_id))
+        await self.session.delete(row)
+        await self.session.commit()
+        return True
 
     async def create_pair_code(
         self,

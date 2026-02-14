@@ -129,6 +129,7 @@ CREATE TABLE IF NOT EXISTS llm_usage (
 CREATE TABLE IF NOT EXISTS tool_runs (
     id TEXT PRIMARY KEY,
     session_id TEXT NOT NULL,
+    executor_id TEXT,
     run_id TEXT,
     message_id TEXT,
     tool_name TEXT NOT NULL,
@@ -140,6 +141,9 @@ CREATE TABLE IF NOT EXISTS tool_runs (
 );
 
 ALTER TABLE tool_runs
+    ADD COLUMN IF NOT EXISTS executor_id TEXT;
+
+ALTER TABLE tool_runs
     ADD COLUMN IF NOT EXISTS run_id TEXT;
 
 ALTER TABLE tool_runs
@@ -148,8 +152,78 @@ ALTER TABLE tool_runs
 CREATE INDEX IF NOT EXISTS tool_runs_run_id_idx
     ON tool_runs (run_id);
 
+CREATE INDEX IF NOT EXISTS tool_runs_executor_id_idx
+    ON tool_runs (executor_id);
+
 CREATE INDEX IF NOT EXISTS tool_runs_session_created_idx
     ON tool_runs (session_id, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS executors (
+    id TEXT PRIMARY KEY,
+    owner_user_id TEXT NOT NULL,
+    name TEXT NOT NULL,
+    kind TEXT NOT NULL DEFAULT 'docker',
+    platform TEXT,
+    hostname TEXT,
+    status TEXT NOT NULL DEFAULT 'offline',
+    capabilities JSONB NOT NULL DEFAULT '{}'::jsonb,
+    last_seen_at TIMESTAMPTZ,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    disabled BOOLEAN NOT NULL DEFAULT FALSE
+);
+
+ALTER TABLE executors
+    ADD COLUMN IF NOT EXISTS owner_user_id TEXT;
+ALTER TABLE executors
+    ADD COLUMN IF NOT EXISTS name TEXT;
+ALTER TABLE executors
+    ADD COLUMN IF NOT EXISTS kind TEXT;
+ALTER TABLE executors
+    ADD COLUMN IF NOT EXISTS platform TEXT;
+ALTER TABLE executors
+    ADD COLUMN IF NOT EXISTS hostname TEXT;
+ALTER TABLE executors
+    ADD COLUMN IF NOT EXISTS status TEXT;
+ALTER TABLE executors
+    ADD COLUMN IF NOT EXISTS capabilities JSONB NOT NULL DEFAULT '{}'::jsonb;
+ALTER TABLE executors
+    ADD COLUMN IF NOT EXISTS last_seen_at TIMESTAMPTZ;
+ALTER TABLE executors
+    ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ NOT NULL DEFAULT NOW();
+ALTER TABLE executors
+    ADD COLUMN IF NOT EXISTS disabled BOOLEAN NOT NULL DEFAULT FALSE;
+
+CREATE INDEX IF NOT EXISTS executors_owner_created_idx
+    ON executors (owner_user_id, created_at DESC);
+CREATE UNIQUE INDEX IF NOT EXISTS executors_owner_name_idx
+    ON executors (owner_user_id, name);
+CREATE INDEX IF NOT EXISTS executors_owner_kind_idx
+    ON executors (owner_user_id, kind);
+
+CREATE TABLE IF NOT EXISTS executor_tokens (
+    id TEXT PRIMARY KEY,
+    executor_id TEXT NOT NULL,
+    token_hash TEXT NOT NULL UNIQUE,
+    token_prefix TEXT NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    revoked_at TIMESTAMPTZ
+);
+
+ALTER TABLE executor_tokens
+    ADD COLUMN IF NOT EXISTS executor_id TEXT;
+ALTER TABLE executor_tokens
+    ADD COLUMN IF NOT EXISTS token_hash TEXT;
+ALTER TABLE executor_tokens
+    ADD COLUMN IF NOT EXISTS token_prefix TEXT;
+ALTER TABLE executor_tokens
+    ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ NOT NULL DEFAULT NOW();
+ALTER TABLE executor_tokens
+    ADD COLUMN IF NOT EXISTS revoked_at TIMESTAMPTZ;
+
+CREATE UNIQUE INDEX IF NOT EXISTS executor_tokens_hash_idx
+    ON executor_tokens (token_hash);
+CREATE INDEX IF NOT EXISTS executor_tokens_executor_created_idx
+    ON executor_tokens (executor_id, created_at DESC);
 
 CREATE TABLE IF NOT EXISTS run_traces (
     id TEXT PRIMARY KEY,

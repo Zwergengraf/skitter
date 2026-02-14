@@ -27,6 +27,8 @@ def _require_approved_user(approved: bool) -> None:
 def _serialize_runtime_attachments(attachments: list[Attachment]) -> list[dict]:
     items: list[dict] = []
     for attachment in attachments:
+        if not attachment.url and not attachment.path:
+            continue
         items.append(
             {
                 "filename": attachment.filename,

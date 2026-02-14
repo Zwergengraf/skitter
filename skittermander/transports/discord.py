@@ -257,6 +257,14 @@ class DiscordTransport(TransportAdapter):
         async def model(interaction: discord.Interaction, model_name: Optional[str] = None) -> None:
             await self._handle_command(interaction, "model", extra={"model_name": model_name} if model_name else None)
 
+        @self.tree.command(name="machine", description="List machines or set default machine")
+        async def machine(interaction: discord.Interaction, target_machine: Optional[str] = None) -> None:
+            await self._handle_command(
+                interaction,
+                "machine",
+                extra={"target_machine": target_machine} if target_machine else None,
+            )
+
         @self.tree.command(name="pair", description="Create a short-lived code to pair another client")
         async def pair(interaction: discord.Interaction) -> None:
             await self._handle_command(interaction, "pair", ephemeral=True)

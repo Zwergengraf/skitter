@@ -63,6 +63,7 @@ final class AppState: ObservableObject {
         LocalCommand(id: "schedule_resume", name: "/schedule_resume", usage: "/schedule_resume <job_id>", description: "Resume a scheduled job"),
         LocalCommand(id: "tools", name: "/tools", usage: "/tools", description: "Show tool approval settings"),
         LocalCommand(id: "model", name: "/model", usage: "/model [provider/model]", description: "List/set active model"),
+        LocalCommand(id: "machine", name: "/machine", usage: "/machine [name_or_id]", description: "List/set default machine"),
         LocalCommand(id: "pair", name: "/pair", usage: "/pair", description: "Create a pair code"),
         LocalCommand(id: "info", name: "/info", usage: "/info", description: "Show session usage info"),
     ]
@@ -155,16 +156,28 @@ final class AppState: ObservableObject {
     }
 
     func ensureSession(forceNew: Bool = false, syncWithServer: Bool = false) async throws -> String {
-        if !forceNew, let currentID = sessionID {
-            if syncWithServer {
-                let synced = try await api.sessionDetail(sessionID: currentID)
-                applySyncedMessages(synced)
+        if !forceNew {
+            let id = try await api.createOrResumeSession(origin: "menubar", reuseActive: true)
+            let previousSessionID = sessionID
+            let shouldLoadHistory = id != previousSessionID
+            if shouldLoadHistory {
+                localOverlayMessages.removeAll()
             }
-            return currentID
+            sessionID = id
+            if shouldLoadHistory || syncWithServer {
+                let synced = try await api.sessionDetail(sessionID: id)
+                if shouldLoadHistory {
+                    messages = synced
+                    unreadMessageCount = 0
+                } else {
+                    applySyncedMessages(synced)
+                }
+            }
+            return id
         }
 
         let previousSessionID = sessionID
-        let id = try await api.createOrResumeSession(origin: "menubar", reuseActive: !forceNew)
+        let id = try await api.createOrResumeSession(origin: "menubar", reuseActive: false)
         let shouldLoadHistory = id != previousSessionID
         if shouldLoadHistory {
             localOverlayMessages.removeAll()
@@ -430,6 +443,10 @@ final class AppState: ObservableObject {
             let args = argument.isEmpty ? [:] : ["model_name": argument]
             _ = await runRemoteCommand(name: "model", args: args)
             await refreshStatus()
+            return true
+        case "/machine":
+            let args = argument.isEmpty ? [:] : ["target_machine": argument]
+            _ = await runRemoteCommand(name: "machine", args: args)
             return true
         case "/pair":
             if !argument.isEmpty && !hasWorkingConnection {

@@ -143,7 +143,7 @@ class SkitterTuiApp(App[None]):
             yield Static("Connecting...", id="status")
             yield RichLog(id="chat", highlight=True, markup=True, wrap=True)
             yield Input(
-                placeholder="Type a message. Commands: /new /memory_reindex /memory_search /schedule_list /model /pair /info /help",
+                placeholder="Type a message. Commands: /new /memory_reindex /memory_search /schedule_list /model /machine /pair /info /help",
                 id="input",
             )
         yield Footer()
@@ -383,6 +383,7 @@ class SkitterTuiApp(App[None]):
                 "- `/schedule_resume <job_id>` resume scheduled job\n"
                 "- `/tools` show tool approval config\n"
                 "- `/model [provider/model]` list or set model\n"
+                "- `/machine [name_or_id]` list or set default machine\n"
                 "- `/pair` create pairing code (authenticated)\n"
                 "- `/info` show session usage info\n"
                 "- `/session` show current session id\n"
@@ -528,6 +529,11 @@ class SkitterTuiApp(App[None]):
             new_session_id = str(result.data.get("session_id") or "").strip()
             if new_session_id and new_session_id != self._session_id:
                 self.post_message(SessionReady(new_session_id, created=False))
+            return
+        if cmd == "/machine":
+            target = arg.strip()
+            args = {"target_machine": target} if target else None
+            await self._run_remote_command("machine", args)
             return
         if cmd == "/info":
             await self._run_remote_command("info")

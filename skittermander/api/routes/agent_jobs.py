@@ -76,6 +76,7 @@ async def get_agent_job_detail(
                 id=tool_run.id,
                 tool=tool_run.tool_name,
                 status=tool_run.status,
+                executor_id=tool_run.executor_id,
                 input=tool_run.input or {},
                 output=tool_run.output or {},
                 approved_by=tool_run.approved_by,

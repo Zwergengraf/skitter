@@ -13,8 +13,17 @@ from urllib.parse import urlparse
 import httpx
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
-from playwright.async_api import async_playwright, BrowserContext, Page, TimeoutError as PlaywrightTimeoutError
 from datetime import datetime
+
+try:
+    from playwright.async_api import async_playwright, BrowserContext, Page, TimeoutError as PlaywrightTimeoutError
+except ImportError:  # pragma: no cover - optional dependency on host nodes
+    async_playwright = None
+    BrowserContext = Any  # type: ignore[assignment]
+    Page = Any  # type: ignore[assignment]
+
+    class PlaywrightTimeoutError(Exception):
+        pass
 
 
 class ExecuteRequest(BaseModel):
@@ -84,6 +93,14 @@ async def _get_context(
     profile_id: str, browser_data_root: Path, width: int, height: int, executable: str | None
 ) -> BrowserContext:
     global _playwright
+    if async_playwright is None:
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "Browser tools are unavailable: Playwright is not installed on this executor node. "
+                "Install `playwright` and browser binaries to enable browser/browser_action."
+            ),
+        )
     if _playwright is None:
         _playwright = await async_playwright().start()
     if profile_id in _contexts:
@@ -112,8 +129,13 @@ async def _get_page(profile_id: str, context: BrowserContext) -> Page:
 def create_app() -> FastAPI:
     workspace_root = Path(os.environ.get("SKITTER_WORKSPACE_ROOT", "/tmp/skitter-workspace"))
     workspace_root.mkdir(parents=True, exist_ok=True)
-    browser_data_root = Path(os.environ.get("SKITTER_BROWSER_DATA_ROOT", "/browser-data"))
-    browser_data_root.mkdir(parents=True, exist_ok=True)
+    browser_root_default = workspace_root / ".browser-data"
+    browser_data_root = Path(os.environ.get("SKITTER_BROWSER_DATA_ROOT", str(browser_root_default)))
+    try:
+        browser_data_root.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        browser_data_root = browser_root_default
+        browser_data_root.mkdir(parents=True, exist_ok=True)
     browser_executable = os.environ.get("SKITTER_BROWSER_EXECUTABLE") or None
 
     @asynccontextmanager
@@ -268,11 +290,15 @@ def create_app() -> FastAPI:
                 ext = target.suffix.lower()
                 if ext in {".jpg", ".jpeg", ".png", ".gif", ".webp"}:
                     content_type = "image/jpeg" if ext in {".jpg", ".jpeg"} else f"image/{ext.lstrip('.')}"
-                    return {
+                    response = {
                         "status": "ok",
                         "file_path": _workspace_response_path(target),
                         "content_type": content_type,
                     }
+                    if bool(req.payload.get("include_base64", False)):
+                        data = target.read_bytes()
+                        response["base64"] = base64.b64encode(data).decode("ascii")
+                    return response
                 offset = _coerce_int(req.payload.get("offset"))
                 limit = _coerce_int(req.payload.get("limit"))
                 return _read_text_file(target, offset=offset, limit=limit)
