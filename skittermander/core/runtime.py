@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
 import logging
@@ -43,6 +44,7 @@ from .prompting import build_system_prompt
 from .usage import collect_usage, record_usage
 from .run_limits import RunBudgetUsageCallback, RunLimitsState, reset_current_run_limits, set_current_run_limits
 from ..tools.approval_service import ToolApprovalService
+from ..tools.sandbox_client import ToolRunnerClient
 from ..core.embeddings import EmbeddingsClient
 from ..data.db import SessionLocal
 from ..data.repositories import Repository
@@ -71,6 +73,7 @@ class AgentRuntime:
         self._job_service = job_service
         self._fixed_graph = graph
         self._graphs: dict[str, object] = {}
+        self._tool_client = ToolRunnerClient()
         if graph is None:
             default_name = resolve_model_name(None, purpose="main")
             self._graphs[default_name] = build_graph(
@@ -298,7 +301,7 @@ class AgentRuntime:
                     return chunks
         return chunks
 
-    def _postprocess_response(
+    async def _postprocess_response(
         self,
         *,
         user_id: str,
@@ -308,8 +311,14 @@ class AgentRuntime:
         session_id: str,
     ) -> tuple[str, list[Attachment]]:
         response_text = self._message_content_to_text(response)
-        attachments = self._extract_attachments(user_id, messages, message_id)
-        response_text, media_attachments = self._extract_media_directive_attachments(user_id, response_text)
+        attachments = await self._extract_attachments(user_id, session_id, messages, message_id)
+        response_text, media_attachments = await self._extract_media_directive_attachments(
+            user_id,
+            session_id,
+            response_text,
+            messages=messages,
+            message_id=message_id,
+        )
         if media_attachments:
             seen_paths = {a.path for a in attachments if a.path}
             for attachment in media_attachments:
@@ -326,6 +335,7 @@ class AgentRuntime:
                 session_id,
                 message_id,
             )
+        attachments = self._materialize_runtime_attachments(user_id, attachments)
         cleaned = self._strip_attachment_paths(response_text) if attachments else response_text
         return cleaned, attachments
 
@@ -532,7 +542,7 @@ class AgentRuntime:
             "message_response",
             {"run_id": run_id, "response": response},
         )
-        cleaned, attachments = self._postprocess_response(
+        cleaned, attachments = await self._postprocess_response(
             user_id=internal_user_id,
             messages=messages,
             message_id=envelope.message_id,
@@ -1174,8 +1184,63 @@ Each bullet must be self-contained, explicit, and searchable.
                 continue
         return blocks
 
-    def _extract_attachments(
-        self, user_id: str, messages: list[BaseMessage], message_id: str
+    def _mime_for_file(self, filename: str, fallback: str = "application/octet-stream") -> str:
+        guessed, _ = mimetypes.guess_type(filename)
+        return guessed or fallback
+
+    def _executor_hint_from_tool_payload(self, data: dict) -> str | None:
+        executor = data.get("_executor")
+        if not isinstance(executor, dict):
+            return None
+        hint = str(executor.get("executor_id") or executor.get("executor_name") or "").strip()
+        return hint or None
+
+    async def _read_remote_image_attachment(
+        self,
+        *,
+        user_id: str,
+        session_id: str,
+        raw_path: str,
+        target_machine: str | None,
+    ) -> Attachment | None:
+        payload: dict[str, object] = {"path": raw_path, "include_base64": True}
+        try:
+            result, _dispatch = await self._tool_client.execute(
+                user_id=user_id,
+                session_id=session_id,
+                tool_name="read",
+                payload=payload,
+                timeout=30,
+                target_machine=target_machine,
+            )
+        except Exception:
+            return None
+        if not isinstance(result, dict):
+            return None
+        content_type = str(result.get("content_type") or "").strip().lower()
+        if not content_type.startswith("image/"):
+            return None
+        raw_b64 = str(result.get("base64") or "")
+        if not raw_b64:
+            return None
+        try:
+            data = base64.b64decode(raw_b64)
+        except Exception:
+            return None
+        file_path = str(result.get("file_path") or raw_path).strip() or raw_path
+        filename = Path(file_path).name or Path(raw_path).name or "image"
+        return Attachment(
+            filename=filename,
+            content_type=content_type,
+            bytes_data=data,
+        )
+
+    async def _extract_attachments(
+        self,
+        user_id: str,
+        session_id: str,
+        messages: list[BaseMessage],
+        message_id: str,
     ) -> list[Attachment]:
         attachments: list[Attachment] = []
         seen_resolved_paths: set[str] = set()
@@ -1198,53 +1263,75 @@ Each bullet must be self-contained, explicit, and searchable.
                 data = json.loads(content)
             except json.JSONDecodeError:
                 continue
+            if not isinstance(data, dict):
+                continue
+            target_machine = self._executor_hint_from_tool_payload(data)
             paths: list[str] = []
-            if isinstance(data, dict):
-                if "screenshot_path" in data:
-                    paths.append(data["screenshot_path"])
-                if "screenshot_paths" in data and isinstance(data["screenshot_paths"], list):
-                    paths.extend([str(p) for p in data["screenshot_paths"]])
-                file_path = data.get("file_path")
-                if isinstance(file_path, str):
-                    content_type = str(data.get("content_type", "")).lower()
-                    ext = Path(file_path).suffix.lower()
-                    if content_type.startswith("image/") or ext in image_exts:
-                        paths.append(file_path)
-                if "file_paths" in data and isinstance(data["file_paths"], list):
-                    for item in data["file_paths"]:
-                        if not isinstance(item, str):
-                            continue
-                        ext = Path(item).suffix.lower()
-                        if ext in image_exts:
-                            paths.append(item)
+            if "screenshot_path" in data:
+                paths.append(str(data["screenshot_path"]))
+            if "screenshot_paths" in data and isinstance(data["screenshot_paths"], list):
+                paths.extend([str(p) for p in data["screenshot_paths"]])
+            file_path = data.get("file_path")
+            if isinstance(file_path, str):
+                content_type = str(data.get("content_type", "")).lower()
+                ext = Path(file_path).suffix.lower()
+                if content_type.startswith("image/") or ext in image_exts:
+                    paths.append(file_path)
+            if "file_paths" in data and isinstance(data["file_paths"], list):
+                for item in data["file_paths"]:
+                    if not isinstance(item, str):
+                        continue
+                    ext = Path(item).suffix.lower()
+                    if ext in image_exts:
+                        paths.append(item)
             for raw_path in paths:
                 resolved = self._resolve_workspace_path(user_id, raw_path)
-                if not resolved or not resolved.exists():
-                    continue
-                path_key = str(resolved)
-                if path_key in seen_resolved_paths:
-                    continue
-                try:
-                    payload = resolved.read_bytes()
-                except OSError:
-                    continue
-                seen_resolved_paths.add(path_key)
-                attachments.append(
-                    Attachment(
-                        filename=resolved.name,
-                        content_type="image/png",
-                        bytes_data=payload,
-                        path=str(resolved),
+                if resolved and resolved.exists():
+                    path_key = str(resolved)
+                    if path_key in seen_resolved_paths:
+                        continue
+                    try:
+                        payload = resolved.read_bytes()
+                    except OSError:
+                        payload = None
+                    if payload is None:
+                        continue
+                    seen_resolved_paths.add(path_key)
+                    attachments.append(
+                        Attachment(
+                            filename=resolved.name,
+                            content_type=self._mime_for_file(resolved.name, fallback="image/png"),
+                            bytes_data=payload,
+                            path=str(resolved),
+                        )
                     )
+                    continue
+                remote_attachment = await self._read_remote_image_attachment(
+                    user_id=user_id,
+                    session_id=session_id,
+                    raw_path=raw_path,
+                    target_machine=target_machine,
                 )
+                if remote_attachment is None:
+                    continue
+                attachments.append(remote_attachment)
         return attachments
 
-    def _extract_media_directive_attachments(self, user_id: str, text: str) -> tuple[str, list[Attachment]]:
+    async def _extract_media_directive_attachments(
+        self,
+        user_id: str,
+        session_id: str,
+        text: str,
+        *,
+        messages: list[BaseMessage],
+        message_id: str,
+    ) -> tuple[str, list[Attachment]]:
         if not text:
             return text, []
         attachments: list[Attachment] = []
         seen: set[str] = set()
         kept_lines: list[str] = []
+        target_machine = self._latest_executor_hint(messages, message_id)
         for line in text.splitlines():
             matches = list(_MEDIA_DIRECTIVE_RE.finditer(line))
             if not matches:
@@ -1260,23 +1347,39 @@ Each bullet must be self-contained, explicit, and searchable.
                 if not raw_path:
                     continue
                 resolved = self._resolve_user_workspace_file(user_id, raw_path)
-                if not resolved or not resolved.exists() or not resolved.is_file():
+                if resolved and resolved.exists() and resolved.is_file():
+                    rebuilt_parts.append(line[cursor : match.start()])
+                    cursor = match.end()
+                    removed_any_directive = True
+                    path_key = str(resolved)
+                    if path_key in seen:
+                        continue
+                    seen.add(path_key)
+                    mime_type, _ = mimetypes.guess_type(resolved.name)
+                    attachments.append(
+                        Attachment(
+                            filename=resolved.name,
+                            content_type=mime_type or "application/octet-stream",
+                            path=path_key,
+                        )
+                    )
                     continue
-                path_key = str(resolved)
+                remote_attachment = await self._read_remote_image_attachment(
+                    user_id=user_id,
+                    session_id=session_id,
+                    raw_path=raw_path,
+                    target_machine=target_machine,
+                )
+                if remote_attachment is None:
+                    continue
                 rebuilt_parts.append(line[cursor : match.start()])
                 cursor = match.end()
                 removed_any_directive = True
-                if path_key in seen:
+                dedupe_key = f"bytes:{hashlib.sha256(remote_attachment.bytes_data or b'').hexdigest()}:{remote_attachment.filename}"
+                if dedupe_key in seen:
                     continue
-                seen.add(path_key)
-                mime_type, _ = mimetypes.guess_type(resolved.name)
-                attachments.append(
-                    Attachment(
-                        filename=resolved.name,
-                        content_type=mime_type or "application/octet-stream",
-                        path=path_key,
-                    )
-                )
+                seen.add(dedupe_key)
+                attachments.append(remote_attachment)
 
             if not removed_any_directive:
                 kept_lines.append(line)
@@ -1291,6 +1394,61 @@ Each bullet must be self-contained, explicit, and searchable.
                 kept_lines.append(cleaned_line)
         cleaned = "\n".join(kept_lines).strip()
         return cleaned, attachments
+
+    def _latest_executor_hint(self, messages: list[BaseMessage], message_id: str) -> str | None:
+        start_index = 0
+        if message_id:
+            for idx in range(len(messages) - 1, -1, -1):
+                msg = messages[idx]
+                if isinstance(msg, HumanMessage) and msg.additional_kwargs.get("message_id") == message_id:
+                    start_index = idx + 1
+                    break
+        hint: str | None = None
+        for msg in messages[start_index:]:
+            if not isinstance(msg, ToolMessage):
+                continue
+            content = msg.content if isinstance(msg.content, str) else ""
+            content = content.strip()
+            if not content.startswith("{"):
+                continue
+            try:
+                data = json.loads(content)
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(data, dict):
+                continue
+            candidate = self._executor_hint_from_tool_payload(data)
+            if candidate:
+                hint = candidate
+        return hint
+
+    def _materialize_runtime_attachments(self, user_id: str, attachments: list[Attachment]) -> list[Attachment]:
+        if not attachments:
+            return attachments
+        from .workspace import user_workspace_root
+
+        workspace_root = user_workspace_root(user_id).resolve()
+        out_dir = workspace_root / ".attachments"
+        try:
+            out_dir.mkdir(parents=True, exist_ok=True)
+        except OSError:
+            return attachments
+        for attachment in attachments:
+            if attachment.path or not attachment.bytes_data:
+                continue
+            filename = Path(attachment.filename or "attachment.bin").name or "attachment.bin"
+            stem = Path(filename).stem or "attachment"
+            suffix = Path(filename).suffix
+            safe_stem = re.sub(r"[^A-Za-z0-9._-]+", "_", stem).strip("._")
+            if not safe_stem:
+                safe_stem = "attachment"
+            target = out_dir / f"{safe_stem}-{uuid.uuid4().hex[:8]}{suffix}"
+            try:
+                target.write_bytes(attachment.bytes_data)
+            except OSError:
+                continue
+            attachment.path = str(target)
+        return attachments
 
     def _dedupe_attachments(self, attachments: list[Attachment]) -> tuple[list[Attachment], int]:
         unique: list[Attachment] = []

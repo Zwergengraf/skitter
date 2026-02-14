@@ -69,6 +69,7 @@ async def get_run_detail(run_id: str, request: Request, repo: Repository = Depen
                 id=tool_run.id,
                 tool=tool_run.tool_name,
                 status=tool_run.status,
+                executor_id=tool_run.executor_id,
                 input=tool_run.input or {},
                 output=tool_run.output or {},
                 approved_by=tool_run.approved_by,

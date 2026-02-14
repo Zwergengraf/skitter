@@ -36,6 +36,7 @@ dependencies = [
   "pyyaml>=6.0",
   "cryptography>=42.0",
   "pgvector>=0.3",
+  "websockets>=12.0",
 ]
 
 [project.optional-dependencies]
@@ -46,6 +47,9 @@ dev = [
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
+
+[project.scripts]
+skitter-node = "skittermander.node.__main__:main"
 
 [tool.setuptools.packages.find]
 where = ["."]

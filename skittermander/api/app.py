@@ -23,6 +23,7 @@ from .routes import (
     channels,
     commands,
     config,
+    executors,
     events,
     memory,
     messages,
@@ -122,6 +123,7 @@ def create_app() -> FastAPI:
     app.include_router(users.router)
     app.include_router(channels.router)
     app.include_router(sandbox.router)
+    app.include_router(executors.router)
     app.include_router(config.router)
 
     @app.get("/health")

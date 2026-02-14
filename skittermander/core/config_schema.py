@@ -545,6 +545,13 @@ FIELDS: list[ConfigFieldSpec] = [
         step=0.1,
     ),
     ConfigFieldSpec(
+        key="executors_auto_docker_default",
+        path=("executors", "auto_docker_default"),
+        category="sandbox",
+        label="Auto Docker default executor",
+        field_type="boolean",
+    ),
+    ConfigFieldSpec(
         key="cors_origins",
         path=("cors", "origins"),
         category="cors",

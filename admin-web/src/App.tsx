@@ -31,13 +31,14 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { formatBytes, formatCurrency, formatJsonPreview, formatNumber, formatRelativeTime } from "@/lib/utils";
-import { api } from "@/lib/api";
+import { api, API_BASE } from "@/lib/api";
 import { incidents } from "@/lib/mock";
 import type { NavItemId } from "@/components/navigation";
 import type {
   AgentJobDetail,
   AgentJobListItem,
   ChannelListItem,
+  ExecutorItem,
   MemoryEntry,
   OverviewResponse,
   RunTraceDetail,
@@ -60,7 +61,7 @@ const views: Record<NavItemId, string> = {
   memory: "Memory",
   secrets: "Secrets",
   users: "Users",
-  sandbox: "Sandbox",
+  sandbox: "Executors",
   settings: "Settings",
   activity: "Activity",
 };
@@ -88,6 +89,7 @@ export default function App() {
   const [showRunReasoning, setShowRunReasoning] = useState<boolean>(false);
   const [toolRunToolFilter, setToolRunToolFilter] = useState<string>("all");
   const [toolRunUserFilter, setToolRunUserFilter] = useState<string>("all");
+  const [toolRunExecutorFilter, setToolRunExecutorFilter] = useState<string>("all");
   const [showToolRunReasoning, setShowToolRunReasoning] = useState<boolean>(false);
   const [memoryData, setMemoryData] = useState<MemoryEntry[]>([]);
   const [memoryError, setMemoryError] = useState<string | null>(null);
@@ -127,8 +129,33 @@ export default function App() {
   const [usersError, setUsersError] = useState<string | null>(null);
   const [userUpdating, setUserUpdating] = useState<Record<string, boolean>>({});
   const [sandboxStatus, setSandboxStatus] = useState<SandboxStatus | null>(null);
+  const [executorsData, setExecutorsData] = useState<ExecutorItem[]>([]);
   const [sandboxLoading, setSandboxLoading] = useState<boolean>(false);
   const [sandboxError, setSandboxError] = useState<string | null>(null);
+  const [executorOnboardingOpen, setExecutorOnboardingOpen] = useState<boolean>(false);
+  const [executorOnboardingLoading, setExecutorOnboardingLoading] = useState<boolean>(false);
+  const [executorOnboardingError, setExecutorOnboardingError] = useState<string | null>(null);
+  const [executorDetailOpen, setExecutorDetailOpen] = useState<boolean>(false);
+  const [selectedExecutor, setSelectedExecutor] = useState<ExecutorItem | null>(null);
+  const [executorDetailSaving, setExecutorDetailSaving] = useState<boolean>(false);
+  const [executorDetailDeleting, setExecutorDetailDeleting] = useState<boolean>(false);
+  const [executorDetailError, setExecutorDetailError] = useState<string | null>(null);
+  const [executorDetailForm, setExecutorDetailForm] = useState({
+    name: "",
+  });
+  const [executorOnboardingResult, setExecutorOnboardingResult] = useState<{
+    executorId: string;
+    executorName: string;
+    token: string;
+    command: string;
+    configYaml: string;
+  } | null>(null);
+  const [executorForm, setExecutorForm] = useState({
+    user_id: "",
+    name: "",
+    api_url: API_BASE,
+    workspace_root: "workspace",
+  });
   const [configData, setConfigData] = useState<ConfigResponse | null>(null);
   const [configDraft, setConfigDraft] = useState<Record<string, unknown>>({});
   const [configLoading, setConfigLoading] = useState<boolean>(false);
@@ -197,6 +224,8 @@ export default function App() {
   const overviewCost = overview?.cost_trajectory ?? [];
   const sandboxContainers = sandboxStatus?.containers ?? [];
   const sandboxWorkspaces = sandboxStatus?.workspaces ?? [];
+  const onlineExecutors = executorsData.filter((executor) => executor.online && !executor.disabled).length;
+  const approvedUsers = usersData.filter((user) => user.approved);
   const sessionTimeline = useMemo(() => {
     if (!sessionDetail) {
       return [];
@@ -562,10 +591,10 @@ export default function App() {
   const refreshSandbox = () => {
     setSandboxLoading(true);
     setSandboxError(null);
-    api
-      .getSandboxStatus()
-      .then((data) => {
-        setSandboxStatus(data);
+    Promise.all([api.getSandboxStatus(), api.getExecutors()])
+      .then(([sandboxData, executors]) => {
+        setSandboxStatus(sandboxData);
+        setExecutorsData(executors);
       })
       .catch((error: Error) => {
         setSandboxError(error.message);
@@ -573,6 +602,167 @@ export default function App() {
       .finally(() => {
         setSandboxLoading(false);
       });
+  };
+
+  const runExecutorOnboarding = async () => {
+    const userId = executorForm.user_id.trim();
+    const name = executorForm.name.trim();
+    if (!userId) {
+      setExecutorOnboardingError("Select an approved user.");
+      return;
+    }
+    if (!name) {
+      setExecutorOnboardingError("Executor name is required.");
+      return;
+    }
+
+    setExecutorOnboardingLoading(true);
+    setExecutorOnboardingError(null);
+    setExecutorOnboardingResult(null);
+
+    try {
+      const executor = await api.createExecutor({
+        user_id: userId,
+        name,
+        kind: "node",
+      });
+      const token = await api.createExecutorToken({
+        user_id: userId,
+        executor_id: executor.id,
+      });
+
+      const apiUrl = executorForm.api_url.trim().replace(/\/+$/, "");
+      const workspaceRoot = executorForm.workspace_root.trim() || "workspace";
+      const command =
+        `skitter-node --api-url "${apiUrl}" ` +
+        `--token "${token.token}" ` +
+        `--name "${executor.name}" ` +
+        `--workspace-root "${workspaceRoot}" --write-config`;
+      const configYaml =
+        `api_url: ${apiUrl}\n` +
+        `token: ${token.token}\n` +
+        `name: ${executor.name}\n` +
+        `workspace_root: ${workspaceRoot}\n` +
+        `heartbeat_seconds: 10\n` +
+        `reconnect_seconds: 3\n` +
+        `request_timeout_seconds: 300\n`;
+
+      setExecutorOnboardingResult({
+        executorId: executor.id,
+        executorName: executor.name,
+        token: token.token,
+        command,
+        configYaml,
+      });
+      refreshSandbox();
+      refreshUsers();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setExecutorOnboardingError(message);
+    } finally {
+      setExecutorOnboardingLoading(false);
+    }
+  };
+
+  const openExecutorDetail = (executor: ExecutorItem) => {
+    setSelectedExecutor(executor);
+    setExecutorDetailForm({
+      name: executor.name ?? "",
+    });
+    setExecutorDetailError(null);
+    setExecutorDetailOpen(true);
+  };
+
+  const saveExecutorDetail = async () => {
+    if (!selectedExecutor) {
+      return;
+    }
+    const name = executorDetailForm.name.trim();
+    if (!name) {
+      setExecutorDetailError("Executor name is required.");
+      return;
+    }
+    setExecutorDetailSaving(true);
+    setExecutorDetailError(null);
+    try {
+      const updated = await api.updateExecutor(selectedExecutor.id, {
+        name,
+      });
+      setExecutorsData((current) =>
+        current.map((item) => (item.id === updated.id ? updated : item))
+      );
+      setSelectedExecutor(updated);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setExecutorDetailError(message);
+    } finally {
+      setExecutorDetailSaving(false);
+    }
+  };
+
+  const disableExecutor = async () => {
+    if (!selectedExecutor) {
+      return;
+    }
+    setExecutorDetailDeleting(true);
+    setExecutorDetailError(null);
+    try {
+      const updated = await api.disableExecutor(selectedExecutor.id);
+      setExecutorsData((current) =>
+        current.map((item) => (item.id === updated.id ? updated : item))
+      );
+      setSelectedExecutor(updated);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setExecutorDetailError(message);
+    } finally {
+      setExecutorDetailDeleting(false);
+    }
+  };
+
+  const enableExecutor = async () => {
+    if (!selectedExecutor) {
+      return;
+    }
+    setExecutorDetailDeleting(true);
+    setExecutorDetailError(null);
+    try {
+      const updated = await api.enableExecutor(selectedExecutor.id);
+      setExecutorsData((current) =>
+        current.map((item) => (item.id === updated.id ? updated : item))
+      );
+      setSelectedExecutor(updated);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setExecutorDetailError(message);
+    } finally {
+      setExecutorDetailDeleting(false);
+    }
+  };
+
+  const deleteExecutor = async () => {
+    if (!selectedExecutor) {
+      return;
+    }
+    const confirmed = window.confirm(
+      `Delete executor "${selectedExecutor.name}" permanently?\nThis cannot be undone.`
+    );
+    if (!confirmed) {
+      return;
+    }
+    setExecutorDetailDeleting(true);
+    setExecutorDetailError(null);
+    try {
+      await api.deleteExecutor(selectedExecutor.id);
+      setExecutorDetailOpen(false);
+      setSelectedExecutor(null);
+      refreshSandbox();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setExecutorDetailError(message);
+    } finally {
+      setExecutorDetailDeleting(false);
+    }
   };
 
   const refreshOverview = () => {
@@ -758,6 +948,17 @@ export default function App() {
   }, [active]);
 
   useEffect(() => {
+    if (executorForm.user_id) {
+      return;
+    }
+    const firstApproved = usersData.find((user) => user.approved);
+    if (!firstApproved) {
+      return;
+    }
+    setExecutorForm((current) => ({ ...current, user_id: firstApproved.id }));
+  }, [usersData, executorForm.user_id]);
+
+  useEffect(() => {
     if (active !== "settings") {
       return;
     }
@@ -841,6 +1042,16 @@ export default function App() {
     ).sort((a, b) => userLabelFor(a).localeCompare(userLabelFor(b)));
   }, [toolRunsData, usersData]);
 
+  const toolRunExecutors = useMemo(() => {
+    return Array.from(
+      new Set(
+        toolRunsData
+          .map((tool) => tool.executor_id || "")
+          .filter((executorId): executorId is string => Boolean(executorId))
+      )
+    ).sort((a, b) => a.localeCompare(b));
+  }, [toolRunsData]);
+
   const filteredToolRuns = useMemo(() => {
     return toolRunsData.filter((tool) => {
       if (toolRunToolFilter !== "all" && tool.tool !== toolRunToolFilter) {
@@ -849,9 +1060,12 @@ export default function App() {
       if (toolRunUserFilter !== "all" && tool.requested_by !== toolRunUserFilter) {
         return false;
       }
+      if (toolRunExecutorFilter !== "all" && (tool.executor_id || "") !== toolRunExecutorFilter) {
+        return false;
+      }
       return true;
     });
-  }, [toolRunsData, toolRunToolFilter, toolRunUserFilter]);
+  }, [toolRunsData, toolRunToolFilter, toolRunUserFilter, toolRunExecutorFilter]);
 
   const agentJobUsers = useMemo(() => {
     return Array.from(
@@ -1467,12 +1681,26 @@ export default function App() {
                       ))}
                     </SelectContent>
                   </Select>
+                  <Select value={toolRunExecutorFilter} onValueChange={setToolRunExecutorFilter}>
+                    <SelectTrigger className="w-64">
+                      <SelectValue placeholder="Filter by executor" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="all">All executors</SelectItem>
+                      {toolRunExecutors.map((executorId) => (
+                        <SelectItem key={executorId} value={executorId}>
+                          {executorId}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
                   <Button
                     variant="outline"
                     size="sm"
                     onClick={() => {
                       setToolRunToolFilter("all");
                       setToolRunUserFilter("all");
+                      setToolRunExecutorFilter("all");
                     }}
                   >
                     Clear filters
@@ -1529,7 +1757,7 @@ export default function App() {
                           Details
                         </Button>
                       </div>
-                      <div className="mt-4 grid gap-3 text-xs text-mutedForeground md:grid-cols-3">
+                      <div className="mt-4 grid gap-3 text-xs text-mutedForeground md:grid-cols-4">
                         <div>
                           <p className="uppercase tracking-[0.2em] text-mutedForeground">Approved by</p>
                           <p className="mt-1 text-sm text-foreground">{tool.approved_by ?? "—"}</p>
@@ -1537,6 +1765,10 @@ export default function App() {
                         <div>
                           <p className="uppercase tracking-[0.2em] text-mutedForeground">Created</p>
                           <p className="mt-1 text-sm text-foreground">{formatRelativeTime(tool.created_at)}</p>
+                        </div>
+                        <div>
+                          <p className="uppercase tracking-[0.2em] text-mutedForeground">Executor</p>
+                          <p className="mt-1 text-sm text-foreground">{tool.executor_id ?? "—"}</p>
                         </div>
                         <div>
                           <p className="uppercase tracking-[0.2em] text-mutedForeground">Links</p>
@@ -2356,8 +2588,8 @@ export default function App() {
             <Card>
               <CardHeader>
                 <SectionHeader
-                  title="Sandbox & workspaces"
-                  subtitle="Per-user storage and live containers."
+                  title="Executors & workspaces"
+                  subtitle="Per-user storage, live containers, and executor nodes."
                   actionLabel={sandboxLoading ? "Refreshing..." : "Refresh"}
                   onAction={sandboxLoading ? undefined : refreshSandbox}
                 />
@@ -2373,6 +2605,18 @@ export default function App() {
                   </div>
                 ) : (
                   <>
+                    <div className="flex justify-end">
+                      <Button
+                        onClick={() => {
+                          setExecutorOnboardingError(null);
+                          setExecutorOnboardingResult(null);
+                          setExecutorOnboardingOpen(true);
+                        }}
+                      >
+                        Add executor node
+                      </Button>
+                    </div>
+
                     <div className="grid gap-4 md:grid-cols-3">
                       <div className="rounded-2xl border border-border bg-card p-4">
                         <p className="text-xs uppercase tracking-[0.2em] text-mutedForeground">
@@ -2398,10 +2642,10 @@ export default function App() {
                       </div>
                       <div className="rounded-2xl border border-border bg-card p-4">
                         <p className="text-xs uppercase tracking-[0.2em] text-mutedForeground">
-                          Browser profile
+                          Executors
                         </p>
-                        <p className="mt-2 text-sm font-semibold">Persistent</p>
-                        <p className="text-xs text-mutedForeground">Brave, 1920×1080 default</p>
+                        <p className="mt-2 text-2xl font-semibold">{executorsData.length}</p>
+                        <p className="text-xs text-mutedForeground">{onlineExecutors} online</p>
                       </div>
                     </div>
 
@@ -2490,6 +2734,74 @@ export default function App() {
                             </div>
                           )}
                         </div>
+                      </div>
+                    </div>
+
+                    <div className="rounded-2xl border border-border bg-card p-4">
+                      <div className="flex items-center justify-between">
+                        <p className="text-sm font-semibold">Executors</p>
+                        <Badge variant="secondary">{executorsData.length}</Badge>
+                      </div>
+                      <div className="mt-3">
+                        {executorsData.length ? (
+                          <Table>
+                            <TableHeader>
+                              <TableRow>
+                                <TableHead>Name</TableHead>
+                                <TableHead>Kind</TableHead>
+                                <TableHead>User</TableHead>
+                                <TableHead>Status</TableHead>
+                                <TableHead>Host</TableHead>
+                                <TableHead>Last seen</TableHead>
+                                <TableHead className="text-right">Actions</TableHead>
+                              </TableRow>
+                            </TableHeader>
+                            <TableBody>
+                              {executorsData.map((executor) => (
+                                <TableRow key={executor.id}>
+                                  <TableCell className="text-xs">
+                                    <div className="font-semibold">{executor.name}</div>
+                                    <div className="text-mutedForeground">{executor.id}</div>
+                                  </TableCell>
+                                  <TableCell className="text-xs">{executor.kind}</TableCell>
+                                  <TableCell className="text-xs">{renderUser(executor.owner_user_id)}</TableCell>
+                                  <TableCell>
+                                    <Badge
+                                      variant={
+                                        executor.disabled
+                                          ? "warning"
+                                          : executor.online
+                                            ? "success"
+                                            : "secondary"
+                                      }
+                                    >
+                                      {executor.disabled ? "disabled" : executor.online ? "online" : executor.status}
+                                    </Badge>
+                                  </TableCell>
+                                  <TableCell className="text-xs text-mutedForeground">
+                                    {executor.hostname || executor.platform || "—"}
+                                  </TableCell>
+                                  <TableCell className="text-xs text-mutedForeground">
+                                    {formatRelativeTime(executor.last_seen_at)}
+                                  </TableCell>
+                                  <TableCell className="text-right">
+                                    <Button
+                                      size="sm"
+                                      variant="outline"
+                                      onClick={() => openExecutorDetail(executor)}
+                                    >
+                                      Details
+                                    </Button>
+                                  </TableCell>
+                                </TableRow>
+                              ))}
+                            </TableBody>
+                          </Table>
+                        ) : (
+                          <div className="rounded-2xl border border-dashed border-border bg-muted/40 px-4 py-4 text-sm text-mutedForeground">
+                            No executors found.
+                          </div>
+                        )}
                       </div>
                     </div>
                   </>
@@ -2657,6 +2969,249 @@ export default function App() {
             </CardContent>
           </Card>
         )}
+
+        <Dialog
+          open={executorOnboardingOpen}
+          onOpenChange={(open) => {
+            setExecutorOnboardingOpen(open);
+            if (!open) {
+              setExecutorOnboardingError(null);
+              setExecutorOnboardingResult(null);
+            }
+          }}
+        >
+          <DialogContent className="w-[94vw] max-w-4xl max-h-[88vh] overflow-y-auto">
+            <DialogHeader>
+              <DialogTitle>Add Executor Node</DialogTitle>
+              <DialogDescription>
+                Create a node executor, mint a token, and generate a launch command.
+              </DialogDescription>
+            </DialogHeader>
+
+            <div className="grid gap-3 md:grid-cols-2">
+              <div>
+                <p className="mb-1 text-xs uppercase tracking-[0.2em] text-mutedForeground">User</p>
+                <Select
+                  value={executorForm.user_id || "none"}
+                  onValueChange={(value) =>
+                    setExecutorForm((current) => ({
+                      ...current,
+                      user_id: value === "none" ? "" : value,
+                    }))
+                  }
+                >
+                  <SelectTrigger>
+                    <SelectValue placeholder="Select user" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {approvedUsers.length ? (
+                      approvedUsers.map((user) => (
+                        <SelectItem key={user.id} value={user.id}>
+                          {userLabelFor(user.id)}
+                        </SelectItem>
+                      ))
+                    ) : (
+                      <SelectItem value="none">No approved users</SelectItem>
+                    )}
+                  </SelectContent>
+                </Select>
+              </div>
+              <div>
+                <p className="mb-1 text-xs uppercase tracking-[0.2em] text-mutedForeground">Executor name</p>
+                <Input
+                  value={executorForm.name}
+                  onChange={(event) =>
+                    setExecutorForm((current) => ({ ...current, name: event.target.value }))
+                  }
+                  placeholder="macbook-main"
+                />
+              </div>
+              <div>
+                <p className="mb-1 text-xs uppercase tracking-[0.2em] text-mutedForeground">Workspace root</p>
+                <Input
+                  value={executorForm.workspace_root}
+                  onChange={(event) =>
+                    setExecutorForm((current) => ({
+                      ...current,
+                      workspace_root: event.target.value,
+                    }))
+                  }
+                  placeholder="workspace"
+                />
+              </div>
+              <div>
+                <p className="mb-1 text-xs uppercase tracking-[0.2em] text-mutedForeground">API URL</p>
+                <Input
+                  value={executorForm.api_url}
+                  onChange={(event) =>
+                    setExecutorForm((current) => ({ ...current, api_url: event.target.value }))
+                  }
+                  placeholder="http://localhost:8000"
+                />
+              </div>
+            </div>
+
+            <div className="flex flex-wrap items-center gap-3">
+              <Button onClick={runExecutorOnboarding} disabled={executorOnboardingLoading}>
+                {executorOnboardingLoading ? "Generating..." : "Create Token"}
+              </Button>
+              {executorOnboardingError ? (
+                <span className="text-sm text-danger">{executorOnboardingError}</span>
+              ) : null}
+            </div>
+
+            {executorOnboardingResult ? (
+              <div className="grid gap-3 lg:grid-cols-2">
+                <div>
+                  <p className="text-xs uppercase tracking-[0.2em] text-mutedForeground">Launch command</p>
+                  <Textarea
+                    className="mt-2 min-h-[120px] font-mono text-xs"
+                    readOnly
+                    value={executorOnboardingResult.command}
+                  />
+                  <div className="mt-2 flex items-center gap-2">
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => {
+                        void navigator.clipboard
+                          .writeText(executorOnboardingResult.command)
+                          .catch(() => undefined);
+                      }}
+                    >
+                      Copy command
+                    </Button>
+                    <span className="text-xs text-mutedForeground">
+                      Executor `{executorOnboardingResult.executorName}` created.
+                    </span>
+                  </div>
+                </div>
+                <div>
+                  <p className="text-xs uppercase tracking-[0.2em] text-mutedForeground">Config YAML</p>
+                  <Textarea
+                    className="mt-2 min-h-[120px] font-mono text-xs"
+                    readOnly
+                    value={executorOnboardingResult.configYaml}
+                  />
+                  <div className="mt-2 flex items-center gap-2">
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => {
+                        void navigator.clipboard
+                          .writeText(executorOnboardingResult.configYaml)
+                          .catch(() => undefined);
+                      }}
+                    >
+                      Copy YAML
+                    </Button>
+                    <span className="text-xs text-mutedForeground">
+                      Token is shown once. Save it now.
+                    </span>
+                  </div>
+                </div>
+              </div>
+            ) : null}
+          </DialogContent>
+        </Dialog>
+
+        <Dialog
+          open={executorDetailOpen}
+          onOpenChange={(open) => {
+            setExecutorDetailOpen(open);
+            if (!open) {
+              setExecutorDetailError(null);
+              setSelectedExecutor(null);
+            }
+          }}
+        >
+          <DialogContent className="w-[94vw] max-w-3xl max-h-[88vh] overflow-y-auto">
+            <DialogHeader>
+              <DialogTitle>Executor details</DialogTitle>
+              <DialogDescription>
+                Edit executor metadata or disable this executor.
+              </DialogDescription>
+            </DialogHeader>
+            {selectedExecutor ? (
+              <div className="space-y-5">
+                <div className="grid gap-3 md:grid-cols-2">
+                  <div>
+                    <p className="mb-1 text-xs uppercase tracking-[0.2em] text-mutedForeground">Executor ID</p>
+                    <Input value={selectedExecutor.id} readOnly />
+                  </div>
+                  <div>
+                    <p className="mb-1 text-xs uppercase tracking-[0.2em] text-mutedForeground">Owner</p>
+                    <Input value={userLabelFor(selectedExecutor.owner_user_id)} readOnly />
+                  </div>
+                  <div>
+                    <p className="mb-1 text-xs uppercase tracking-[0.2em] text-mutedForeground">Name</p>
+                    <Input
+                      value={executorDetailForm.name}
+                      onChange={(event) =>
+                        setExecutorDetailForm((current) => ({ ...current, name: event.target.value }))
+                      }
+                    />
+                  </div>
+                  <div>
+                    <p className="mb-1 text-xs uppercase tracking-[0.2em] text-mutedForeground">Kind</p>
+                    <Input value={selectedExecutor.kind} readOnly />
+                  </div>
+                  <div>
+                    <p className="mb-1 text-xs uppercase tracking-[0.2em] text-mutedForeground">Platform</p>
+                    <Input value={selectedExecutor.platform ?? "—"} readOnly />
+                  </div>
+                  <div>
+                    <p className="mb-1 text-xs uppercase tracking-[0.2em] text-mutedForeground">Hostname</p>
+                    <Input value={selectedExecutor.hostname ?? "—"} readOnly />
+                  </div>
+                </div>
+
+                <div className="flex items-center gap-2">
+                  <Button onClick={saveExecutorDetail} disabled={executorDetailSaving || executorDetailDeleting}>
+                    {executorDetailSaving ? "Saving..." : "Save changes"}
+                  </Button>
+                </div>
+
+                <div className="rounded-2xl border border-danger/40 bg-danger/5 p-4 space-y-3">
+                  <p className="text-sm font-semibold text-danger">Executor Controls</p>
+                  <p className="text-xs text-mutedForeground">
+                    Disable revokes executor tokens. Delete removes the executor permanently.
+                  </p>
+                  <div className="flex flex-wrap gap-2">
+                    {selectedExecutor.disabled ? (
+                      <Button
+                        variant="outline"
+                        onClick={enableExecutor}
+                        disabled={executorDetailDeleting || executorDetailSaving}
+                      >
+                        {executorDetailDeleting ? "Enabling..." : "Enable executor"}
+                      </Button>
+                    ) : (
+                      <Button
+                        variant="danger"
+                        onClick={disableExecutor}
+                        disabled={executorDetailDeleting || executorDetailSaving}
+                      >
+                        {executorDetailDeleting ? "Disabling..." : "Disable executor"}
+                      </Button>
+                    )}
+                    <Button
+                      variant="outline"
+                      onClick={deleteExecutor}
+                      disabled={executorDetailDeleting || executorDetailSaving}
+                    >
+                      Delete executor
+                    </Button>
+                  </div>
+                </div>
+
+                {executorDetailError ? (
+                  <div className="text-sm text-danger">{executorDetailError}</div>
+                ) : null}
+              </div>
+            ) : null}
+          </DialogContent>
+        </Dialog>
 
         {selectedAgentJobId && (
           <Dialog
@@ -2880,7 +3435,7 @@ export default function App() {
                   </DialogDescription>
                 </DialogHeader>
               </div>
-              <div className="grid gap-4 border-b border-border p-6 md:grid-cols-5">
+              <div className="grid gap-4 border-b border-border p-6 md:grid-cols-6">
                 <div className="rounded-2xl border border-border bg-card p-4">
                   <p className="text-xs uppercase tracking-[0.2em] text-mutedForeground">Tool</p>
                   <p className="mt-2 text-sm font-semibold">{selectedToolRun.tool}</p>
@@ -2910,6 +3465,10 @@ export default function App() {
                 <div className="rounded-2xl border border-border bg-card p-4">
                   <p className="text-xs uppercase tracking-[0.2em] text-mutedForeground">Created</p>
                   <p className="mt-2 text-sm">{formatRelativeTime(selectedToolRun.created_at)}</p>
+                </div>
+                <div className="rounded-2xl border border-border bg-card p-4">
+                  <p className="text-xs uppercase tracking-[0.2em] text-mutedForeground">Executor</p>
+                  <p className="mt-2 text-sm">{selectedToolRun.executor_id ?? "—"}</p>
                 </div>
                 <div className="rounded-2xl border border-border bg-card p-4">
                   <p className="text-xs uppercase tracking-[0.2em] text-mutedForeground">Run</p>
@@ -3119,7 +3678,8 @@ export default function App() {
                                   </div>
                                   <p className="mt-1 text-xs text-mutedForeground">
                                     {formatRelativeTime(tool.created_at)} · Approved by{" "}
-                                    {tool.approved_by ? userLabelFor(tool.approved_by) : "auto"}
+                                    {tool.approved_by ? userLabelFor(tool.approved_by) : "auto"} · Executor{" "}
+                                    {tool.executor_id ?? "—"}
                                   </p>
                                   <div className="mt-2 grid gap-2 md:grid-cols-2">
                                     <pre className="rounded-lg border border-border bg-muted/40 p-2 text-[11px] text-mutedForeground whitespace-pre-wrap">

@@ -39,6 +39,7 @@ def default_registry() -> ToolRegistry:
                     "offset": {"type": "number"},
                     "limit": {"type": "number"},
                     "file_path": {"type": "string"},
+                    "target_machine": {"type": "string"},
                 },
             },
             requires_approval=True,
@@ -53,6 +54,8 @@ def default_registry() -> ToolRegistry:
                 "properties": {
                     "path": {"type": "string"},
                     "file_path": {"type": "string"},
+                    "show_hidden_files": {"type": "boolean"},
+                    "target_machine": {"type": "string"},
                 },
             },
             requires_approval=False,
@@ -68,6 +71,7 @@ def default_registry() -> ToolRegistry:
                     "path": {"type": "string"},
                     "recursive": {"type": "boolean"},
                     "file_path": {"type": "string"},
+                    "target_machine": {"type": "string"},
                 },
             },
             requires_approval=True,
@@ -82,6 +86,7 @@ def default_registry() -> ToolRegistry:
                 "properties": {
                     "url": {"type": "string"},
                     "path": {"type": "string"},
+                    "target_machine": {"type": "string"},
                 },
                 "required": ["url"],
             },
@@ -101,6 +106,7 @@ def default_registry() -> ToolRegistry:
                     "file_path": {"type": "string"},
                     "old_string": {"type": "string"},
                     "new_string": {"type": "string"},
+                    "target_machine": {"type": "string"},
                 },
             },
             requires_approval=True,
@@ -116,6 +122,7 @@ def default_registry() -> ToolRegistry:
                     "path": {"type": "string"},
                     "content": {"type": "string"},
                     "file_path": {"type": "string"},
+                    "target_machine": {"type": "string"},
                 },
             },
             requires_approval=True,
@@ -133,6 +140,7 @@ def default_registry() -> ToolRegistry:
                     "screenshot": {"type": "boolean"},
                     "width": {"type": "number"},
                     "height": {"type": "number"},
+                    "target_machine": {"type": "string"},
                 },
             },
             requires_approval=True,
@@ -175,6 +183,7 @@ def default_registry() -> ToolRegistry:
                     "mode": {"type": "string"},
                     "include_elements": {"type": "boolean"},
                     "max_elements": {"type": "number"},
+                    "target_machine": {"type": "string"},
                 },
             },
             requires_approval=True,
@@ -184,7 +193,10 @@ def default_registry() -> ToolRegistry:
         ToolSpec(
             name="http_fetch",
             description="HTTP fetch for APIs",
-            input_schema={"type": "object", "properties": {"url": {"type": "string"}}},
+            input_schema={
+                "type": "object",
+                "properties": {"url": {"type": "string"}, "target_machine": {"type": "string"}},
+            },
             requires_approval=False,
         )
     )
@@ -226,9 +238,41 @@ def default_registry() -> ToolRegistry:
             description="Run a shell command in the sandbox. Relative paths resolve from /workspace (default cwd). Absolute paths are literal sandbox paths.",
             input_schema={
                 "type": "object",
-                "properties": {"cmd": {"type": "string"}, "cwd": {"type": "string"}},
+                "properties": {
+                    "cmd": {"type": "string"},
+                    "cwd": {"type": "string"},
+                    "background": {"type": "boolean"},
+                    "secret_refs": {"type": "array"},
+                    "target_machine": {"type": "string"},
+                },
             },
             requires_approval=True,
+        )
+    )
+    registry.register(
+        ToolSpec(
+            name="machine_list",
+            description="List available execution machines for the current user.",
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "include_disabled": {"type": "boolean"},
+                },
+            },
+            requires_approval=False,
+        )
+    )
+    registry.register(
+        ToolSpec(
+            name="machine_status",
+            description="Get status and capabilities for a machine (or current default).",
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "target_machine": {"type": "string"},
+                },
+            },
+            requires_approval=False,
         )
     )
     registry.register(

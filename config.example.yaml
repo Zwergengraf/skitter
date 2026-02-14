@@ -109,6 +109,9 @@ sandbox:
   container_prefix: skitter-sandbox
   connect_retries: 5
   connect_backoff: 0.5
+executors:
+  # Automatically create Docker sandbox containers (one per user) instead of having to manually set up an executor.
+  auto_docker_default: true
 cors:
   origins:
   - http://localhost:5173

@@ -31,6 +31,7 @@ async def list_tool_runs(
             run_id=tool_run.run_id,
             tool=tool_run.tool_name,
             status=tool_run.status,
+            executor_id=tool_run.executor_id,
             requested_by=transport_user_id,
             created_at=tool_run.created_at,
             session_id=tool_run.session_id,

@@ -63,6 +63,7 @@ final class AppState: ObservableObject {
         LocalCommand(id: "schedule_resume", name: "/schedule_resume", usage: "/schedule_resume <job_id>", description: "Resume a scheduled job"),
         LocalCommand(id: "tools", name: "/tools", usage: "/tools", description: "Show tool approval settings"),
         LocalCommand(id: "model", name: "/model", usage: "/model [provider/model]", description: "List/set active model"),
+        LocalCommand(id: "machine", name: "/machine", usage: "/machine [name_or_id]", description: "List/set default machine"),
         LocalCommand(id: "pair", name: "/pair", usage: "/pair", description: "Create a pair code"),
         LocalCommand(id: "info", name: "/info", usage: "/info", description: "Show session usage info"),
     ]
@@ -430,6 +431,10 @@ final class AppState: ObservableObject {
             let args = argument.isEmpty ? [:] : ["model_name": argument]
             _ = await runRemoteCommand(name: "model", args: args)
             await refreshStatus()
+            return true
+        case "/machine":
+            let args = argument.isEmpty ? [:] : ["target_machine": argument]
+            _ = await runRemoteCommand(name: "machine", args: args)
             return true
         case "/pair":
             if !argument.isEmpty && !hasWorkingConnection {

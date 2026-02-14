@@ -68,6 +68,7 @@ class SessionToolRunOut(BaseModel):
     id: str
     tool: str
     status: str
+    executor_id: str | None = None
     input: dict
     output: dict
     approved_by: str | None = None
@@ -246,6 +247,7 @@ class ToolRunListItem(BaseModel):
     run_id: str | None = None
     tool: str
     status: str
+    executor_id: str | None = None
     requested_by: str
     created_at: datetime
     session_id: str
@@ -409,6 +411,62 @@ class SandboxStatusOut(BaseModel):
     containers: list[SandboxContainerOut]
     total_workspace_bytes: int
     total_workspace_human: str
+
+
+class ExecutorOut(BaseModel):
+    id: str
+    owner_user_id: str
+    name: str
+    kind: str
+    platform: str | None = None
+    hostname: str | None = None
+    status: str
+    capabilities: dict = Field(default_factory=dict)
+    last_seen_at: datetime | None = None
+    created_at: datetime
+    disabled: bool = False
+    online: bool = False
+
+
+class ExecutorSetDefaultRequest(BaseModel):
+    executor_id: str | None = None
+    user_id: str | None = None
+
+
+class ExecutorCreateRequest(BaseModel):
+    user_id: str | None = None
+    name: str
+    kind: str = "node"
+    platform: str | None = None
+    hostname: str | None = None
+    capabilities: dict = Field(default_factory=dict)
+
+
+class ExecutorUpdateRequest(BaseModel):
+    name: str | None = None
+    platform: str | None = None
+    hostname: str | None = None
+
+
+class ExecutorTokenCreateRequest(BaseModel):
+    executor_id: str | None = None
+    executor_name: str | None = None
+    user_id: str | None = None
+
+
+class ExecutorTokenCreateOut(BaseModel):
+    executor_id: str
+    executor_name: str
+    token: str
+    token_prefix: str
+
+
+class ExecutorTokenOut(BaseModel):
+    id: str
+    executor_id: str
+    token_prefix: str
+    created_at: datetime
+    revoked_at: datetime | None = None
 
 
 class ConfigFieldOut(BaseModel):

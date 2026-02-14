@@ -25,6 +25,7 @@ from .run_limits import RunCancelledError, get_current_run_limits
 from ..tools.approval_service import ApprovalDecision, ToolApprovalService
 from ..core.scheduler import SchedulerService
 from ..tools.middleware import ToolApprovalPolicy
+from ..tools.executors import executor_router, node_executor_hub
 from ..tools.sandbox_client import ToolRunnerClient
 from ..data.db import SessionLocal
 from ..data.repositories import Repository
@@ -236,9 +237,9 @@ def build_graph(
         elif str(path).startswith("/workspace/"):
             resolved = workspace / Path(str(path).replace("/workspace/", "", 1))
         elif path.is_absolute():
-            # Sandbox responses may use "/foo/bar" as workspace-rooted virtual paths.
-            # Map those to the user's host workspace for local file reads (e.g. image blocks).
-            resolved = workspace / Path(str(path).lstrip("/"))
+            # Non-workspace absolute paths are literal sandbox host paths and should
+            # not be remapped into the workspace.
+            resolved = path
         else:
             resolved = workspace / path
         try:
@@ -258,6 +259,18 @@ def build_graph(
         if isinstance(secret_refs, list):
             return [str(item).strip() for item in secret_refs if str(item).strip()]
         return []
+
+    def _normalize_target_machine(target_machine: str | None) -> str | None:
+        value = str(target_machine or "").strip()
+        return value or None
+
+    def _with_target_machine(payload: dict[str, Any], target_machine: str | None) -> dict[str, Any]:
+        machine = _normalize_target_machine(target_machine)
+        if not machine:
+            return payload
+        merged = dict(payload)
+        merged["target_machine"] = machine
+        return merged
 
     def _secrets_approval_required() -> bool:
         value = str(settings.approval_secrets_required or "").strip()
@@ -364,6 +377,45 @@ def build_graph(
             "delivery_error": job.delivery_error,
         }
 
+    async def _resolve_machine_row(repo: Repository, target_machine: str | None):
+        target = (target_machine or "").strip()
+        if not target:
+            target = (
+                await executor_router.get_session_default(_session_id())
+                or await repo.get_user_default_executor_id(_user_id())
+            )
+        if not target and settings.executors_auto_docker_default:
+            target = "docker-default"
+        if not target:
+            return None
+        if target.lower() in {"docker", "docker-default"}:
+            if settings.executors_auto_docker_default:
+                return await repo.get_or_create_docker_executor(_user_id())
+            return await repo.get_docker_executor_for_user(_user_id())
+        row = await repo.get_executor_for_user(_user_id(), target)
+        if row is None:
+            row = await repo.get_executor_for_user_by_name(_user_id(), target)
+        return row
+
+    async def _serialize_machine(row: Any, *, session_default_id: str | None, user_default_id: str | None) -> dict[str, Any]:
+        online_ids = set(await node_executor_hub.online_executor_ids())
+        online = row.kind == "docker" or row.id in online_ids
+        status = "online" if online else (row.status or "offline")
+        return {
+            "id": row.id,
+            "name": row.name,
+            "kind": row.kind,
+            "platform": row.platform,
+            "hostname": row.hostname,
+            "status": status,
+            "online": online,
+            "disabled": bool(row.disabled),
+            "last_seen_at": row.last_seen_at.isoformat() if row.last_seen_at else None,
+            "capabilities": row.capabilities or {},
+            "is_session_default": row.id == session_default_id,
+            "is_user_default": row.id == user_default_id,
+        }
+
     async def _create_auto_tool_run(tool_name: str, payload: dict[str, Any]) -> str:
         async with SessionLocal() as session:
             repo = Repository(session)
@@ -399,12 +451,17 @@ def build_graph(
         )
         return message
 
-    async def _complete_tool_run(tool_run_id: str | None, status: str, output: dict[str, Any]) -> None:
+    async def _complete_tool_run(
+        tool_run_id: str | None,
+        status: str,
+        output: dict[str, Any],
+        executor_id: str | None = None,
+    ) -> None:
         if not tool_run_id:
             return
         async with SessionLocal() as session:
             repo = Repository(session)
-            await repo.complete_tool_run(tool_run_id, status, output)
+            await repo.complete_tool_run(tool_run_id, status, output, executor_id=executor_id)
 
     async def _fail_untracked_call(tool_name: str, payload: dict[str, Any], message: str) -> str:
         tool_run_id = await _create_auto_tool_run(tool_name, payload)
@@ -416,9 +473,17 @@ def build_graph(
         tool_run_id: str | None,
         payload: dict[str, Any],
         timeout: float | None = None,
+        target_machine: str | None = None,
     ) -> tuple[Any | None, str | None]:
         try:
-            result = await client.execute(_user_id(), _session_id(), tool_name, payload, timeout=timeout)
+            result, dispatch = await client.execute(
+                _user_id(),
+                _session_id(),
+                tool_name,
+                payload,
+                timeout=timeout,
+                target_machine=target_machine,
+            )
         except httpx.HTTPStatusError as exc:
             detail = exc.response.text
             await _complete_tool_run(tool_run_id, "failed", {"error": detail})
@@ -431,7 +496,12 @@ def build_graph(
             detail = str(exc)
             await _complete_tool_run(tool_run_id, "failed", {"error": detail})
             return None, f"{tool_name} unexpected error: {detail}"
-        await _complete_tool_run(tool_run_id, "completed", result if isinstance(result, dict) else {"result": result})
+        output_payload = result if isinstance(result, dict) else {"result": result}
+        executor_id = None
+        if isinstance(dispatch, dict):
+            output_payload.setdefault("_executor", dispatch)
+            executor_id = str(dispatch.get("executor_id") or "").strip() or None
+        await _complete_tool_run(tool_run_id, "completed", output_payload, executor_id=executor_id)
         return result, None
 
     @tool("read")
@@ -440,6 +510,7 @@ def build_graph(
         offset: Optional[int] = None,
         limit: Optional[int] = None,
         file_path: Optional[str] = None,
+        target_machine: Optional[str] = None,
     ) -> str:
         """Read a file. Relative paths are resolved from workspace root (/workspace). Absolute paths are treated as literal sandbox paths."""
         target = _coalesce_path(path, file_path)
@@ -450,25 +521,53 @@ def build_graph(
             payload["offset"] = offset
         if limit is not None:
             payload["limit"] = limit
-        budget_message = await _enforce_tool_budget("read", payload)
+        machine = _normalize_target_machine(target_machine)
+        approval_payload = _with_target_machine(payload, machine)
+        budget_message = await _enforce_tool_budget("read", approval_payload)
         if budget_message:
             return budget_message
-        decision = await _maybe_approve("read", payload, approval_service, policy)
+        decision = await _maybe_approve("read", approval_payload, approval_service, policy)
         if not decision.approved:
             return _denied_message("read")
-        result, error = await _execute_sandbox_tool("read", decision.tool_run_id, payload)
+        result, error = await _execute_sandbox_tool(
+            "read",
+            decision.tool_run_id,
+            payload,
+            target_machine=machine,
+        )
         if error:
             return error
         if isinstance(result, dict):
             content_type = str(result.get("content_type") or "").lower()
             file_path = str(result.get("file_path") or "")
             if content_type.startswith("image/") and file_path:
+                data: bytes | None = None
                 resolved = _resolve_workspace_path(_user_id(), file_path)
                 if resolved and resolved.exists():
                     try:
                         data = resolved.read_bytes()
                     except OSError:
-                        return json.dumps(result)
+                        data = None
+                if data is None:
+                    fetch_payload = {"path": target, "include_base64": True}
+                    try:
+                        fetched, _dispatch = await client.execute(
+                            _user_id(),
+                            _session_id(),
+                            "read",
+                            fetch_payload,
+                            target_machine=machine,
+                        )
+                    except Exception:
+                        fetched = None
+                    if isinstance(fetched, dict):
+                        remote_b64 = str(fetched.get("base64") or "")
+                        if remote_b64:
+                            try:
+                                data = base64.b64decode(remote_b64)
+                            except Exception:
+                                data = None
+                if data is not None:
                     b64 = base64.b64encode(data).decode("ascii")
                     _logger.debug(
                         "read returned multimodal image block (user_id=%s session_id=%s path=%s content_type=%s bytes=%d)",
@@ -485,7 +584,12 @@ def build_graph(
         return json.dumps(result)
 
     @tool("write")
-    async def write(path: Optional[str] = None, content: Optional[str] = None, file_path: Optional[str] = None) -> str:
+    async def write(
+        path: Optional[str] = None,
+        content: Optional[str] = None,
+        file_path: Optional[str] = None,
+        target_machine: Optional[str] = None,
+    ) -> str:
         """Write content to a file. Relative paths are resolved from workspace root (/workspace). Absolute paths are treated as literal sandbox paths."""
         target = _coalesce_path(path, file_path)
         if not target:
@@ -493,13 +597,20 @@ def build_graph(
         if content is None:
             return await _fail_untracked_call("write", {"path": target}, "write error: content is required")
         payload = {"path": target, "content": content}
-        budget_message = await _enforce_tool_budget("write", payload)
+        machine = _normalize_target_machine(target_machine)
+        approval_payload = _with_target_machine(payload, machine)
+        budget_message = await _enforce_tool_budget("write", approval_payload)
         if budget_message:
             return budget_message
-        decision = await _maybe_approve("write", payload, approval_service, policy)
+        decision = await _maybe_approve("write", approval_payload, approval_service, policy)
         if not decision.approved:
             return _denied_message("write")
-        result, error = await _execute_sandbox_tool("write", decision.tool_run_id, payload)
+        result, error = await _execute_sandbox_tool(
+            "write",
+            decision.tool_run_id,
+            payload,
+            target_machine=machine,
+        )
         if error:
             return error
         return json.dumps(result)
@@ -512,6 +623,7 @@ def build_graph(
         file_path: Optional[str] = None,
         old_string: Optional[str] = None,
         new_string: Optional[str] = None,
+        target_machine: Optional[str] = None,
     ) -> str:
         """Edit a file by exact text replacement. Relative paths are resolved from workspace root (/workspace). Absolute paths are treated as literal sandbox paths."""
         target = _coalesce_path(path, file_path)
@@ -524,13 +636,20 @@ def build_graph(
         if new_value is None:
             return await _fail_untracked_call("edit", {"path": target}, "edit error: newText is required")
         payload = {"path": target, "oldText": old_value, "newText": new_value}
-        budget_message = await _enforce_tool_budget("edit", payload)
+        machine = _normalize_target_machine(target_machine)
+        approval_payload = _with_target_machine(payload, machine)
+        budget_message = await _enforce_tool_budget("edit", approval_payload)
         if budget_message:
             return budget_message
-        decision = await _maybe_approve("edit", payload, approval_service, policy)
+        decision = await _maybe_approve("edit", approval_payload, approval_service, policy)
         if not decision.approved:
             return _denied_message("edit")
-        result, error = await _execute_sandbox_tool("edit", decision.tool_run_id, payload)
+        result, error = await _execute_sandbox_tool(
+            "edit",
+            decision.tool_run_id,
+            payload,
+            target_machine=machine,
+        )
         if error:
             return error
         return json.dumps(result)
@@ -540,75 +659,111 @@ def build_graph(
         path: Optional[str] = None,
         file_path: Optional[str] = None,
         show_hidden_files: Optional[bool] = None,
+        target_machine: Optional[str] = None,
     ) -> str:
         """List files/folders. Relative paths are resolved from workspace root (/workspace). Absolute paths are treated as literal sandbox paths. Hidden files are excluded by default."""
         target = _coalesce_path(path, file_path)
         if not target:
             return await _fail_untracked_call("list", {"path": path, "file_path": file_path}, "list error: path is required")
         payload = {"path": target, "show_hidden_files": bool(show_hidden_files)}
-        budget_message = await _enforce_tool_budget("list", payload)
+        machine = _normalize_target_machine(target_machine)
+        approval_payload = _with_target_machine(payload, machine)
+        budget_message = await _enforce_tool_budget("list", approval_payload)
         if budget_message:
             return budget_message
-        decision = await _maybe_approve("list", payload, approval_service, policy)
+        decision = await _maybe_approve("list", approval_payload, approval_service, policy)
         if not decision.approved:
             return _denied_message("list")
-        result, error = await _execute_sandbox_tool("list", decision.tool_run_id, payload)
+        result, error = await _execute_sandbox_tool(
+            "list",
+            decision.tool_run_id,
+            payload,
+            target_machine=machine,
+        )
         if error:
             return error
         return json.dumps(result)
 
     @tool("delete")
     async def delete(
-        path: Optional[str] = None, recursive: Optional[bool] = None, file_path: Optional[str] = None
+        path: Optional[str] = None,
+        recursive: Optional[bool] = None,
+        file_path: Optional[str] = None,
+        target_machine: Optional[str] = None,
     ) -> str:
         """Delete a file/folder. Relative paths are resolved from workspace root (/workspace). Absolute paths are treated as literal sandbox paths. Use recursive=true for non-empty folders."""
         target = _coalesce_path(path, file_path)
         if not target:
             return await _fail_untracked_call("delete", {"path": path, "file_path": file_path}, "delete error: path is required")
         payload = {"path": target, "recursive": bool(recursive)}
-        budget_message = await _enforce_tool_budget("delete", payload)
+        machine = _normalize_target_machine(target_machine)
+        approval_payload = _with_target_machine(payload, machine)
+        budget_message = await _enforce_tool_budget("delete", approval_payload)
         if budget_message:
             return budget_message
         if payload["recursive"] and approval_service is None:
             return await _fail_untracked_call("delete", payload, "delete error: recursive delete requires approval")
-        decision = await _maybe_approve("delete", payload, approval_service, policy)
+        decision = await _maybe_approve("delete", approval_payload, approval_service, policy)
         if not decision.approved:
             return _denied_message("delete")
-        result, error = await _execute_sandbox_tool("delete", decision.tool_run_id, payload)
+        result, error = await _execute_sandbox_tool(
+            "delete",
+            decision.tool_run_id,
+            payload,
+            target_machine=machine,
+        )
         if error:
             return error
         return json.dumps(result)
 
     @tool("download")
-    async def download(url: str, path: Optional[str] = None) -> str:
+    async def download(
+        url: str,
+        path: Optional[str] = None,
+        target_machine: Optional[str] = None,
+    ) -> str:
         """Download a URL into the workspace. Optional path can be relative (resolved from /workspace) or absolute sandbox path."""
         if not url:
             return await _fail_untracked_call("download", {"url": url, "path": path}, "download error: url is required")
         payload: dict[str, Any] = {"url": url}
         if path:
             payload["path"] = path
-        budget_message = await _enforce_tool_budget("download", payload)
+        machine = _normalize_target_machine(target_machine)
+        approval_payload = _with_target_machine(payload, machine)
+        budget_message = await _enforce_tool_budget("download", approval_payload)
         if budget_message:
             return budget_message
-        decision = await _maybe_approve("download", payload, approval_service, policy)
+        decision = await _maybe_approve("download", approval_payload, approval_service, policy)
         if not decision.approved:
             return _denied_message("download")
-        result, error = await _execute_sandbox_tool("download", decision.tool_run_id, payload)
+        result, error = await _execute_sandbox_tool(
+            "download",
+            decision.tool_run_id,
+            payload,
+            target_machine=machine,
+        )
         if error:
             return error
         return json.dumps(result)
 
     @tool("http_fetch")
-    async def http_fetch(url: str) -> str:
+    async def http_fetch(url: str, target_machine: Optional[str] = None) -> str:
         """Fetch a URL over HTTP."""
         payload = {"url": url}
-        budget_message = await _enforce_tool_budget("http_fetch", payload)
+        machine = _normalize_target_machine(target_machine)
+        approval_payload = _with_target_machine(payload, machine)
+        budget_message = await _enforce_tool_budget("http_fetch", approval_payload)
         if budget_message:
             return budget_message
-        decision = await _maybe_approve("http_fetch", payload, approval_service, policy)
+        decision = await _maybe_approve("http_fetch", approval_payload, approval_service, policy)
         if not decision.approved:
             return _denied_message("http_fetch")
-        result, error = await _execute_sandbox_tool("http_fetch", decision.tool_run_id, payload)
+        result, error = await _execute_sandbox_tool(
+            "http_fetch",
+            decision.tool_run_id,
+            payload,
+            target_machine=machine,
+        )
         if error:
             return error
         return json.dumps(result)
@@ -622,6 +777,7 @@ def build_graph(
         height: int = 1080,
         timeout_ms: int = 30000,
         wait_until: str = "networkidle",
+        target_machine: Optional[str] = None,
     ) -> str:
         """Open a page in a headless browser (if enabled in the sandbox)."""
         payload = {
@@ -633,13 +789,20 @@ def build_graph(
             "timeout_ms": timeout_ms,
             "wait_until": wait_until,
         }
-        budget_message = await _enforce_tool_budget("browser", payload)
+        machine = _normalize_target_machine(target_machine)
+        approval_payload = _with_target_machine(payload, machine)
+        budget_message = await _enforce_tool_budget("browser", approval_payload)
         if budget_message:
             return budget_message
-        decision = await _maybe_approve("browser", payload, approval_service, policy)
+        decision = await _maybe_approve("browser", approval_payload, approval_service, policy)
         if not decision.approved:
             return _denied_message("browser")
-        result, error = await _execute_sandbox_tool("browser", decision.tool_run_id, payload)
+        result, error = await _execute_sandbox_tool(
+            "browser",
+            decision.tool_run_id,
+            payload,
+            target_machine=machine,
+        )
         if error:
             return error
         return json.dumps(result)
@@ -675,6 +838,7 @@ def build_graph(
         mode: str = "text",
         include_elements: bool = False,
         max_elements: int = 50,
+        target_machine: Optional[str] = None,
     ) -> str:
         """Stateful browser automation.
 
@@ -716,10 +880,12 @@ def build_graph(
             "include_elements": include_elements,
             "max_elements": max_elements,
         }
-        budget_message = await _enforce_tool_budget("browser_action", payload)
+        machine = _normalize_target_machine(target_machine)
+        approval_payload = _with_target_machine(payload, machine)
+        budget_message = await _enforce_tool_budget("browser_action", approval_payload)
         if budget_message:
             return budget_message
-        decision = await _maybe_approve("browser_action", payload, approval_service, policy)
+        decision = await _maybe_approve("browser_action", approval_payload, approval_service, policy)
         if not decision.approved:
             return _denied_message("browser_action")
         timeout_s = max(60, int(timeout_ms / 1000) + 15)
@@ -728,6 +894,7 @@ def build_graph(
             decision.tool_run_id,
             payload,
             timeout=timeout_s,
+            target_machine=machine,
         )
         if error:
             return error
@@ -739,12 +906,15 @@ def build_graph(
         cwd: Optional[str] = None,
         background: bool = False,
         secret_refs: Optional[list[str]] = None,
+        target_machine: Optional[str] = None,
     ) -> str:
         """Run a shell command in the sandboxed workspace. Relative paths resolve from /workspace (default cwd). Absolute paths are literal sandbox paths. Use background=true for long-running tasks. Use secret_refs to inject per-user secrets as env vars."""
         payload = {"cmd": cmd, "background": bool(background)}
         if cwd:
             payload["cwd"] = cwd
-        budget_message = await _enforce_tool_budget("shell", payload)
+        machine = _normalize_target_machine(target_machine)
+        approval_payload = _with_target_machine(payload, machine)
+        budget_message = await _enforce_tool_budget("shell", approval_payload)
         if budget_message:
             return budget_message
         secrets = _normalize_secret_refs(secret_refs)
@@ -776,7 +946,7 @@ def build_graph(
                     await repo.touch_secret(secret)
             if missing:
                 return await _fail_untracked_call("shell", payload, f"shell error: missing secrets: {', '.join(missing)}")
-            approval_payload = {**payload, "secret_refs": secrets}
+            approval_payload = {**approval_payload, "secret_refs": secrets}
             if _secrets_approval_required():
                 if approval_service is None:
                     return await _fail_untracked_call("shell", payload, "shell error: secret execution requires approval")
@@ -795,14 +965,73 @@ def build_graph(
                 return _denied_message("shell")
             exec_payload = {**payload, "env": env, "redact": redact}
         else:
-            decision = await _maybe_approve("shell", payload, approval_service, policy)
+            decision = await _maybe_approve("shell", approval_payload, approval_service, policy)
             if not decision.approved:
                 return _denied_message("shell")
             exec_payload = payload
-        result, error = await _execute_sandbox_tool("shell", decision.tool_run_id, exec_payload)
+        result, error = await _execute_sandbox_tool(
+            "shell",
+            decision.tool_run_id,
+            exec_payload,
+            target_machine=machine,
+        )
         if error:
             return error
         return json.dumps(result)
+
+    @tool("machine_list")
+    async def machine_list(include_disabled: bool = False) -> str:
+        """List available execution machines for the current user."""
+        payload: dict[str, Any] = {"include_disabled": bool(include_disabled)}
+        budget_message = await _enforce_tool_budget("machine_list", payload)
+        if budget_message:
+            return budget_message
+        tool_run_id = await _create_auto_tool_run("machine_list", payload)
+        async with SessionLocal() as session:
+            repo = Repository(session)
+            if settings.executors_auto_docker_default:
+                await repo.get_or_create_docker_executor(_user_id())
+            rows = await repo.list_executors_for_user(_user_id(), include_disabled=bool(include_disabled))
+            user_default_id = await repo.get_user_default_executor_id(_user_id())
+        session_default_id = await executor_router.get_session_default(_session_id())
+        machines = [
+            await _serialize_machine(
+                row,
+                session_default_id=session_default_id,
+                user_default_id=user_default_id,
+            )
+            for row in rows
+        ]
+        output = {"machines": machines}
+        await _complete_tool_run(tool_run_id, "completed", output)
+        return json.dumps(output)
+
+    @tool("machine_status")
+    async def machine_status(target_machine: Optional[str] = None) -> str:
+        """Get status and capabilities for a specific machine (or current default)."""
+        payload: dict[str, Any] = {}
+        if target_machine:
+            payload["target_machine"] = target_machine
+        budget_message = await _enforce_tool_budget("machine_status", payload)
+        if budget_message:
+            return budget_message
+        tool_run_id = await _create_auto_tool_run("machine_status", payload)
+        async with SessionLocal() as session:
+            repo = Repository(session)
+            row = await _resolve_machine_row(repo, target_machine)
+            if row is None or row.disabled:
+                await _complete_tool_run(tool_run_id, "failed", {"error": "machine not found"})
+                return "machine_status error: machine not found"
+            user_default_id = await repo.get_user_default_executor_id(_user_id())
+        session_default_id = await executor_router.get_session_default(_session_id())
+        machine = await _serialize_machine(
+            row,
+            session_default_id=session_default_id,
+            user_default_id=user_default_id,
+        )
+        output = {"machine": machine}
+        await _complete_tool_run(tool_run_id, "completed", output, executor_id=row.id)
+        return json.dumps(output)
 
     @tool("create_secret")
     async def create_secret(name: str, value: str) -> str:
@@ -1362,6 +1591,8 @@ def build_graph(
         browser,
         browser_action,
         shell,
+        machine_list,
+        machine_status,
         create_secret,
         memory_search,
         web_search,

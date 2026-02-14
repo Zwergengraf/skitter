@@ -204,6 +204,7 @@ class Settings(BaseSettings):
     sandbox_container_prefix: str = Field(default="skitter-sandbox")
     sandbox_connect_retries: int = Field(default=5)
     sandbox_connect_backoff: float = Field(default=0.5)
+    executors_auto_docker_default: bool = Field(default=True)
 
     max_sub_agents: int = Field(default=4)
     subagent_timeout_seconds: int = Field(default=180)

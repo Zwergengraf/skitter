@@ -24,6 +24,7 @@ from .data.db import SessionLocal
 from .data.repositories import Repository
 from .transports.discord import DiscordTransport
 from .transports.manager import TransportManager
+from .tools.executors import executor_router, node_executor_hub
 from .tools.sandbox_manager import sandbox_manager
 
 
@@ -31,13 +32,15 @@ def _serialize_attachments(attachments: list) -> list[dict]:
     serialized = []
     for attachment in attachments:
         url = getattr(attachment, "url", None)
-        if not url:
+        path = getattr(attachment, "path", None)
+        if not url and not path:
             continue
         serialized.append(
             {
                 "filename": getattr(attachment, "filename", ""),
-                "url": url,
                 "content_type": getattr(attachment, "content_type", "") or "",
+                "url": url,
+                "path": path,
             }
         )
     return serialized
@@ -204,12 +207,17 @@ async def main() -> None:
         response_to: str,
         run_id: str | None = None,
         reasoning: list[str] | None = None,
+        attachments: list | None = None,
     ) -> None:
         metadata: dict[str, object] = {"response_to": response_to}
         if run_id:
             metadata["run_id"] = run_id
         if reasoning:
             metadata["reasoning"] = reasoning
+        if attachments:
+            serialized = _serialize_attachments(attachments)
+            if serialized:
+                metadata["attachments"] = serialized
         async with SessionLocal() as session:
             repo = Repository(session)
             await repo.add_message(
@@ -285,6 +293,22 @@ async def main() -> None:
                 created_at=now,
             )
         )
+
+    async def _running_docker_users() -> set[str]:
+        if sandbox_manager is None:
+            return set()
+        try:
+            containers = await sandbox_manager.list_containers()
+        except Exception:
+            return set()
+        out: set[str] = set()
+        for container in containers:
+            if str(container.get("status") or "").lower() != "running":
+                continue
+            user_id = str(container.get("user_id") or "").strip()
+            if user_id:
+                out.add(user_id)
+        return out
 
     async def _handle_discord_command(
         envelope,
@@ -411,6 +435,52 @@ async def main() -> None:
                 f"Active model set to `{match.name}`.",
             )
             return True
+        if envelope.command == "machine":
+            requested = str((envelope.metadata or {}).get("target_machine") or "").strip()
+            if requested:
+                async with SessionLocal() as session:
+                    repo = Repository(session)
+                    if requested.lower() in {"docker", "docker-default"}:
+                        if settings.executors_auto_docker_default:
+                            row = await repo.get_or_create_docker_executor(internal_user_id)
+                        else:
+                            row = await repo.get_docker_executor_for_user(internal_user_id)
+                    else:
+                        row = await repo.get_executor_for_user(internal_user_id, requested)
+                        if row is None:
+                            row = await repo.get_executor_for_user_by_name(internal_user_id, requested)
+                    if row is None:
+                        await transport.send_message(envelope.channel_id, f"Machine not found: `{requested}`.")
+                        return True
+                    if row.disabled:
+                        await transport.send_message(envelope.channel_id, f"Machine `{row.name}` is disabled.")
+                        return True
+                    await repo.set_user_default_executor(internal_user_id, row.id)
+                    active = await repo.get_active_session_by_scope(scope.scope_type, scope.scope_id)
+                if active is not None:
+                    await executor_router.set_session_default(active.id, row.id)
+                await transport.send_message(envelope.channel_id, f"Default machine set to `{row.name}`.")
+                return True
+
+            async with SessionLocal() as session:
+                repo = Repository(session)
+                if settings.executors_auto_docker_default:
+                    await repo.get_or_create_docker_executor(internal_user_id)
+                rows = await repo.list_executors_for_user(internal_user_id, include_disabled=False)
+                user_default_id = await repo.get_user_default_executor_id(internal_user_id)
+            online_ids = set(await node_executor_hub.online_executor_ids())
+            running_docker = await _running_docker_users()
+            lines = ["Available machines:"]
+            for row in rows:
+                online = (row.id in online_ids) or (row.kind == "docker" and internal_user_id in running_docker)
+                marker = " (default)" if row.id == user_default_id else ""
+                status = "online" if online else "offline"
+                lines.append(f"- {row.name} [{row.kind}] `{row.id}` · {status}{marker}")
+            if len(lines) == 1:
+                lines.append("(none)")
+            lines.append("Use `/machine <name_or_id>` to set the default machine.")
+            await transport.send_message(envelope.channel_id, "\n".join(lines))
+            return True
         if envelope.command == "pair":
             code = make_pair_code()
             expires_at = datetime.now(UTC) + timedelta(minutes=10)
@@ -519,6 +589,7 @@ async def main() -> None:
                 envelope.message_id,
                 run_id=response.run_id,
                 reasoning=response.reasoning,
+                attachments=response.attachments,
             )
 
     manager.on_event(handler)

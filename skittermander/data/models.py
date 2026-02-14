@@ -81,6 +81,7 @@ class ToolRun(Base):
 
     id: Mapped[str] = mapped_column(String, primary_key=True)
     session_id: Mapped[str] = mapped_column(String, index=True)
+    executor_id: Mapped[str | None] = mapped_column(String, index=True, nullable=True)
     run_id: Mapped[str | None] = mapped_column(String, index=True, nullable=True)
     message_id: Mapped[str | None] = mapped_column(String, nullable=True)
     tool_name: Mapped[str] = mapped_column(String)
@@ -260,3 +261,30 @@ class AgentJob(Base):
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     delivered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     delivery_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
+class Executor(Base):
+    __tablename__ = "executors"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    owner_user_id: Mapped[str] = mapped_column(String, index=True)
+    name: Mapped[str] = mapped_column(String)
+    kind: Mapped[str] = mapped_column(String, default="docker")
+    platform: Mapped[str | None] = mapped_column(String, nullable=True)
+    hostname: Mapped[str | None] = mapped_column(String, nullable=True)
+    status: Mapped[str] = mapped_column(String, default="offline")
+    capabilities: Mapped[dict] = mapped_column(JSON, default=dict)
+    last_seen_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    disabled: Mapped[bool] = mapped_column(default=False)
+
+
+class ExecutorToken(Base):
+    __tablename__ = "executor_tokens"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    executor_id: Mapped[str] = mapped_column(String, index=True)
+    token_hash: Mapped[str] = mapped_column(String, unique=True, index=True)
+    token_prefix: Mapped[str] = mapped_column(String, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
