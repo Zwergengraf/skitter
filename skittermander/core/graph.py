@@ -499,6 +499,8 @@ def build_graph(
         output_payload = result if isinstance(result, dict) else {"result": result}
         executor_id = None
         if isinstance(dispatch, dict):
+            if isinstance(result, dict):
+                result.setdefault("_executor", dispatch)
             output_payload.setdefault("_executor", dispatch)
             executor_id = str(dispatch.get("executor_id") or "").strip() or None
         await _complete_tool_run(tool_run_id, "completed", output_payload, executor_id=executor_id)

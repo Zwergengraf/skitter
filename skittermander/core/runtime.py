@@ -44,6 +44,7 @@ from .prompting import build_system_prompt
 from .usage import collect_usage, record_usage
 from .run_limits import RunBudgetUsageCallback, RunLimitsState, reset_current_run_limits, set_current_run_limits
 from ..tools.approval_service import ToolApprovalService
+from ..tools.executors import executor_router
 from ..tools.sandbox_client import ToolRunnerClient
 from ..core.embeddings import EmbeddingsClient
 from ..data.db import SessionLocal
@@ -1203,37 +1204,107 @@ Each bullet must be self-contained, explicit, and searchable.
         raw_path: str,
         target_machine: str | None,
     ) -> Attachment | None:
-        payload: dict[str, object] = {"path": raw_path, "include_base64": True}
-        try:
-            result, _dispatch = await self._tool_client.execute(
-                user_id=user_id,
-                session_id=session_id,
-                tool_name="read",
-                payload=payload,
-                timeout=30,
-                target_machine=target_machine,
-            )
-        except Exception:
-            return None
-        if not isinstance(result, dict):
-            return None
-        content_type = str(result.get("content_type") or "").strip().lower()
-        if not content_type.startswith("image/"):
-            return None
-        raw_b64 = str(result.get("base64") or "")
-        if not raw_b64:
-            return None
-        try:
-            data = base64.b64decode(raw_b64)
-        except Exception:
-            return None
-        file_path = str(result.get("file_path") or raw_path).strip() or raw_path
-        filename = Path(file_path).name or Path(raw_path).name or "image"
-        return Attachment(
-            filename=filename,
-            content_type=content_type,
-            bytes_data=data,
+        machine_candidates = await self._executor_candidates(
+            user_id=user_id,
+            session_id=session_id,
+            preferred=target_machine,
         )
+        path_candidates = self._remote_path_candidates(raw_path)
+        for machine in machine_candidates:
+            for candidate_path in path_candidates:
+                payload: dict[str, object] = {"path": candidate_path, "include_base64": True}
+                try:
+                    result, _dispatch = await self._tool_client.execute(
+                        user_id=user_id,
+                        session_id=session_id,
+                        tool_name="read",
+                        payload=payload,
+                        timeout=30,
+                        target_machine=machine,
+                    )
+                except Exception:
+                    continue
+                if not isinstance(result, dict):
+                    continue
+                content_type = str(result.get("content_type") or "").strip().lower()
+                if not content_type.startswith("image/"):
+                    continue
+                raw_b64 = str(result.get("base64") or "")
+                if not raw_b64:
+                    continue
+                try:
+                    data = base64.b64decode(raw_b64)
+                except Exception:
+                    continue
+                file_path = str(result.get("file_path") or candidate_path).strip() or candidate_path
+                filename = Path(file_path).name or Path(candidate_path).name or "image"
+                return Attachment(
+                    filename=filename,
+                    content_type=content_type,
+                    bytes_data=data,
+                )
+        _logger.debug(
+            "Remote media fetch failed for path=%s user_id=%s session_id=%s preferred_machine=%s",
+            raw_path,
+            user_id,
+            session_id,
+            target_machine,
+        )
+        return None
+
+    async def _executor_candidates(
+        self,
+        *,
+        user_id: str,
+        session_id: str,
+        preferred: str | None,
+    ) -> list[str | None]:
+        candidates: list[str | None] = []
+        seen: set[str] = set()
+
+        def _add(value: str | None) -> None:
+            normalized = str(value or "").strip()
+            if not normalized:
+                if "__default__" in seen:
+                    return
+                seen.add("__default__")
+                candidates.append(None)
+                return
+            if normalized in seen:
+                return
+            seen.add(normalized)
+            candidates.append(normalized)
+
+        _add(preferred)
+        _add(await executor_router.get_session_default(session_id))
+        async with SessionLocal() as session:
+            repo = Repository(session)
+            _add(await repo.get_user_default_executor_id(user_id))
+            rows = await repo.list_executors_for_user(user_id, include_disabled=False)
+            for row in rows:
+                _add(row.id)
+        return candidates or [None]
+
+    def _remote_path_candidates(self, raw_path: str) -> list[str]:
+        base = str(raw_path or "").strip()
+        if not base:
+            return []
+        candidates: list[str] = [base]
+        if base == "/workspace":
+            candidates.append(".")
+        elif base.startswith("/workspace/"):
+            candidates.append(base.removeprefix("/workspace/"))
+        elif base.startswith("workspace/"):
+            candidates.append(base.removeprefix("workspace/"))
+        seen: set[str] = set()
+        out: list[str] = []
+        for item in candidates:
+            norm = item.strip()
+            if not norm or norm in seen:
+                continue
+            seen.add(norm)
+            out.append(norm)
+        return out
 
     async def _extract_attachments(
         self,
