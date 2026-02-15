@@ -31,13 +31,18 @@ def default_registry() -> ToolRegistry:
     registry.register(
         ToolSpec(
             name="read",
-            description="Read the contents of a file. Relative paths resolve from /workspace. Absolute paths are literal sandbox paths. Supports text files and images (jpg, png, gif, webp). For text files, output is truncated to 2000 lines or 50KB (whichever is hit first). Use offset/limit for large files.",
+            description=(
+                "Read the contents of a file. Relative paths resolve from /workspace. Absolute paths are literal sandbox paths. "
+                "For text files, output is truncated to 2000 lines or 50KB (whichever is hit first). "
+                "Set include_base64=true to return raw bytes for any file type."
+            ),
             input_schema={
                 "type": "object",
                 "properties": {
                     "path": {"type": "string"},
                     "offset": {"type": "number"},
                     "limit": {"type": "number"},
+                    "include_base64": {"type": "boolean"},
                     "file_path": {"type": "string"},
                     "target_machine": {"type": "string"},
                 },
@@ -121,6 +126,46 @@ def default_registry() -> ToolRegistry:
                 "properties": {
                     "path": {"type": "string"},
                     "content": {"type": "string"},
+                    "base64": {"type": "string"},
+                    "overwrite": {"type": "boolean"},
+                    "file_path": {"type": "string"},
+                    "target_machine": {"type": "string"},
+                },
+            },
+            requires_approval=True,
+        )
+    )
+    registry.register(
+        ToolSpec(
+            name="transfer_file",
+            description=(
+                "Transfer a file between executors. Use source_machine/destination_machine to route between machines. "
+                "Use machine value 'api' for the API-server workspace."
+            ),
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "source_path": {"type": "string"},
+                    "destination_path": {"type": "string"},
+                    "source_machine": {"type": "string"},
+                    "destination_machine": {"type": "string"},
+                    "overwrite": {"type": "boolean"},
+                },
+                "required": ["source_path", "destination_path"],
+            },
+            requires_approval=True,
+        )
+    )
+    registry.register(
+        ToolSpec(
+            name="attach_file",
+            description=(
+                "Attach a file to the next assistant response. Supports images, audio, PDFs, archives, and other file types."
+            ),
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string"},
                     "file_path": {"type": "string"},
                     "target_machine": {"type": "string"},
                 },

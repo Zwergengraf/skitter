@@ -5,10 +5,11 @@ logging:
 prompt:
   path: system_prompt.md
   context_files:
-  - AGENTS.md
-  - TOOLS.md
   - IDENTITY.md
   - USER.md
+  - SOUL.md
+  - AGENTS.md
+  - TOOLS.md
 context:
   max_tool_messages: 8
   max_chat_messages: 32
@@ -126,6 +127,8 @@ tools:
   - edit
   - delete
   - download
+  - transfer_file
+  - attach_file
   - browser
   - sub_agent
   - sub_agent_batch

@@ -212,7 +212,10 @@ class Settings(BaseSettings):
     subagent_transcript_chars: int = Field(default=12000)
     tool_approval_required: bool = Field(default=True)
     tool_approval_tools: str = Field(
-        default="read,write,edit,list,delete,download,browser,browser_action,sub_agent,sub_agent_batch,job_start,shell,create_secret"
+        default=(
+            "read,write,edit,list,delete,download,transfer_file,attach_file,"
+            "browser,browser_action,sub_agent,sub_agent_batch,job_start,shell,create_secret"
+        )
     )
     approval_secrets_required: str = Field(default="always")
     cors_origins: str = Field(default="http://localhost:5173")

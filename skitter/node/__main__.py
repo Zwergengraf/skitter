@@ -37,6 +37,23 @@ DEFAULT_NODE_TOOLS: tuple[str, ...] = (
 )
 
 
+def _http_error_detail(response: httpx.Response) -> str:
+    try:
+        payload = response.json()
+    except ValueError:
+        payload = None
+    if isinstance(payload, dict):
+        detail = payload.get("detail")
+        if isinstance(detail, str) and detail.strip():
+            return detail.strip()
+        if detail is not None:
+            return json.dumps(detail, ensure_ascii=False)
+    text = (response.text or "").strip()
+    if text:
+        return text
+    return f"HTTP {response.status_code}"
+
+
 @dataclass(slots=True)
 class NodeConfig:
     api_url: str
@@ -283,7 +300,11 @@ class NodeClient:
                 },
                 timeout=max(1.0, timeout_s),
             )
-            response.raise_for_status()
+            if response.status_code >= 400:
+                detail = _http_error_detail(response)
+                raise RuntimeError(
+                    f"Executor runner error ({response.status_code}): {detail}"
+                )
             body = response.json()
             await self._send_json(
                 websocket,

@@ -6,6 +6,7 @@ from pathlib import Path
 import shutil
 import base64
 import json
+import mimetypes
 from typing import Any, Dict
 from contextlib import asynccontextmanager
 from urllib.parse import urlparse
@@ -126,6 +127,30 @@ async def _get_page(profile_id: str, context: BrowserContext) -> Page:
     return page
 
 
+async def _capture_page_screenshot(page: Page, *, full_page: bool, timeout_ms: int) -> bytes:
+    # Improve stability on host executors where first-frame captures can be blank.
+    try:
+        await page.bring_to_front()
+    except Exception:
+        pass
+    try:
+        await page.wait_for_load_state("domcontentloaded", timeout=min(timeout_ms, 10000))
+    except Exception:
+        pass
+    await page.wait_for_timeout(350)
+
+    png = await page.screenshot(full_page=full_page, timeout=timeout_ms)
+    if full_page:
+        # Fallback: on some sites/browsers full-page captures can be blank while viewport capture is valid.
+        try:
+            viewport_png = await page.screenshot(full_page=False, timeout=timeout_ms)
+            if len(viewport_png) > len(png) * 2:
+                png = viewport_png
+        except Exception:
+            pass
+    return png
+
+
 def create_app() -> FastAPI:
     workspace_root = Path(os.environ.get("SKITTER_WORKSPACE_ROOT", "/tmp/skitter-workspace"))
     workspace_root.mkdir(parents=True, exist_ok=True)
@@ -202,6 +227,23 @@ def create_app() -> FastAPI:
             "content": content,
             "truncated": truncated,
             "next_offset": next_offset,
+        }
+
+    def _read_file_base64(target: Path, *, max_bytes: int = 12 * 1024 * 1024) -> dict[str, Any]:
+        size = target.stat().st_size
+        if size > max_bytes:
+            raise HTTPException(
+                status_code=413,
+                detail=f"File too large to read as base64 ({size} bytes > {max_bytes} bytes)",
+            )
+        raw = target.read_bytes()
+        mime_type, _ = mimetypes.guess_type(target.name)
+        return {
+            "status": "ok",
+            "file_path": _workspace_response_path(target),
+            "content_type": mime_type or "application/octet-stream",
+            "size": len(raw),
+            "base64": base64.b64encode(raw).decode("ascii"),
         }
 
     def _coerce_int(value: Any) -> int | None:
@@ -287,6 +329,9 @@ def create_app() -> FastAPI:
                     raise HTTPException(status_code=404, detail="File not found")
                 if target.is_dir():
                     raise HTTPException(status_code=400, detail="Path is a directory")
+                include_base64 = bool(req.payload.get("include_base64", False))
+                if include_base64:
+                    return _read_file_base64(target)
                 ext = target.suffix.lower()
                 if ext in {".jpg", ".jpeg", ".png", ".gif", ".webp"}:
                     content_type = "image/jpeg" if ext in {".jpg", ".jpeg"} else f"image/{ext.lstrip('.')}"
@@ -295,20 +340,39 @@ def create_app() -> FastAPI:
                         "file_path": _workspace_response_path(target),
                         "content_type": content_type,
                     }
-                    if bool(req.payload.get("include_base64", False)):
-                        data = target.read_bytes()
-                        response["base64"] = base64.b64encode(data).decode("ascii")
                     return response
                 offset = _coerce_int(req.payload.get("offset"))
                 limit = _coerce_int(req.payload.get("limit"))
                 return _read_text_file(target, offset=offset, limit=limit)
             if req.tool == "write":
+                overwrite = bool(req.payload.get("overwrite", True))
+                if target.exists() and not overwrite:
+                    raise HTTPException(status_code=409, detail="Target already exists")
+                target.parent.mkdir(parents=True, exist_ok=True)
+                base64_content = req.payload.get("base64")
+                if base64_content is not None:
+                    try:
+                        raw = base64.b64decode(str(base64_content), validate=True)
+                    except Exception as exc:
+                        raise HTTPException(status_code=400, detail="Invalid base64 payload") from exc
+                    target.write_bytes(raw)
+                    return {
+                        "status": "ok",
+                        "path": _workspace_response_path(target),
+                        "bytes_written": len(raw),
+                        "content_type": mimetypes.guess_type(target.name)[0] or "application/octet-stream",
+                    }
                 content = req.payload.get("content")
                 if content is None:
-                    raise HTTPException(status_code=400, detail="content is required")
-                target.parent.mkdir(parents=True, exist_ok=True)
-                target.write_text(str(content), encoding="utf-8")
-                return {"status": "ok"}
+                    raise HTTPException(status_code=400, detail="content or base64 is required")
+                encoded = str(content)
+                target.write_text(encoded, encoding="utf-8")
+                return {
+                    "status": "ok",
+                    "path": _workspace_response_path(target),
+                    "bytes_written": len(encoded.encode("utf-8")),
+                    "content_type": "text/plain",
+                }
             if req.tool == "edit":
                 old_text = req.payload.get("oldText") or req.payload.get("old_string")
                 new_text = req.payload.get("newText") or req.payload.get("new_string")
@@ -495,9 +559,8 @@ def create_app() -> FastAPI:
                     html = html[:max_chars]
                     screenshot_path = None
                     if take_screenshot:
-                        screenshot_path = _save_screenshot(
-                            workspace_root, req.session_id, await page.screenshot(full_page=True)
-                        )
+                        png = await _capture_page_screenshot(page, full_page=True, timeout_ms=timeout_ms)
+                        screenshot_path = _save_screenshot(workspace_root, req.session_id, png)
                     return {"status": "ok", "title": title, "html": html, "screenshot_path": screenshot_path}
                 except PlaywrightTimeoutError:
                     return {"status": "timeout", "detail": f"Timeout navigating to {url}"}
@@ -840,7 +903,7 @@ def create_app() -> FastAPI:
                         except PlaywrightTimeoutError as exc:
                             raise HTTPException(status_code=400, detail=f"Timeout waiting for selector: {selector}") from exc
                     else:
-                        png = await page.screenshot(full_page=full_page)
+                        png = await _capture_page_screenshot(page, full_page=full_page, timeout_ms=timeout_ms)
                     screenshot_path = _save_screenshot(workspace_root, session_id, png)
                     return {"status": "ok", "screenshot_path": screenshot_path}
 

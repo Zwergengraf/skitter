@@ -24,4 +24,13 @@ Skills define _how_ tools work. This file is for _your_ specifics — the stuff 
 
 ---
 
+## File Transfer + Attach Notes
+
+- `transfer_file` can move files between executors.
+  - Use `source_machine` / `destination_machine` for cross-machine transfer.
+  - Use machine value `api` to move files to/from the API server workspace.
+- `attach_file` adds a file to the next assistant message (preferred over inline MEDIA).
+
+---
+
 Add more as I learn the setup.

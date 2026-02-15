@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import base64
+import mimetypes
 import logging
 from pathlib import Path
 from contextvars import ContextVar, Token
@@ -264,13 +265,110 @@ def build_graph(
         value = str(target_machine or "").strip()
         return value or None
 
+    def _normalize_machine_target(target_machine: str | None) -> str | None:
+        value = _normalize_target_machine(target_machine)
+        if not value:
+            return None
+        if value.lower() in {"api", "server", "api-server", "local-api"}:
+            return "api"
+        return value
+
+    def _is_api_target(target_machine: str | None) -> bool:
+        return _normalize_machine_target(target_machine) == "api"
+
     def _with_target_machine(payload: dict[str, Any], target_machine: str | None) -> dict[str, Any]:
-        machine = _normalize_target_machine(target_machine)
+        machine = _normalize_machine_target(target_machine)
         if not machine:
             return payload
         merged = dict(payload)
         merged["target_machine"] = machine
         return merged
+
+    def _workspace_relative_path(path: Path) -> str:
+        workspace = user_workspace_root(_user_id()).resolve()
+        try:
+            rel = path.resolve(strict=False).relative_to(workspace)
+        except ValueError:
+            return str(path).replace("\\", "/")
+        value = str(rel).replace("\\", "/")
+        return value if value and value != "." else "."
+
+    def _resolve_api_workspace_file(raw_path: str) -> Path | None:
+        return _resolve_workspace_path(_user_id(), raw_path)
+
+    def _local_mime_type(path: Path) -> str:
+        return mimetypes.guess_type(path.name)[0] or "application/octet-stream"
+
+    async def _read_blob_from_target(
+        *,
+        path: str,
+        target_machine: str | None,
+    ) -> tuple[bytes, str, str, dict[str, Any] | None]:
+        machine = _normalize_machine_target(target_machine)
+        if _is_api_target(machine):
+            resolved = _resolve_api_workspace_file(path)
+            if resolved is None or not resolved.exists() or not resolved.is_file():
+                raise RuntimeError(f"Source file not found in API workspace: {path}")
+            data = resolved.read_bytes()
+            return data, _local_mime_type(resolved), _workspace_relative_path(resolved), None
+
+        payload = {"path": path, "include_base64": True}
+        result, dispatch = await client.execute(
+            _user_id(),
+            _session_id(),
+            "read",
+            payload,
+            target_machine=machine,
+        )
+        if not isinstance(result, dict):
+            raise RuntimeError("read returned an invalid response")
+        raw_b64 = str(result.get("base64") or "")
+        if not raw_b64:
+            raise RuntimeError(
+                f"read did not return file bytes for `{path}`. Use a file path (not a directory) and try again."
+            )
+        try:
+            data = base64.b64decode(raw_b64)
+        except Exception as exc:  # pragma: no cover - defensive
+            raise RuntimeError("read returned invalid base64 data") from exc
+        content_type = str(result.get("content_type") or "").strip() or "application/octet-stream"
+        file_path = str(result.get("file_path") or path).strip() or path
+        return data, content_type, file_path, dispatch if isinstance(dispatch, dict) else None
+
+    async def _write_blob_to_target(
+        *,
+        path: str,
+        data: bytes,
+        target_machine: str | None,
+        overwrite: bool,
+    ) -> tuple[str, dict[str, Any] | None]:
+        machine = _normalize_machine_target(target_machine)
+        if _is_api_target(machine):
+            resolved = _resolve_api_workspace_file(path)
+            if resolved is None:
+                raise RuntimeError(f"Destination path is not allowed in API workspace: {path}")
+            if resolved.exists() and not overwrite:
+                raise RuntimeError(f"Destination already exists: {path}")
+            resolved.parent.mkdir(parents=True, exist_ok=True)
+            resolved.write_bytes(data)
+            return _workspace_relative_path(resolved), None
+
+        payload = {
+            "path": path,
+            "base64": base64.b64encode(data).decode("ascii"),
+            "overwrite": overwrite,
+        }
+        result, dispatch = await client.execute(
+            _user_id(),
+            _session_id(),
+            "write",
+            payload,
+            target_machine=machine,
+        )
+        if not isinstance(result, dict):
+            raise RuntimeError("write returned an invalid response")
+        written_path = str(result.get("path") or result.get("file_path") or path).strip() or path
+        return written_path, dispatch if isinstance(dispatch, dict) else None
 
     def _secrets_approval_required() -> bool:
         value = str(settings.approval_secrets_required or "").strip()
@@ -468,6 +566,24 @@ def build_graph(
         await _complete_tool_run(tool_run_id, "failed", {"error": message})
         return message
 
+    def _http_error_detail(response: httpx.Response) -> str:
+        detail = ""
+        try:
+            payload = response.json()
+        except ValueError:
+            payload = None
+        if isinstance(payload, dict):
+            raw_detail = payload.get("detail")
+            if isinstance(raw_detail, str):
+                detail = raw_detail.strip()
+            elif raw_detail is not None:
+                detail = json.dumps(raw_detail, ensure_ascii=False)
+        if not detail:
+            detail = (response.text or "").strip()
+        if not detail:
+            detail = "No error body returned."
+        return f"{response.status_code} {response.reason_phrase}: {detail}"
+
     async def _execute_sandbox_tool(
         tool_name: str,
         tool_run_id: str | None,
@@ -485,7 +601,7 @@ def build_graph(
                 target_machine=target_machine,
             )
         except httpx.HTTPStatusError as exc:
-            detail = exc.response.text
+            detail = _http_error_detail(exc.response)
             await _complete_tool_run(tool_run_id, "failed", {"error": detail})
             return None, f"{tool_name} error: {detail}"
         except httpx.RequestError as exc:
@@ -499,9 +615,6 @@ def build_graph(
         output_payload = result if isinstance(result, dict) else {"result": result}
         executor_id = None
         if isinstance(dispatch, dict):
-            if isinstance(result, dict):
-                result.setdefault("_executor", dispatch)
-            output_payload.setdefault("_executor", dispatch)
             executor_id = str(dispatch.get("executor_id") or "").strip() or None
         await _complete_tool_run(tool_run_id, "completed", output_payload, executor_id=executor_id)
         return result, None
@@ -748,11 +861,168 @@ def build_graph(
             return error
         return json.dumps(result)
 
+    @tool("transfer_file")
+    async def transfer_file(
+        source_path: str,
+        destination_path: str,
+        source_machine: Optional[str] = None,
+        destination_machine: Optional[str] = None,
+        overwrite: Optional[bool] = None,
+    ) -> str:
+        """Transfer a file between executors. Use target machine `api` to transfer to/from the API server workspace."""
+        source = str(source_path or "").strip()
+        destination = str(destination_path or "").strip()
+        if not source:
+            return await _fail_untracked_call(
+                "transfer_file",
+                {"source_path": source_path, "destination_path": destination_path},
+                "transfer_file error: source_path is required",
+            )
+        if not destination:
+            return await _fail_untracked_call(
+                "transfer_file",
+                {"source_path": source_path, "destination_path": destination_path},
+                "transfer_file error: destination_path is required",
+            )
+
+        source_target = _normalize_machine_target(source_machine)
+        destination_target = _normalize_machine_target(destination_machine)
+        should_overwrite = bool(overwrite)
+        payload: dict[str, Any] = {
+            "source_path": source,
+            "destination_path": destination,
+            "overwrite": should_overwrite,
+        }
+        if source_target:
+            payload["source_machine"] = source_target
+        if destination_target:
+            payload["destination_machine"] = destination_target
+
+        budget_message = await _enforce_tool_budget("transfer_file", payload)
+        if budget_message:
+            return budget_message
+        decision = await _maybe_approve("transfer_file", payload, approval_service, policy)
+        if not decision.approved:
+            return _denied_message("transfer_file")
+
+        source_dispatch: dict[str, Any] | None = None
+        destination_dispatch: dict[str, Any] | None = None
+        try:
+            data, content_type, source_file_path, source_dispatch = await _read_blob_from_target(
+                path=source,
+                target_machine=source_target,
+            )
+            destination_file_path, destination_dispatch = await _write_blob_to_target(
+                path=destination,
+                data=data,
+                target_machine=destination_target,
+                overwrite=should_overwrite,
+            )
+        except Exception as exc:
+            detail = str(exc)
+            await _complete_tool_run(decision.tool_run_id, "failed", {"error": detail})
+            return f"transfer_file error: {detail}"
+
+        executor_id = None
+        if isinstance(destination_dispatch, dict):
+            executor_id = str(destination_dispatch.get("executor_id") or "").strip() or None
+        if not executor_id and isinstance(source_dispatch, dict):
+            executor_id = str(source_dispatch.get("executor_id") or "").strip() or None
+
+        output = {
+            "status": "ok",
+            "source_path": source_file_path,
+            "destination_path": destination_file_path,
+            "bytes": len(data),
+            "content_type": content_type or "application/octet-stream",
+            "source_machine": source_target or "default",
+            "destination_machine": destination_target or "default",
+        }
+        await _complete_tool_run(decision.tool_run_id, "completed", output, executor_id=executor_id)
+        return json.dumps(output)
+
+    @tool("attach_file")
+    async def attach_file(
+        path: Optional[str] = None,
+        file_path: Optional[str] = None,
+        target_machine: Optional[str] = None,
+    ) -> str:
+        """Attach a file to the next assistant message. Works for images, audio, PDFs, archives, and other files."""
+        target = _coalesce_path(path, file_path)
+        if not target:
+            return await _fail_untracked_call(
+                "attach_file",
+                {"path": path, "file_path": file_path},
+                "attach_file error: path is required",
+            )
+        machine = _normalize_machine_target(target_machine)
+        payload = _with_target_machine({"path": target}, machine)
+        budget_message = await _enforce_tool_budget("attach_file", payload)
+        if budget_message:
+            return budget_message
+        decision = await _maybe_approve("attach_file", payload, approval_service, policy)
+        if not decision.approved:
+            return _denied_message("attach_file")
+
+        executor_id = None
+        content_type = "application/octet-stream"
+        size = None
+        resolved_attachment_path = target
+        machine_hint = machine
+        try:
+            if _is_api_target(machine):
+                resolved = _resolve_api_workspace_file(target)
+                if resolved is None or not resolved.exists() or not resolved.is_file():
+                    raise RuntimeError(f"File not found in API workspace: {target}")
+                resolved_attachment_path = _workspace_relative_path(resolved)
+                content_type = _local_mime_type(resolved)
+                size = resolved.stat().st_size
+            else:
+                check_result, dispatch = await client.execute(
+                    _user_id(),
+                    _session_id(),
+                    "read",
+                    {"path": target},
+                    target_machine=machine,
+                )
+                if isinstance(dispatch, dict):
+                    executor_id = str(dispatch.get("executor_id") or "").strip() or None
+                    if not machine_hint:
+                        machine_hint = (
+                            str(dispatch.get("executor_id") or dispatch.get("executor_name") or "").strip() or None
+                        )
+                if isinstance(check_result, dict):
+                    maybe_type = str(check_result.get("content_type") or "").strip()
+                    if maybe_type:
+                        content_type = maybe_type
+                    maybe_path = str(check_result.get("file_path") or "").strip()
+                    if maybe_path:
+                        resolved_attachment_path = maybe_path
+                    maybe_size = check_result.get("size")
+                    if isinstance(maybe_size, int):
+                        size = maybe_size
+        except Exception as exc:
+            detail = str(exc)
+            await _complete_tool_run(decision.tool_run_id, "failed", {"error": detail})
+            return f"attach_file error: {detail}"
+
+        output: dict[str, Any] = {
+            "status": "ok",
+            "attachment_path": resolved_attachment_path,
+            "content_type": content_type,
+        }
+        if size is not None:
+            output["size"] = size
+        if machine_hint:
+            output["target_machine"] = machine_hint
+        await _complete_tool_run(decision.tool_run_id, "completed", output, executor_id=executor_id)
+        return json.dumps(output)
+
     @tool("http_fetch")
     async def http_fetch(url: str, target_machine: Optional[str] = None) -> str:
         """Fetch a URL over HTTP."""
         payload = {"url": url}
-        machine = _normalize_target_machine(target_machine)
+        machine = _normalize_machine_target(target_machine)
         approval_payload = _with_target_machine(payload, machine)
         budget_message = await _enforce_tool_budget("http_fetch", approval_payload)
         if budget_message:
@@ -1589,6 +1859,8 @@ def build_graph(
         list_files,
         delete,
         download,
+        transfer_file,
+        attach_file,
         http_fetch,
         browser,
         browser_action,

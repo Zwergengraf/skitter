@@ -1191,18 +1191,21 @@ Each bullet must be self-contained, explicit, and searchable.
 
     def _executor_hint_from_tool_payload(self, data: dict) -> str | None:
         executor = data.get("_executor")
-        if not isinstance(executor, dict):
-            return None
-        hint = str(executor.get("executor_id") or executor.get("executor_name") or "").strip()
-        return hint or None
+        if isinstance(executor, dict):
+            hint = str(executor.get("executor_id") or executor.get("executor_name") or "").strip()
+            if hint:
+                return hint
+        direct = str(data.get("target_machine") or data.get("executor_id") or data.get("executor_name") or "").strip()
+        return direct or None
 
-    async def _read_remote_image_attachment(
+    async def _read_remote_attachment(
         self,
         *,
         user_id: str,
         session_id: str,
         raw_path: str,
         target_machine: str | None,
+        images_only: bool = False,
     ) -> Attachment | None:
         machine_candidates = await self._executor_candidates(
             user_id=user_id,
@@ -1227,7 +1230,7 @@ Each bullet must be self-contained, explicit, and searchable.
                 if not isinstance(result, dict):
                     continue
                 content_type = str(result.get("content_type") or "").strip().lower()
-                if not content_type.startswith("image/"):
+                if images_only and not content_type.startswith("image/"):
                     continue
                 raw_b64 = str(result.get("base64") or "")
                 if not raw_b64:
@@ -1238,6 +1241,8 @@ Each bullet must be self-contained, explicit, and searchable.
                     continue
                 file_path = str(result.get("file_path") or candidate_path).strip() or candidate_path
                 filename = Path(file_path).name or Path(candidate_path).name or "image"
+                if not content_type:
+                    content_type = self._mime_for_file(filename)
                 return Attachment(
                     filename=filename,
                     content_type=content_type,
@@ -1315,7 +1320,7 @@ Each bullet must be self-contained, explicit, and searchable.
     ) -> list[Attachment]:
         attachments: list[Attachment] = []
         seen_resolved_paths: set[str] = set()
-        image_exts = {".png", ".jpg", ".jpeg", ".gif", ".webp"}
+        image_exts = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".tiff"}
         start_index = 0
         if message_id:
             for idx in range(len(messages) - 1, -1, -1):
@@ -1337,51 +1342,60 @@ Each bullet must be self-contained, explicit, and searchable.
             if not isinstance(data, dict):
                 continue
             target_machine = self._executor_hint_from_tool_payload(data)
-            paths: list[str] = []
+            path_specs: list[tuple[str, bool]] = []
             if "screenshot_path" in data:
-                paths.append(str(data["screenshot_path"]))
+                path_specs.append((str(data["screenshot_path"]), True))
             if "screenshot_paths" in data and isinstance(data["screenshot_paths"], list):
-                paths.extend([str(p) for p in data["screenshot_paths"]])
+                path_specs.extend((str(p), True) for p in data["screenshot_paths"])
             file_path = data.get("file_path")
             if isinstance(file_path, str):
                 content_type = str(data.get("content_type", "")).lower()
                 ext = Path(file_path).suffix.lower()
                 if content_type.startswith("image/") or ext in image_exts:
-                    paths.append(file_path)
+                    path_specs.append((file_path, True))
             if "file_paths" in data and isinstance(data["file_paths"], list):
                 for item in data["file_paths"]:
                     if not isinstance(item, str):
                         continue
                     ext = Path(item).suffix.lower()
                     if ext in image_exts:
-                        paths.append(item)
-            for raw_path in paths:
+                        path_specs.append((item, True))
+            attachment_path = data.get("attachment_path")
+            if isinstance(attachment_path, str) and attachment_path.strip():
+                path_specs.append((attachment_path, False))
+            attachment_paths = data.get("attachment_paths")
+            if isinstance(attachment_paths, list):
+                for item in attachment_paths:
+                    if not isinstance(item, str):
+                        continue
+                    if item.strip():
+                        path_specs.append((item, False))
+            for raw_path, images_only in path_specs:
                 resolved = self._resolve_workspace_path(user_id, raw_path)
                 if resolved and resolved.exists():
                     path_key = str(resolved)
                     if path_key in seen_resolved_paths:
                         continue
-                    try:
-                        payload = resolved.read_bytes()
-                    except OSError:
-                        payload = None
-                    if payload is None:
+                    if not resolved.is_file():
+                        continue
+                    content_type = self._mime_for_file(resolved.name)
+                    if images_only and not content_type.startswith("image/"):
                         continue
                     seen_resolved_paths.add(path_key)
                     attachments.append(
                         Attachment(
                             filename=resolved.name,
-                            content_type=self._mime_for_file(resolved.name, fallback="image/png"),
-                            bytes_data=payload,
+                            content_type=content_type,
                             path=str(resolved),
                         )
                     )
                     continue
-                remote_attachment = await self._read_remote_image_attachment(
+                remote_attachment = await self._read_remote_attachment(
                     user_id=user_id,
                     session_id=session_id,
                     raw_path=raw_path,
                     target_machine=target_machine,
+                    images_only=images_only,
                 )
                 if remote_attachment is None:
                     continue
@@ -1435,11 +1449,12 @@ Each bullet must be self-contained, explicit, and searchable.
                         )
                     )
                     continue
-                remote_attachment = await self._read_remote_image_attachment(
+                remote_attachment = await self._read_remote_attachment(
                     user_id=user_id,
                     session_id=session_id,
                     raw_path=raw_path,
                     target_machine=target_machine,
+                    images_only=False,
                 )
                 if remote_attachment is None:
                     continue
@@ -1598,4 +1613,4 @@ Each bullet must be self-contained, explicit, and searchable.
         cleaned = "\n".join(lines).strip()
         if cleaned:
             return cleaned
-        return "Screenshot attached."
+        return "Attachment added."

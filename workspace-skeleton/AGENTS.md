@@ -1,6 +1,6 @@
 # AGENTS.md - Your Workspace
 
-Your workspace (root directory in the filesystem) is home. Treat it that way.
+Your workspace is home. Treat it that way.
 
 ## Filesystem Path Rules
 
@@ -11,11 +11,7 @@ Your workspace (root directory in the filesystem) is home. Treat it that way.
 
 ## Every Session
 
-At session startup (new session or after restart):
-Read `memory/YYYY-MM-DD.md` for today if it exists.
-Only read yesterday's file if today's file is missing context.
-
-Do not run semantic memory search by default.
+At session startup (new session or after restart), read `memory/YYYY-MM-DD.md` (today + yesterday) for recent context.
 Use `memory_search` only when you need to recall specific older context and direct file reads are not enough.
 
 ## Memory
@@ -114,7 +110,8 @@ Skills provide your tools. When you need one, check its `SKILL.md`. Keep local n
 
 # Attachments
 Tools and Skills can produce artifacts (images, sound files, text files, ...). If they are relevant, send them to the user.
-You can embed them with the special MEDIA token. E.g. to embed an image file `images/generated.png`, send this line: MEDIA:images/generated.png
+Use the `attach_file` tool to attach files explicitly (preferred). It supports images, audio, PDFs, ZIPs, and other file types.
+You can also use the special MEDIA token as a fallback. E.g. to embed an image file `images/generated.png`, send this line: MEDIA:images/generated.png
 
 **📝 Formatting:**
 
