@@ -474,6 +474,28 @@ class AgentRuntime:
                         AIMessage(content=timeout_text)
                     ]
                 }
+            except Exception as exc:
+                should_repair = self._is_tool_sequence_error(exc)
+                if not should_repair and self._is_model_bad_request(exc):
+                    should_repair = any(self._is_tool_chatter_message(msg) for msg in history)
+                if not should_repair:
+                    raise
+                _logger.warning(
+                    "tool_sequence_repair: repairing model request state (session=%s, error=%s)",
+                    session_id,
+                    str(exc),
+                )
+                await self._trace_event(
+                    run_id=run_id,
+                    session_id=session_id,
+                    event_type="tool_sequence_repair",
+                    payload={"error": str(exc)},
+                )
+                self._sanitize_tool_sequence(history)
+                result = await asyncio.wait_for(
+                    graph.ainvoke({"messages": history}, config=invoke_config),
+                    timeout=max(1, int(settings.limits_max_runtime_seconds) + 5),
+                )
             messages = result.get("messages", history)
             self._history[session_id] = list(messages)
             self._log_model_thinking_debug(
@@ -521,6 +543,10 @@ class AgentRuntime:
                 )
         except Exception as exc:
             _logger.exception("Agent runtime failed for session=%s", session_id)
+            # Graph execution can fail after partially mutating in-memory history.
+            # Rebuild from DB to drop incomplete tool-use/tool-result sequences.
+            self.clear_history(session_id)
+            await self._ensure_history(session_id)
             messages = self._history.get(session_id, [])
             run_status = "failed"
             run_error = str(exc)
@@ -694,11 +720,7 @@ class AgentRuntime:
         if isinstance(msg, ToolMessage):
             return True
         if isinstance(msg, AIMessage):
-            tool_calls = getattr(msg, "tool_calls", None)
-            if tool_calls:
-                return True
-            meta = getattr(msg, "additional_kwargs", None) or {}
-            if isinstance(meta, dict) and meta.get("tool_calls"):
+            if self._extract_tool_call_ids(msg):
                 return True
         return False
 
@@ -747,47 +769,73 @@ class AgentRuntime:
                         call_id = call.get("id")
                         if call_id:
                             ids.add(str(call_id))
+        content = getattr(msg, "content", None)
+        if isinstance(content, list):
+            for block in content:
+                if not isinstance(block, dict):
+                    continue
+                block_type = str(block.get("type") or "").strip().lower()
+                if block_type not in {"tool_use", "tool_call"}:
+                    continue
+                call_id = block.get("id") or block.get("tool_use_id") or block.get("tool_call_id")
+                if call_id:
+                    ids.add(str(call_id))
         return ids
 
     def _sanitize_tool_sequence(self, history: list[BaseMessage]) -> None:
-        ai_tool_ids_by_index: dict[int, set[str]] = {}
-        seen_ai_tool_ids: set[str] = set()
-        responded_ids: set[str] = set()
-
-        for idx, msg in enumerate(history):
-            if isinstance(msg, AIMessage):
-                call_ids = self._extract_tool_call_ids(msg)
-                if call_ids:
-                    ai_tool_ids_by_index[idx] = call_ids
-                    seen_ai_tool_ids.update(call_ids)
-                continue
-            if isinstance(msg, ToolMessage):
-                tool_call_id = getattr(msg, "tool_call_id", None)
-                if tool_call_id and str(tool_call_id) in seen_ai_tool_ids:
-                    responded_ids.add(str(tool_call_id))
-
-        valid_ai_indices: set[int] = set()
-        valid_tool_ids: set[str] = set()
-        for idx, call_ids in ai_tool_ids_by_index.items():
-            if call_ids and call_ids.issubset(responded_ids):
-                valid_ai_indices.add(idx)
-                valid_tool_ids.update(call_ids)
-
         sanitized: list[BaseMessage] = []
-        for idx, msg in enumerate(history):
+        invalid_tool_ids: set[str] = set()
+        idx = 0
+
+        while idx < len(history):
+            msg = history[idx]
             if isinstance(msg, AIMessage):
                 call_ids = self._extract_tool_call_ids(msg)
-                if call_ids and idx not in valid_ai_indices:
+                if not call_ids:
+                    sanitized.append(msg)
+                    idx += 1
                     continue
-                sanitized.append(msg)
+
+                j = idx + 1
+                contiguous_results: list[ToolMessage] = []
+                contiguous_ids: list[str] = []
+                while j < len(history) and isinstance(history[j], ToolMessage):
+                    tool_msg = history[j]
+                    tool_call_id = str(getattr(tool_msg, "tool_call_id", "") or "").strip()
+                    if tool_call_id:
+                        contiguous_results.append(tool_msg)
+                        contiguous_ids.append(tool_call_id)
+                    j += 1
+
+                contiguous_id_set = set(contiguous_ids)
+                if call_ids and call_ids.issubset(contiguous_id_set):
+                    sanitized.append(msg)
+                    seen_ids: set[str] = set()
+                    for tool_msg in contiguous_results:
+                        tool_call_id = str(getattr(tool_msg, "tool_call_id", "") or "").strip()
+                        if not tool_call_id or tool_call_id not in call_ids:
+                            continue
+                        if tool_call_id in seen_ids:
+                            continue
+                        seen_ids.add(tool_call_id)
+                        sanitized.append(tool_msg)
+                else:
+                    invalid_tool_ids.update(call_ids)
+                idx = j
                 continue
+
             if isinstance(msg, ToolMessage):
-                tool_call_id = getattr(msg, "tool_call_id", None)
-                if not tool_call_id or str(tool_call_id) not in valid_tool_ids:
-                    continue
-                sanitized.append(msg)
+                # Orphan tool messages are unsafe to keep; only contiguous tool results
+                # directly following a tool-use AI message survive.
+                tool_call_id = str(getattr(msg, "tool_call_id", "") or "").strip()
+                if tool_call_id:
+                    invalid_tool_ids.add(tool_call_id)
+                idx += 1
                 continue
+
             sanitized.append(msg)
+            idx += 1
+
         history[:] = sanitized
 
     def _message_content_to_text(self, content: object) -> str:
@@ -847,6 +895,39 @@ class AgentRuntime:
                 parts.append(str(item))
             return "\n".join(part for part in parts if part).strip()
         return str(content)
+
+    def _exception_text_chain(self, exc: Exception) -> str:
+        parts: list[str] = []
+        seen: set[int] = set()
+        current: BaseException | None = exc
+        while current is not None and id(current) not in seen:
+            seen.add(id(current))
+            text = str(current).strip()
+            if text:
+                parts.append(text)
+            response = getattr(current, "response", None)
+            if response is not None:
+                resp_text = str(getattr(response, "text", "") or "").strip()
+                if resp_text:
+                    parts.append(resp_text)
+            current = current.__cause__ or current.__context__
+        return "\n".join(parts).lower()
+
+    def _is_tool_sequence_error(self, exc: Exception) -> bool:
+        text = self._exception_text_chain(exc)
+        markers = (
+            "tool_use ids were found without tool_result blocks",
+            "must be a response to a preceeding message with 'tool_calls'",
+            "must be a response to a preceding message with 'tool_calls'",
+        )
+        return any(marker in text for marker in markers)
+
+    def _is_model_bad_request(self, exc: Exception) -> bool:
+        text = self._exception_text_chain(exc)
+        if " 400 " in f" {text} ":
+            return True
+        name = type(exc).__name__.lower()
+        return "badrequest" in name or "invalid_request" in text
 
     async def _build_limit_fallback_response(
         self,
