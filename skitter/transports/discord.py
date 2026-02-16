@@ -192,7 +192,8 @@ class DiscordTransport(TransportAdapter):
             if message.author.bot:
                 return
             is_private = isinstance(message.channel, discord.DMChannel)
-            if not is_private and not isinstance(message.channel, (discord.TextChannel, discord.Thread)):
+            if not is_private:
+                # DM-only mode for now. Edit this block to re-enable server/group handling later.
                 return
             if self._handler is None:
                 return
@@ -410,6 +411,9 @@ class DiscordTransport(TransportAdapter):
     ) -> None:
         if self._handler is None:
             await interaction.response.send_message("Handler is not configured.")
+            return
+        if not isinstance(interaction.channel, discord.DMChannel):
+            # DM-only mode for now. Edit this block to re-enable server/group handling later.
             return
         await interaction.response.defer(thinking=True, ephemeral=ephemeral)
         await self._record_interaction(interaction)
