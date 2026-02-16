@@ -334,16 +334,12 @@ def default_registry() -> ToolRegistry:
     registry.register(
         ToolSpec(
             name="web_search",
-            description="Search the web using Brave Search API",
+            description="Search the web using the configured engine (Brave or SearXNG).",
             input_schema={
                 "type": "object",
                 "properties": {
                     "query": {"type": "string"},
                     "count": {"type": "number"},
-                    "country": {"type": "string"},
-                    "search_lang": {"type": "string"},
-                    "ui_lang": {"type": "string"},
-                    "freshness": {"type": "string"},
                 },
             },
             requires_approval=False,

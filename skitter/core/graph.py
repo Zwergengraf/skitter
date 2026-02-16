@@ -34,6 +34,7 @@ from .embeddings import EmbeddingsClient
 from .memory_service import MemoryService
 from .workspace import user_workspace_root
 from .secrets import SecretsManager
+from .web_search import WebSearchConfigError, WebSearchError, search_web
 
 _logger = logging.getLogger(__name__)
 
@@ -1346,19 +1347,12 @@ def build_graph(
     async def web_search(
         query: str,
         count: int = 5,
-        country: str = "US",
-        search_lang: Optional[str] = None,
-        ui_lang: Optional[str] = None,
-        freshness: Optional[str] = None,
     ) -> str:
-        """Search the web using Brave Search API."""
+        """Search the web using the configured search engine (Brave or SearXNG)."""
         payload: dict[str, Any] = {
             "query": query,
             "count": count,
-            "country": country,
-            "search_lang": search_lang,
-            "ui_lang": ui_lang,
-            "freshness": freshness,
+            "engine": settings.web_search_engine,
         }
         budget_message = await _enforce_tool_budget("web_search", payload)
         if budget_message:
@@ -1367,38 +1361,17 @@ def build_graph(
         if not query.strip():
             await _complete_tool_run(tool_run_id, "failed", {"error": "query is required"})
             return "web_search error: query is required"
-        if not settings.brave_api_key:
-            await _complete_tool_run(tool_run_id, "failed", {"error": "SKITTER_BRAVE_API_KEY is not set"})
-            return "web_search error: SKITTER_BRAVE_API_KEY is not set"
-        params = {"q": query, "count": max(1, min(int(count), 10)), "country": country}
-        if search_lang:
-            params["search_lang"] = search_lang
-        if ui_lang:
-            params["ui_lang"] = ui_lang
-        if freshness:
-            params["freshness"] = freshness
-        headers = {"Accept": "application/json", "X-Subscription-Token": settings.brave_api_key}
         try:
-            async with httpx.AsyncClient(timeout=20) as client:
-                resp = await client.get(settings.brave_api_base, params=params, headers=headers)
-                resp.raise_for_status()
-                data = resp.json()
-        except httpx.HTTPStatusError as exc:
-            await _complete_tool_run(tool_run_id, "failed", {"error": exc.response.text})
-            return f"web_search error: {exc.response.text}"
-        except httpx.RequestError as exc:
+            output = await search_web(
+                query=query,
+                count=count,
+            )
+        except WebSearchConfigError as exc:
             await _complete_tool_run(tool_run_id, "failed", {"error": str(exc)})
             return f"web_search error: {exc}"
-        results = []
-        for item in (data.get("web", {}).get("results") or []):
-            results.append(
-                {
-                    "title": item.get("title"),
-                    "url": item.get("url"),
-                    "snippet": item.get("description"),
-                }
-            )
-        output = {"query": query, "results": results}
+        except WebSearchError as exc:
+            await _complete_tool_run(tool_run_id, "failed", {"error": str(exc)})
+            return f"web_search error: {exc}"
         await _complete_tool_run(tool_run_id, "completed", output)
         return json.dumps(output)
 

@@ -169,6 +169,8 @@ class Settings(BaseSettings):
 
     brave_api_key: str = Field(default="")
     brave_api_base: str = Field(default="https://api.search.brave.com/res/v1/web/search")
+    web_search_engine: str = Field(default="brave")
+    web_search_searxng_api_base: str = Field(default="http://localhost:8080/search")
     browser_executable: str = Field(default="")
 
     scheduler_timezone: str = Field(default_factory=_detect_system_timezone)
@@ -252,6 +254,12 @@ class Settings(BaseSettings):
     def _normalize_log_level(cls, value: Any) -> str:
         text = str(value or "INFO").strip().upper()
         return text or "INFO"
+
+    @field_validator("web_search_engine", mode="before")
+    @classmethod
+    def _normalize_web_search_engine(cls, value: Any) -> str:
+        text = str(value or "brave").strip().lower()
+        return text or "brave"
 
 
 def _config_path() -> Path:

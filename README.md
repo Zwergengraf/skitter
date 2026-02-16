@@ -103,6 +103,14 @@ At minimum, set:
 - `database.url` (if not using default)
 - `discord.token` (if using Discord transport)
 
+Web search provider config:
+
+- `web_search.engine`: `brave` or `searxng`
+- `web_search.brave.api_key` / `web_search.brave.api_base`
+- `web_search.searxng.api_base`
+
+`web_search` tool inputs are intentionally minimal: `query` and optional `count`.
+
 ### 4) Start infrastructure
 
 Start PostgreSQL (pgvector enabled):
@@ -171,6 +179,21 @@ Notes:
 - `api` auto-runs DB initialization on startup (`python -m skitter.data.init_db`).
 - `sandbox` image is built but not started as a long-running service. The API spawns per-user sandbox containers on demand via Docker socket access.
 - The admin web image is built with `VITE_API_KEY`; this key is embedded in client-side assets. Do not expose this UI publicly without additional auth controls.
+
+Optional: run local SearXNG from this repo:
+
+```bash
+docker compose -f searxng/docker-compose.yml up -d
+```
+
+Then set in `config.yaml`:
+
+```yaml
+web_search:
+  engine: searxng
+  searxng:
+    api_base: http://localhost:8888/search
+```
 
 ## Executor Workflow
 

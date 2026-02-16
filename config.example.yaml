@@ -74,9 +74,13 @@ embeddings:
   target_chunk_chars: 700
   max_chunk_chars: 1000
   max_distance: 0.45
-brave:
-  api_key: ""
-  api_base: https://api.search.brave.com/res/v1/web/search
+web_search:
+  engine: brave # Options: searxng, brave
+  searxng:
+    api_base: http://localhost:8080/search
+  brave:
+    api_key: ""
+    api_base: https://api.search.brave.com/res/v1/web/search
 browser:
   executable: /usr/bin/brave-browser
 # scheduler:
@@ -118,10 +122,6 @@ cors:
   - http://localhost:5173
 tools:
   approval_required: false
-  # Default keeps forced approvals for shell calls that use secret_refs.
-  # Set this EXACT value to disable the forced secrets-approval override (very unsafe):
-  # i_have_read_the_warnings_and_im_probably_doing_something_cursed
-  approval_secrets_required: always
   approval_tools:
   - write
   - edit
@@ -135,6 +135,10 @@ tools:
   - job_start
   - shell
   - create_secret
+  # Default keeps forced approvals for shell calls that use secret_refs.
+  # Set this EXACT value to disable the forced secrets-approval override (very unsafe):
+  # i_have_read_the_warnings_and_im_probably_doing_something_cursed
+  approval_secrets_required: always
 sub_agents:
   max_concurrent: 4
   timeout_seconds: 180
