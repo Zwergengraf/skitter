@@ -101,6 +101,20 @@ class AgentRuntime:
     def _purpose_for_origin(origin: str) -> str:
         return "heartbeat" if origin == "heartbeat" else "main"
 
+    @staticmethod
+    def _format_message_datetime(value: datetime) -> str:
+        dt = value
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=UTC)
+        local_dt = dt.astimezone()
+        hour_12 = local_dt.hour % 12 or 12
+        am_pm = "am" if local_dt.hour < 12 else "pm"
+        return (
+            f"{local_dt.strftime('%A')}, "
+            f"{local_dt.strftime('%B')} {local_dt.day} {local_dt.year}, "
+            f"{hour_12}:{local_dt.minute:02d} {am_pm}"
+        )
+
     def _prepare_envelope_content(self, envelope: MessageEnvelope) -> tuple[str, bool, list[dict]]:
         content = envelope.text
         is_command = False
@@ -110,6 +124,10 @@ class AgentRuntime:
             content = f"/{envelope.command} {envelope.metadata}".strip()
         elif envelope.attachments:
             attachments_meta = self._serialize_attachments(envelope.attachments)
+        if not is_command:
+            timestamp_text = self._format_message_datetime(envelope.timestamp)
+            prefix = f"Current date and time: {timestamp_text}"
+            content = f"{prefix}\n\n{content}".strip() if content else prefix
         return content, is_command, attachments_meta
 
     def _push_request_context(
