@@ -39,6 +39,8 @@ nav:
       - Skills: core-concepts/skills.md
       - Secrets: core-concepts/secrets.md
       - Models and Reasoning: core-concepts/models-and-reasoning.md
+  - Patterns:
+      - Event Inbox + Heartbeats: patterns/event-inbox-heartbeats.md
   - API:
       - Overview: api/overview.md
       - Commands: api/commands.md

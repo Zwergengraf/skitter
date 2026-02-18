@@ -5,3 +5,4 @@
 - Heartbeat service cadence and quiet hours.
 - HEARTBEAT.md gating and skip rules.
 - Delivery targets and run history policy.
+- Integration pattern: [Event Inbox + Heartbeats](../patterns/event-inbox-heartbeats.md).
