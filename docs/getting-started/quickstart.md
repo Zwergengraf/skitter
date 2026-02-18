@@ -47,8 +47,8 @@ At minimum, define:
 
 - `providers`
 - `models`
-- `main_model` (`provider/model`)
-- `heartbeat_model` (`provider/model`)
+- `main_model` (ordered list of `provider/model`)
+- `heartbeat_model` (ordered list of `provider/model`)
 
 Example shape:
 
@@ -70,8 +70,10 @@ models:
     input_cost_per_1m: 0
     output_cost_per_1m: 0
 
-main_model: local/main
-heartbeat_model: local/heartbeat
+main_model:
+  - local/main
+heartbeat_model:
+  - local/heartbeat
 ```
 
 ## 4) Start PostgreSQL and Initialize DB

@@ -38,7 +38,7 @@ from .graph import (
     set_current_user_id,
 )
 from .models import AgentResponse, Attachment, MessageEnvelope, StreamEvent
-from .llm import build_llm, list_models, resolve_model, resolve_model_name
+from .llm import build_llm, list_models, resolve_model, resolve_model_candidates, resolve_model_name
 from .llm_debug import ThinkingDebugCallback
 from .prompting import build_system_prompt
 from .usage import collect_usage, record_usage
@@ -434,86 +434,140 @@ class AgentRuntime:
                         history.append(
                             HumanMessage(content=content, additional_kwargs={"message_id": envelope.message_id})
                         )
-            model_name = await self._get_session_model(session_id, envelope)
-            await self._trace_update(run_id, model=model_name)
-            await self._compact_history_for_context(session_id, history, model_name)
+            selected_model = await self._get_session_model(session_id, envelope)
+            await self._trace_update(run_id, model=selected_model)
+            await self._compact_history_for_context(session_id, history, selected_model)
             history_len_before_invoke = len(history)
-            resolved_model = resolve_model(model_name, purpose=purpose)
-            limits = RunLimitsState(
-                max_tool_calls=max(0, int(settings.limits_max_tool_calls)),
-                max_runtime_seconds=max(1, int(settings.limits_max_runtime_seconds)),
-                max_cost_usd=max(0.0, float(settings.limits_max_cost_usd)),
-                input_cost_per_1m=float(resolved_model.input_cost_per_1m),
-                output_cost_per_1m=float(resolved_model.output_cost_per_1m),
-                start_time=asyncio.get_running_loop().time(),
-            )
-            limit_token = set_current_run_limits(limits)
-            callbacks = [
-                RunBudgetUsageCallback(
+            candidate_models = resolve_model_candidates(selected_model, purpose=purpose)
+            baseline_history = list(history)
+            result: dict[str, object] | None = None
+            model_name = selected_model
+            for attempt_index, candidate_model in enumerate(candidate_models):
+                model_name = candidate_model
+                await self._trace_event(
+                    run_id=run_id,
+                    session_id=session_id,
+                    event_type="model_attempt",
+                    payload={
+                        "attempt": attempt_index + 1,
+                        "total": len(candidate_models),
+                        "model": candidate_model,
+                    },
+                )
+                resolved_model = resolve_model(candidate_model, purpose=purpose)
+                limits = RunLimitsState(
+                    max_tool_calls=max(0, int(settings.limits_max_tool_calls)),
+                    max_runtime_seconds=max(1, int(settings.limits_max_runtime_seconds)),
+                    max_cost_usd=max(0.0, float(settings.limits_max_cost_usd)),
                     input_cost_per_1m=float(resolved_model.input_cost_per_1m),
                     output_cost_per_1m=float(resolved_model.output_cost_per_1m),
-                ),
-                ThinkingDebugCallback(
-                    logger=_logger,
-                    provider_api_type=resolved_model.provider_api_type,
-                    model_name=model_name,
-                    session_id=session_id,
-                    run_id=run_id,
-                ),
-            ]
-            invoke_config = {
-                "callbacks": callbacks,
-                "recursion_limit": max(32, int(settings.limits_max_tool_calls) * 4 + 16),
-            }
-            graph = self._get_graph(model_name, purpose=purpose)
-            try:
-                result = await asyncio.wait_for(
-                    graph.ainvoke({"messages": history}, config=invoke_config),
-                    timeout=max(1, int(settings.limits_max_runtime_seconds) + 5),
+                    start_time=asyncio.get_running_loop().time(),
                 )
-            except asyncio.TimeoutError:
-                timeout_text = await self._build_limit_fallback_response(
-                    model_name=model_name,
-                    history=history,
-                    reason="runtime",
-                    detail=f"max runtime exceeded ({int(settings.limits_max_runtime_seconds)}s)",
-                )
-                run_limit_reason = "runtime"
-                run_limit_detail = f"max runtime exceeded ({int(settings.limits_max_runtime_seconds)}s)"
-                await self._trace_event(
-                    run_id=run_id,
-                    session_id=session_id,
-                    event_type="limit_reached",
-                    payload={"reason": run_limit_reason, "detail": run_limit_detail},
-                )
-                result = {
-                    "messages": history
-                    + [
-                        AIMessage(content=timeout_text)
-                    ]
+                limit_token = set_current_run_limits(limits)
+                callbacks = [
+                    RunBudgetUsageCallback(
+                        input_cost_per_1m=float(resolved_model.input_cost_per_1m),
+                        output_cost_per_1m=float(resolved_model.output_cost_per_1m),
+                    ),
+                    ThinkingDebugCallback(
+                        logger=_logger,
+                        provider_api_type=resolved_model.provider_api_type,
+                        model_name=candidate_model,
+                        session_id=session_id,
+                        run_id=run_id,
+                    ),
+                ]
+                invoke_config = {
+                    "callbacks": callbacks,
+                    "recursion_limit": max(32, int(settings.limits_max_tool_calls) * 4 + 16),
                 }
-            except Exception as exc:
-                should_repair = self._is_tool_sequence_error(exc)
-                if not should_repair and self._is_model_bad_request(exc):
-                    should_repair = any(self._is_tool_chatter_message(msg) for msg in history)
-                if not should_repair:
+                graph = self._get_graph(candidate_model, purpose=purpose)
+                try:
+                    result = await asyncio.wait_for(
+                        graph.ainvoke({"messages": history}, config=invoke_config),
+                        timeout=max(1, int(settings.limits_max_runtime_seconds) + 5),
+                    )
+                    await self._trace_update(run_id, model=candidate_model)
+                    break
+                except asyncio.TimeoutError:
+                    timeout_text = await self._build_limit_fallback_response(
+                        model_name=candidate_model,
+                        history=history,
+                        reason="runtime",
+                        detail=f"max runtime exceeded ({int(settings.limits_max_runtime_seconds)}s)",
+                    )
+                    run_limit_reason = "runtime"
+                    run_limit_detail = f"max runtime exceeded ({int(settings.limits_max_runtime_seconds)}s)"
+                    await self._trace_event(
+                        run_id=run_id,
+                        session_id=session_id,
+                        event_type="limit_reached",
+                        payload={"reason": run_limit_reason, "detail": run_limit_detail},
+                    )
+                    result = {
+                        "messages": history
+                        + [
+                            AIMessage(content=timeout_text)
+                        ]
+                    }
+                    await self._trace_update(run_id, model=candidate_model)
+                    break
+                except Exception as exc:
+                    should_repair = self._is_tool_sequence_error(exc)
+                    if not should_repair and self._is_model_bad_request(exc):
+                        should_repair = any(self._is_tool_chatter_message(msg) for msg in history)
+                    if should_repair:
+                        _logger.warning(
+                            "tool_sequence_repair: repairing model request state (session=%s, error=%s)",
+                            session_id,
+                            str(exc),
+                        )
+                        await self._trace_event(
+                            run_id=run_id,
+                            session_id=session_id,
+                            event_type="tool_sequence_repair",
+                            payload={"error": str(exc), "model": candidate_model},
+                        )
+                        self._sanitize_tool_sequence(history)
+                        result = await asyncio.wait_for(
+                            graph.ainvoke({"messages": history}, config=invoke_config),
+                            timeout=max(1, int(settings.limits_max_runtime_seconds) + 5),
+                        )
+                        await self._trace_update(run_id, model=candidate_model)
+                        break
+
+                    has_next = attempt_index + 1 < len(candidate_models)
+                    safe_to_failover = len(history) == len(baseline_history)
+                    if has_next and safe_to_failover and self._is_retryable_model_http_error(exc):
+                        next_model = candidate_models[attempt_index + 1]
+                        _logger.warning(
+                            "model_failover: switching model %s -> %s (session=%s, error=%s)",
+                            candidate_model,
+                            next_model,
+                            session_id,
+                            str(exc),
+                        )
+                        await self._trace_event(
+                            run_id=run_id,
+                            session_id=session_id,
+                            event_type="model_failover",
+                            payload={
+                                "from_model": candidate_model,
+                                "to_model": next_model,
+                                "error": str(exc),
+                                "status_code": self._extract_http_status_code(exc),
+                            },
+                        )
+                        history[:] = list(baseline_history)
+                        continue
                     raise
-                _logger.warning(
-                    "tool_sequence_repair: repairing model request state (session=%s, error=%s)",
-                    session_id,
-                    str(exc),
-                )
-                await self._trace_event(
-                    run_id=run_id,
-                    session_id=session_id,
-                    event_type="tool_sequence_repair",
-                    payload={"error": str(exc)},
-                )
-                self._sanitize_tool_sequence(history)
-                result = await asyncio.wait_for(
-                    graph.ainvoke({"messages": history}, config=invoke_config),
-                    timeout=max(1, int(settings.limits_max_runtime_seconds) + 5),
-                )
+                finally:
+                    if limit_token is not None:
+                        reset_current_run_limits(limit_token)
+                        limit_token = None
+
+            if result is None:
+                raise RuntimeError("Model invocation failed without a result.")
             messages = result.get("messages", history)
             self._history[session_id] = list(messages)
             self._log_model_thinking_debug(
@@ -946,6 +1000,34 @@ class AgentRuntime:
             return True
         name = type(exc).__name__.lower()
         return "badrequest" in name or "invalid_request" in text
+
+    def _extract_http_status_code(self, exc: Exception) -> int | None:
+        current: BaseException | None = exc
+        seen: set[int] = set()
+        while current is not None and id(current) not in seen:
+            seen.add(id(current))
+            direct = getattr(current, "status_code", None)
+            if isinstance(direct, int):
+                return direct
+            response = getattr(current, "response", None)
+            if response is not None:
+                response_code = getattr(response, "status_code", None)
+                if isinstance(response_code, int):
+                    return response_code
+            current = current.__cause__ or current.__context__
+
+        text = self._exception_text_chain(exc)
+        for match in re.finditer(r"\b([45]\d{2})\b", text):
+            value = int(match.group(1))
+            if 400 <= value <= 599:
+                return value
+        return None
+
+    def _is_retryable_model_http_error(self, exc: Exception) -> bool:
+        status_code = self._extract_http_status_code(exc)
+        if status_code is None:
+            return False
+        return 400 <= status_code <= 599
 
     async def _build_limit_fallback_response(
         self,

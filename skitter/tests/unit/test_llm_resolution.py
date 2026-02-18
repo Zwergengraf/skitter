@@ -94,3 +94,33 @@ def test_reasoning_overrides_are_deep_merged() -> None:
     assert override["summary"] == "detailed"
     assert override["enabled"] is False
     assert override["thinking"] == {"budget_tokens": 2048, "type": "enabled"}
+
+
+def test_resolve_model_candidates_uses_ordered_failover_chain(monkeypatch: pytest.MonkeyPatch) -> None:
+    _set_models(
+        monkeypatch,
+        providers=[
+            ProviderConfig(name="provider", api_type="openai", api_base="http://localhost:1", api_key="x"),
+        ],
+        models=[
+            ModelConfig(name="primary", provider="provider", model_id="m-primary"),
+            ModelConfig(name="backup", provider="provider", model_id="m-backup"),
+            ModelConfig(name="third", provider="provider", model_id="m-third"),
+        ],
+    )
+    monkeypatch.setattr(settings, "main_model", ["provider/primary", "provider/backup", "provider/third"])
+    monkeypatch.setattr(settings, "heartbeat_model", ["provider/backup", "provider/third"])
+
+    assert llm.resolve_model_candidates(None, purpose="main") == [
+        "provider/primary",
+        "provider/backup",
+        "provider/third",
+    ]
+    assert llm.resolve_model_candidates(None, purpose="heartbeat") == [
+        "provider/backup",
+        "provider/third",
+    ]
+    assert llm.resolve_model_candidates("provider/backup", purpose="main") == [
+        "provider/backup",
+        "provider/third",
+    ]

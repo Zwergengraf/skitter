@@ -98,8 +98,8 @@ At minimum, set:
 
 - `providers` (`name`, optional `api_type` = `openai|anthropic`, `api_base`, `api_key`)
 - `models` (`name`, `provider`, `model_id`, token costs)
-- `main_model` in `provider/model` format (for example `openai/gpt-5-mini`)
-- `heartbeat_model` in `provider/model` format
+- `main_model` as an ordered array of selectors (`provider/model`)
+- `heartbeat_model` as an ordered array of selectors (`provider/model`)
 - `database.url` (if not using default)
 - `discord.token` (if using Discord transport)
 

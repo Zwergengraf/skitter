@@ -119,6 +119,34 @@ def _normalize_model_selector(value: str | None, models: list[ModelConfig]) -> s
     return selector
 
 
+def _normalize_model_selector_list(value: Any, models: list[ModelConfig]) -> list[str]:
+    if value is None:
+        return []
+    raw_items: list[str] = []
+    if isinstance(value, str):
+        raw_items = [item.strip() for item in value.split(",") if item.strip()]
+    elif isinstance(value, (list, tuple, set)):
+        for item in value:
+            text = str(item).strip()
+            if text:
+                raw_items.append(text)
+    else:
+        text = str(value).strip()
+        if text:
+            raw_items = [text]
+
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for item in raw_items:
+        selector = _normalize_model_selector(item, models)
+        key = selector.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        normalized.append(selector)
+    return normalized
+
+
 def _detect_system_timezone() -> str:
     # Prefer explicit system TZ configuration when available.
     env_tz = os.environ.get("TZ", "").strip()
@@ -150,8 +178,8 @@ class Settings(BaseSettings):
     db_url: str = Field(default="postgresql+asyncpg://postgres:postgres@localhost:5432/skitter")
     providers: list[ProviderConfig] = Field(default_factory=list)
     models: list[ModelConfig] = Field(default_factory=list)
-    main_model: str = Field(default="")
-    heartbeat_model: str = Field(default="")
+    main_model: list[str] = Field(default_factory=list)
+    heartbeat_model: list[str] = Field(default_factory=list)
     reasoning_enabled: bool = Field(default=True)
     openai_use_responses_api: bool = Field(default=True)
     openai_output_version: str = Field(default="responses/v1")
@@ -261,6 +289,23 @@ class Settings(BaseSettings):
         text = str(value or "brave").strip().lower()
         return text or "brave"
 
+    @field_validator("main_model", "heartbeat_model", mode="before")
+    @classmethod
+    def _normalize_model_selector_field(cls, value: Any) -> list[str]:
+        if value is None:
+            return []
+        if isinstance(value, str):
+            return [item.strip() for item in value.split(",") if item.strip()]
+        if isinstance(value, (list, tuple, set)):
+            out: list[str] = []
+            for item in value:
+                text = str(item).strip()
+                if text:
+                    out.append(text)
+            return out
+        text = str(value).strip()
+        return [text] if text else []
+
 
 def _config_path() -> Path:
     return Path(settings.config_path)
@@ -297,8 +342,8 @@ def apply_settings_update(values: dict[str, Any]) -> Settings:
     base = settings.model_dump()
     merged = {**base, **incoming}
     validated = Settings.model_validate(merged)
-    validated.main_model = _normalize_model_selector(validated.main_model, validated.models)
-    validated.heartbeat_model = _normalize_model_selector(validated.heartbeat_model, validated.models)
+    validated.main_model = _normalize_model_selector_list(validated.main_model, validated.models)
+    validated.heartbeat_model = _normalize_model_selector_list(validated.heartbeat_model, validated.models)
     for field_name in Settings.model_fields:
         setattr(settings, field_name, getattr(validated, field_name))
     return validated

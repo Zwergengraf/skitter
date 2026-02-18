@@ -18,7 +18,7 @@ This means env vars always win over YAML when both are set.
 - `database`
 - `providers`
 - `models`
-- `main_model`, `heartbeat_model`
+- `main_model`, `heartbeat_model` (ordered fallback chains)
 - `reasoning`
 - `embeddings`
 - `web_search`
@@ -51,11 +51,13 @@ models:
     input_cost_per_1m: 0
     output_cost_per_1m: 0
 
-main_model: local/main
-heartbeat_model: local/main
+main_model:
+  - local/main
+heartbeat_model:
+  - local/main
 ```
 
-Model selectors use `provider/model` format.
+Model selectors use `provider/model` format. The runtime tries models in order and falls back on provider HTTP failures.
 
 ## Web Search Configuration
 

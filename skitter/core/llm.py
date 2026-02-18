@@ -127,25 +127,84 @@ def _find_model(name: str) -> ResolvedModel | None:
     return None
 
 
-def resolve_model_name(name: str | None, purpose: str = "main") -> str:
-    if name:
-        match = _find_model(name)
-        if match is not None:
-            return match.name
-        return name
-    if purpose == "heartbeat" and settings.heartbeat_model:
-        match = _find_model(settings.heartbeat_model)
-        if match is not None:
-            return match.name
-        return settings.heartbeat_model
-    if settings.main_model:
-        match = _find_model(settings.main_model)
-        if match is not None:
-            return match.name
-        return settings.main_model
+def _normalize_selector(name: str) -> str:
+    selector = (name or "").strip()
+    if not selector:
+        return ""
+    match = _find_model(selector)
+    if match is not None:
+        return match.name
+    return selector
+
+
+def _selectors_from_config(value: Any) -> list[str]:
+    if not value:
+        return []
+    if isinstance(value, str):
+        return [item.strip() for item in value.split(",") if item.strip()]
+    if isinstance(value, (list, tuple, set)):
+        out: list[str] = []
+        for item in value:
+            text = str(item).strip()
+            if text:
+                out.append(text)
+        return out
+    text = str(value).strip()
+    return [text] if text else []
+
+
+def _default_model_chain(purpose: str) -> list[str]:
+    def normalize_many(items: list[str]) -> list[str]:
+        out: list[str] = []
+        seen: set[str] = set()
+        for item in items:
+            normalized = _normalize_selector(item)
+            if not normalized:
+                continue
+            key = normalized.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append(normalized)
+        return out
+
+    if purpose == "heartbeat":
+        preferred = _selectors_from_config(settings.heartbeat_model)
+        if preferred:
+            return normalize_many(preferred)
+    preferred = _selectors_from_config(settings.main_model)
+    if preferred:
+        return normalize_many(preferred)
     all_models = _resolve_all_models()
     if all_models:
-        return all_models[0].name
+        return [all_models[0].name]
+    return []
+
+
+def resolve_model_candidates(name: str | None, purpose: str = "main") -> list[str]:
+    chain = _default_model_chain(purpose)
+    if name:
+        primary = _normalize_selector(name)
+        if not primary:
+            return chain
+        if not chain:
+            return [primary]
+        for idx, candidate in enumerate(chain):
+            if candidate.lower() == primary.lower():
+                return chain[idx:]
+        return [primary]
+    if chain:
+        return chain
+    all_models = _resolve_all_models()
+    if all_models:
+        return [all_models[0].name]
+    return ["default"]
+
+
+def resolve_model_name(name: str | None, purpose: str = "main") -> str:
+    candidates = resolve_model_candidates(name, purpose=purpose)
+    if candidates:
+        return candidates[0]
     return "default"
 
 

@@ -55,8 +55,10 @@ models:
     #   anthropic:
     #     thinking:
     #       budget_tokens: 4096
-main_model: local/main
-heartbeat_model: local/heartbeat
+main_model:
+  - local/main
+heartbeat_model:
+  - local/heartbeat
 reasoning:
   enabled: true
   openai:
