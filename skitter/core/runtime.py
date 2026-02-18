@@ -570,12 +570,13 @@ class AgentRuntime:
                 raise RuntimeError("Model invocation failed without a result.")
             messages = result.get("messages", history)
             self._history[session_id] = list(messages)
-            self._log_model_thinking_debug(
-                model_name=model_name,
-                run_id=run_id,
-                session_id=session_id,
-                messages=messages,
-            )
+            # Disable thinking debug logs for now since they can be noisy and not always useful.
+            # self._log_model_thinking_debug(
+            #     model_name=model_name,
+            #     run_id=run_id,
+            #     session_id=session_id,
+            #     messages=messages,
+            # )
             new_messages = messages[history_len_before_invoke:] if history_len_before_invoke < len(messages) else []
             run_reasoning = self._extract_reasoning_for_storage(new_messages)
             if run_reasoning:
