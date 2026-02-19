@@ -1,103 +1,68 @@
-# Auth and Pairing
+# Authentication and Device Pairing
 
-Skitter has two authentication modes for `/v1/*` routes.
+This page explains how you log in to Skitter and how to add more clients (TUI, menubar app, Discord DM) to the same account.
 
-## Auth Modes
+## Quick Mental Model
 
-### 1) Admin API key
+- `Admin API key` is for server administration and the admin web UI.
+- `User access token` is for normal day-to-day chat clients.
+- Each client device gets its own token.
+- New devices are added with a short-lived `pair code`.
 
-Use for admin operations and automation:
+## First Login (First Device)
 
-- Header `x-api-key: <SKITTER_API_KEY>`
-- or `Authorization: Bearer <SKITTER_API_KEY>`
+Use the server `setup code` (configured as `SKITTER_BOOTSTRAP_CODE`) to create your first local user token.
 
-### 2) User access token
+Typical flow in TUI or menubar:
 
-Use for normal client access (TUI/menubar/custom client):
+1. Enter API URL.
+2. Enter setup code.
+3. Enter your display name.
+4. Client receives and stores a user token.
 
-- Header `Authorization: Bearer <user_token>`
+Notes:
 
-User tokens are issued by bootstrap/pairing endpoints.
-
-## Public Auth Endpoints
-
-These routes are intentionally accessible without existing auth:
-
-- `POST /v1/auth/bootstrap`
-- `POST /v1/auth/pair/complete`
-
-All other `/v1/*` routes require valid admin key or user token.
-
-## First Device / First Account: Bootstrap Flow
-
-Use bootstrap when you do not have a token yet.
-
-1. Set `SKITTER_BOOTSTRAP_CODE` on server.
-2. Call:
-
-```http
-POST /v1/auth/bootstrap
-```
-
-with:
-
-```json
-{
-  "bootstrap_code": "YOUR_CODE",
-  "display_name": "Your Name",
-  "device_name": "macbook",
-  "device_type": "menubar"
-}
-```
-
-3. Server returns:
-  - `token`
-  - user info (`id`, `display_name`, `approved`)
-
-The created local primary user is auto-approved.
+- This first local user is automatically approved.
+- You only need the setup code for first-time bootstrap on a new installation.
 
 ## Pairing Additional Devices
 
-Use pairing when a user already exists and has a valid token.
+After one client is already logged in, pair new devices without using the setup code again.
 
-1. Create pair code:
-  - `POST /v1/auth/pair-codes` with user token
-  - or Discord `/pair` command in DM
-2. Complete on new device:
+1. On an already logged-in client, generate a pair code:
+  - TUI/menubar/Discord DM: run `/pair`
+2. On the new client, choose `Pair` and enter that code.
+3. The new client receives its own user token and is linked to the same user account.
 
-```http
-POST /v1/auth/pair/complete
-```
+Pair code behavior:
 
-with:
+- One-time use.
+- Short-lived (default: 10 minutes).
 
-```json
-{
-  "pair_code": "ABCD-EFGH",
-  "device_name": "laptop",
-  "device_type": "tui"
-}
-```
+## Discord and Approval
 
-3. Receive new user access token for that device.
+Current Discord mode is DM-only.
 
-Defaults:
+- If a Discord user DMs the bot for the first time, a user record is created.
+- That user must be approved in the admin UI before they can use the agent.
+- While unapproved, Discord replies are blocked (after the initial not-approved notice).
 
-- Pair code default TTL is 10 minutes.
+## Admin Key vs User Token
 
-## Approval Gating
+Use the right credential for the right job:
 
-- Newly created Discord users are not approved by default.
-- Unapproved users get blocked until approved in Admin UI.
-- Pending unapproved users are auto-pruned after 15 minutes if they remain unapproved.
+- Admin web UI and admin API actions: admin API key.
+- TUI, menubar, custom user clients: user token.
 
-## Common Failure Cases
+Do not share user tokens between devices manually. Pair each device instead.
 
-- `401 Missing authentication credential`: no header on protected route.
-- `401 Invalid authentication token`: bad/revoked/expired token.
-- `401 Invalid bootstrap code`: wrong `bootstrap_code`.
-- `400 Invalid or expired pair code`: code typo/expired/used.
-- `403 Your account is not yet approved`: user exists but not approved.
-- `400 user_id is required for admin requests` on `/v1/auth/me`:
-  - admin auth requires `?user_id=<internal_user_id>`
-  - user token does not require `user_id`.
+## Common Problems
+
+- `Connection failed` during first login:
+  - Check API URL and setup code.
+- `Invalid or expired pair code`:
+  - Generate a new code and pair again.
+- `Your account is not yet approved`:
+  - Approve the user in admin UI.
+- Client works but a new device cannot pair:
+  - Ensure you created the pair code from a logged-in, approved account.

@@ -1,33 +1,53 @@
 # Overview
 
-Skitter is a personal AI assistant platform. Use your favorite client (Discord, macOS app, Terminal UI) to chat with your agent, 
+Skitter is a personal AI agent platform: chat with your agent, let it use tools and skills, run automations, and execute tasks across your machines from one shared session.
 
-## What Skitter Includes
+## What Skitter Is
 
-- A Python API/runtime (`FastAPI` + `LangGraph`) that manages sessions, tools, memory, jobs, scheduler, and heartbeats.
-- Executor infrastructure to run tools:
-  - Docker executors (auto-managed per user, sandboxed)
-  - External node executors (`skitter-node`) on macOS/Linux hosts
-- Multiple user clients:
-  - Discord
-  - Terminal UI (`skitter-tui`)
-  - Native macOS menubar app (`skitter-menubar`)
-- Admin web UI for operations, observability, and configuration.
+Skitter combines an LLM runtime, tool execution, [Agent Skills](https://agentskills.io/), memory, scheduling, and client apps into one system.  
 
-## Core Concepts You Should Know
+You can use it like a chat assistant, or as a (semi-)autonomous operator that can run jobs, use browsers, work with files, and report back with results.
+The agent can also proactively pull in data (emails, news, changes on your Kanban board, ...) regularly and act accordingly.
+Skitter is intended to be lightweight and extensible, so the available features, tools and skills stay easy to use for both humans and agents.
+We suggest using Skitter in combination with 
+Check the [Patterns](../patterns/overview.md) section for integration ideas and use cases.
 
-- Sessions: one active private session per user.
-- Tools: filesystem, shell, browser, memory, web, scheduler, jobs.
-- Skills: fully compatible with [Agent Skills](https://agentskills.io/home) to give your agents new capabilities.
-- Approvals: configurable human approval flow for sensitive tools or tool calls that use secrets (API keys, passwords, ...).
-- Scheduled jobs: automations running on cron or one-shot schedules.
-- Background jobs: long-running tasks started by the agent.
-- Memory: embeddings-backed retrieval from workspace memory files.
-- Heartbeats: regular agent invocations for
-- Executors: machine selection and routing for tool execution.
+## What You Can Do With It
+
+- Run a daily briefing every morning (news, open tasks, pending approvals).
+- Start long-running tasks in the background and get notified when they finish.
+- Route work to different executors (Docker sandbox, MacBook node, Linux node).
+- Let the agent use files, shell commands, browser automation, web search, and memory retrieval.
+- Keep one private session across clients (Discord DM, TUI, menubar) so context stays consistent.
+
+## Typical Use Cases
+
+- Personal chief-of-staff workflows (planning, reminders, follow-ups).
+- Research and summarization pipelines with scheduled runs.
+- Task-board execution loops (for example Trello/Jira via skills).
+- Multi-machine automation where specific tasks must run on specific hosts.
+
+## What’s Included
+
+- API server (`FastAPI` + `LangGraph`) for runtime orchestration.
+- Tooling layer with approvals, secrets, and run limits.
+- Executors:
+  - Docker executors (auto-managed, per-user).
+  - External node executors (`skitter-node`) on macOS/Linux.
+- Clients:
+  - Discord (DM-only),
+  - Terminal UI (`skitter-tui`),
+  - macOS menubar app (`skitter-menubar`).
+- Admin web UI for sessions, tool runs, jobs, users, config, and system state.
+
+## Why It Feels Different
+
+- It is stateful: sessions, memory, jobs, and approvals are persisted.
+- It is controllable: you set limits, approval rules, and model/provider routing.
+- It is extensible: skills and executor nodes let you grow capabilities without rewriting core runtime logic.
 
 ## Next Steps
 
-- If you want a fast local setup: go to [Quickstart](quickstart.md).
-- If you want containerized core services: go to [Docker Compose](docker-compose.md).
-- If you want details about config keys: go to [Configuration](configuration.md).
+- Fast local setup: [Quickstart](quickstart.md)
+- Containerized core stack: [Docker Compose](docker-compose.md)
+- Configuration reference: [Configuration](configuration.md)
