@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import secrets as stdlib_secrets
 from datetime import datetime
 
@@ -11,6 +12,7 @@ from ..core.events import EventBus
 from ..core.runtime import AgentRuntime
 from ..core.scheduler import SchedulerService
 from ..core.config import settings
+from ..core.llm import invalid_model_selectors, list_models
 from ..data.db import SessionLocal
 from ..data.repositories import Repository
 from ..observability.logging import configure_logging
@@ -39,10 +41,22 @@ from .routes import (
     users,
 )
 
+_logger = logging.getLogger(__name__)
+
 
 def create_app() -> FastAPI:
     configure_logging()
     app = FastAPI(title="Skitter API", version="0.1.0")
+    invalid_selectors = invalid_model_selectors()
+    if invalid_selectors:
+        available_models = ", ".join(model.name for model in list_models()) or "(none configured)"
+        for field, selectors in invalid_selectors.items():
+            _logger.warning(
+                "Invalid model selectors in %s: %s. Available models: %s",
+                field,
+                ", ".join(selectors),
+                available_models,
+            )
     origins = [origin.strip() for origin in settings.cors_origins.split(",") if origin.strip()]
     app.add_middleware(
         CORSMiddleware,

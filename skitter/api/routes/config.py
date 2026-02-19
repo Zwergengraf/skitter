@@ -78,6 +78,9 @@ async def update_config(payload: ConfigUpdate, request: Request) -> ConfigRespon
         validated = config_module.apply_settings_update(updates)
     except Exception as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    runtime = getattr(request.app.state, "runtime", None)
+    if runtime is not None and hasattr(runtime, "refresh_model_configuration"):
+        runtime.refresh_model_configuration()
 
     config_path = _config_path()
     try:

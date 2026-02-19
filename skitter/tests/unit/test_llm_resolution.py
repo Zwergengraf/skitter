@@ -124,3 +124,98 @@ def test_resolve_model_candidates_uses_ordered_failover_chain(monkeypatch: pytes
         "provider/backup",
         "provider/third",
     ]
+
+
+def test_resolve_model_candidates_skips_unknown_chain_entries(monkeypatch: pytest.MonkeyPatch) -> None:
+    _set_models(
+        monkeypatch,
+        providers=[
+            ProviderConfig(name="provider", api_type="openai", api_base="http://localhost:1", api_key="x"),
+        ],
+        models=[
+            ModelConfig(name="primary", provider="provider", model_id="m-primary"),
+            ModelConfig(name="backup", provider="provider", model_id="m-backup"),
+        ],
+    )
+    monkeypatch.setattr(settings, "main_model", ["provider/missing", "provider/primary", "provider/backup"])
+
+    assert llm.resolve_model_candidates(None, purpose="main") == ["provider/primary", "provider/backup"]
+
+
+def test_resolve_model_candidates_unknown_selected_model_falls_back_to_chain(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _set_models(
+        monkeypatch,
+        providers=[
+            ProviderConfig(name="provider", api_type="openai", api_base="http://localhost:1", api_key="x"),
+        ],
+        models=[
+            ModelConfig(name="primary", provider="provider", model_id="m-primary"),
+            ModelConfig(name="backup", provider="provider", model_id="m-backup"),
+        ],
+    )
+    monkeypatch.setattr(settings, "main_model", ["provider/primary", "provider/backup"])
+
+    assert llm.resolve_model_candidates("provider/missing", purpose="main") == [
+        "provider/primary",
+        "provider/backup",
+    ]
+
+
+def test_resolve_model_raises_for_unknown_explicit_selector(monkeypatch: pytest.MonkeyPatch) -> None:
+    _set_models(
+        monkeypatch,
+        providers=[
+            ProviderConfig(name="provider", api_type="openai", api_base="http://localhost:1", api_key="x"),
+        ],
+        models=[
+            ModelConfig(name="primary", provider="provider", model_id="m-primary"),
+        ],
+    )
+
+    with pytest.raises(RuntimeError, match="Unknown model selector"):
+        llm.resolve_model("provider/missing")
+
+
+def test_resolve_model_candidates_selected_model_outside_chain_still_falls_back(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _set_models(
+        monkeypatch,
+        providers=[
+            ProviderConfig(name="provider", api_type="openai", api_base="http://localhost:1", api_key="x"),
+        ],
+        models=[
+            ModelConfig(name="old", provider="provider", model_id="m-old"),
+            ModelConfig(name="primary", provider="provider", model_id="m-primary"),
+            ModelConfig(name="backup", provider="provider", model_id="m-backup"),
+        ],
+    )
+    monkeypatch.setattr(settings, "main_model", ["provider/primary", "provider/backup"])
+
+    assert llm.resolve_model_candidates("provider/old", purpose="main") == [
+        "provider/old",
+        "provider/primary",
+        "provider/backup",
+    ]
+
+
+def test_invalid_model_selectors_reports_bad_entries(monkeypatch: pytest.MonkeyPatch) -> None:
+    _set_models(
+        monkeypatch,
+        providers=[
+            ProviderConfig(name="local", api_type="openai", api_base="http://localhost:1", api_key="x"),
+        ],
+        models=[
+            ModelConfig(name="glm-5-free", provider="local", model_id="m-primary"),
+            ModelConfig(name="minimax-m2.5", provider="local", model_id="m-backup"),
+        ],
+    )
+    monkeypatch.setattr(settings, "main_model", ["local/glm-5-free", "local/does-not-exist"])
+    monkeypatch.setattr(settings, "heartbeat_model", ["local/nope"])
+
+    assert llm.invalid_model_selectors() == {
+        "main_model": ["local/does-not-exist"],
+        "heartbeat_model": ["local/nope"],
+    }

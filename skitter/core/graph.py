@@ -1874,6 +1874,8 @@ def build_graph(
                 max_retries=3,
                 backoff_factor=2.0,
                 initial_delay=3.0,
+                # Bubble model failures to runtime so provider/model failover can run.
+                on_failure="error",
             ),
             ToolRetryMiddleware(
                 max_retries=3,

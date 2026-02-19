@@ -135,3 +135,30 @@ def test_model_bad_request_detection() -> None:
     runtime = _runtime()
     assert runtime._is_model_bad_request(Exception("Error code: 400 - invalid_request_error")) is True
     assert runtime._is_model_bad_request(Exception("network timeout")) is False
+
+
+class _ApiStatusError(Exception):
+    def __init__(self, status_code: int) -> None:
+        super().__init__(f"status={status_code}")
+        self.status_code = status_code
+
+
+class _LastAttempt:
+    def __init__(self, exc: Exception) -> None:
+        self._exc = exc
+
+    def exception(self) -> Exception:
+        return self._exc
+
+
+class _RetryWrapper(Exception):
+    def __init__(self, exc: Exception) -> None:
+        super().__init__("retry wrapper")
+        self.last_attempt = _LastAttempt(exc)
+
+
+def test_extract_http_status_code_from_retry_wrapper() -> None:
+    runtime = _runtime()
+    wrapped = _RetryWrapper(_ApiStatusError(500))
+    assert runtime._extract_http_status_code(wrapped) == 500
+    assert runtime._is_retryable_model_http_error(wrapped) is True

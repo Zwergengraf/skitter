@@ -113,6 +113,25 @@ def list_models() -> list[ResolvedModel]:
     return _resolve_all_models()
 
 
+def invalid_model_selectors() -> dict[str, list[str]]:
+    invalid: dict[str, list[str]] = {}
+    checks = {
+        "main_model": _selectors_from_config(settings.main_model),
+        "heartbeat_model": _selectors_from_config(settings.heartbeat_model),
+    }
+    for field, selectors in checks.items():
+        bad: list[str] = []
+        for selector in selectors:
+            normalized = _normalize_selector(selector)
+            if not normalized:
+                continue
+            if _find_model(normalized) is None:
+                bad.append(selector)
+        if bad:
+            invalid[field] = bad
+    return invalid
+
+
 def _find_model(name: str) -> ResolvedModel | None:
     all_models = _resolve_all_models()
     if not all_models:
@@ -161,6 +180,9 @@ def _default_model_chain(purpose: str) -> list[str]:
             normalized = _normalize_selector(item)
             if not normalized:
                 continue
+            if _find_model(normalized) is None:
+                # Ignore unknown selectors in configured chains.
+                continue
             key = normalized.lower()
             if key in seen:
                 continue
@@ -183,19 +205,30 @@ def _default_model_chain(purpose: str) -> list[str]:
 
 def resolve_model_candidates(name: str | None, purpose: str = "main") -> list[str]:
     chain = _default_model_chain(purpose)
+    all_models = _resolve_all_models()
     if name:
         primary = _normalize_selector(name)
-        if not primary:
+        if primary:
+            primary_match = _find_model(primary)
+            if primary_match is not None:
+                primary_name = primary_match.name
+                if chain:
+                    for idx, candidate in enumerate(chain):
+                        if candidate.lower() == primary_name.lower():
+                            return chain[idx:]
+                    # Session-selected model is valid but outside the configured chain.
+                    # Try it first, then continue with the configured fallback chain.
+                    tail = [candidate for candidate in chain if candidate.lower() != primary_name.lower()]
+                    return [primary_name, *tail]
+                return [primary_name]
+        # Selected model is unknown/stale: fall back to current configured chain.
+        if chain:
             return chain
-        if not chain:
-            return [primary]
-        for idx, candidate in enumerate(chain):
-            if candidate.lower() == primary.lower():
-                return chain[idx:]
-        return [primary]
+        if all_models:
+            return [all_models[0].name]
+        return ["default"]
     if chain:
         return chain
-    all_models = _resolve_all_models()
     if all_models:
         return [all_models[0].name]
     return ["default"]
@@ -212,6 +245,13 @@ def resolve_model(name: str | None = None, purpose: str = "main") -> ResolvedMod
     all_models = _resolve_all_models()
     if not all_models:
         raise RuntimeError("No models are configured.")
+    if name:
+        normalized = _normalize_selector(name)
+        if normalized:
+            explicit = _find_model(normalized)
+            if explicit is not None:
+                return explicit
+        raise RuntimeError(f"Unknown model selector: {name}")
     resolved_name = resolve_model_name(name, purpose=purpose)
     model = _find_model(resolved_name)
     if model is not None:

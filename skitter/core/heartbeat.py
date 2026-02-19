@@ -144,6 +144,7 @@ class HeartbeatService:
                         )
                     heartbeat_content = self._load_heartbeat_content(user_id)
                     if not heartbeat_content:
+                        self._logger.info(f"No meaningful heartbeat content found for user {user_id}, skipping heartbeat run")
                         return
                     prompt = f"{settings.heartbeat_prompt}\n\n{heartbeat_content}".strip()
                     envelope = MessageEnvelope(

@@ -38,7 +38,7 @@ from .graph import (
     set_current_user_id,
 )
 from .models import AgentResponse, Attachment, MessageEnvelope, StreamEvent
-from .llm import build_llm, list_models, resolve_model, resolve_model_candidates, resolve_model_name
+from .llm import ResolvedModel, build_llm, list_models, resolve_model, resolve_model_candidates, resolve_model_name
 from .llm_debug import ThinkingDebugCallback
 from .prompting import build_system_prompt
 from .usage import collect_usage, record_usage
@@ -73,17 +73,8 @@ class AgentRuntime:
         self._scheduler_service = scheduler_service
         self._job_service = job_service
         self._fixed_graph = graph
-        self._graphs: dict[str, object] = {}
+        self._graphs: dict[tuple[str, str, str, str, str], object] = {}
         self._tool_client = ToolRunnerClient()
-        if graph is None:
-            default_name = resolve_model_name(None, purpose="main")
-            self._graphs[default_name] = build_graph(
-                approval_service=approval_service,
-                scheduler_service=scheduler_service,
-                job_service=job_service,
-                model_name=default_name,
-                purpose="main",
-            )
         self._history: dict[str, list[BaseMessage]] = defaultdict(list)
         self._session_models: dict[str, str] = {}
 
@@ -96,6 +87,12 @@ class AgentRuntime:
         self._job_service = job_service
         # Force graph rebuild so job tools are wired correctly.
         self._graphs.clear()
+
+    def refresh_model_configuration(self) -> None:
+        # Config edits can change model selectors/provider endpoints.
+        # Drop graph/model caches so the next run always uses fresh settings.
+        self._graphs.clear()
+        self._session_models.clear()
 
     @staticmethod
     def _purpose_for_origin(origin: str) -> str:
@@ -444,6 +441,13 @@ class AgentRuntime:
             model_name = selected_model
             for attempt_index, candidate_model in enumerate(candidate_models):
                 model_name = candidate_model
+                _logger.info(
+                    "model_attempt: using model %s (attempt %d/%d, session=%s)",
+                    candidate_model,
+                    attempt_index + 1,
+                    len(candidate_models),
+                    session_id,
+                )
                 await self._trace_event(
                     run_id=run_id,
                     session_id=session_id,
@@ -481,8 +485,8 @@ class AgentRuntime:
                     "callbacks": callbacks,
                     "recursion_limit": max(32, int(settings.limits_max_tool_calls) * 4 + 16),
                 }
-                graph = self._get_graph(candidate_model, purpose=purpose)
                 try:
+                    graph = self._get_graph(candidate_model, purpose=purpose, resolved_model=resolved_model)
                     result = await asyncio.wait_for(
                         graph.ainvoke({"messages": history}, config=invoke_config),
                         timeout=max(1, int(settings.limits_max_runtime_seconds) + 5),
@@ -764,18 +768,31 @@ class AgentRuntime:
         self._session_models[session_id] = default_name
         return default_name
 
-    def _get_graph(self, model_name: str, purpose: str = "main") -> object:
+    def _get_graph(
+        self,
+        model_name: str,
+        purpose: str = "main",
+        resolved_model: ResolvedModel | None = None,
+    ) -> object:
         if self._fixed_graph is not None:
             return self._fixed_graph
-        if model_name not in self._graphs:
-            self._graphs[model_name] = build_graph(
+        resolved = resolved_model or resolve_model(model_name, purpose=purpose)
+        cache_key = (
+            purpose,
+            resolved.name.lower(),
+            resolved.provider_api_type.lower(),
+            resolved.model,
+            resolved.api_base,
+        )
+        if cache_key not in self._graphs:
+            self._graphs[cache_key] = build_graph(
                 approval_service=self._approval_service,
                 scheduler_service=self._scheduler_service,
                 job_service=self._job_service,
-                model_name=model_name,
+                model_name=resolved.name,
                 purpose=purpose,
             )
-        return self._graphs[model_name]
+        return self._graphs[cache_key]
 
     def drop_messages_since(self, session_id: str, message_id: str) -> None:
         if not message_id:
@@ -971,10 +988,7 @@ class AgentRuntime:
 
     def _exception_text_chain(self, exc: Exception) -> str:
         parts: list[str] = []
-        seen: set[int] = set()
-        current: BaseException | None = exc
-        while current is not None and id(current) not in seen:
-            seen.add(id(current))
+        for current in self._iter_exception_chain(exc):
             text = str(current).strip()
             if text:
                 parts.append(text)
@@ -983,8 +997,43 @@ class AgentRuntime:
                 resp_text = str(getattr(response, "text", "") or "").strip()
                 if resp_text:
                     parts.append(resp_text)
-            current = current.__cause__ or current.__context__
         return "\n".join(parts).lower()
+
+    def _iter_exception_chain(self, exc: BaseException) -> list[BaseException]:
+        queue: list[BaseException] = [exc]
+        seen: set[int] = set()
+        ordered: list[BaseException] = []
+        while queue:
+            current = queue.pop(0)
+            current_id = id(current)
+            if current_id in seen:
+                continue
+            seen.add(current_id)
+            ordered.append(current)
+
+            cause = getattr(current, "__cause__", None)
+            if isinstance(cause, BaseException):
+                queue.append(cause)
+            context = getattr(current, "__context__", None)
+            if isinstance(context, BaseException):
+                queue.append(context)
+
+            # tenacity RetryError wraps the terminal exception in `last_attempt`.
+            last_attempt = getattr(current, "last_attempt", None)
+            if last_attempt is not None:
+                try:
+                    last_exc = last_attempt.exception()
+                except Exception:
+                    last_exc = None
+                if isinstance(last_exc, BaseException):
+                    queue.append(last_exc)
+
+            grouped = getattr(current, "exceptions", None)
+            if isinstance(grouped, (list, tuple)):
+                for item in grouped:
+                    if isinstance(item, BaseException):
+                        queue.append(item)
+        return ordered
 
     def _is_tool_sequence_error(self, exc: Exception) -> bool:
         text = self._exception_text_chain(exc)
@@ -1003,19 +1052,23 @@ class AgentRuntime:
         return "badrequest" in name or "invalid_request" in text
 
     def _extract_http_status_code(self, exc: Exception) -> int | None:
-        current: BaseException | None = exc
-        seen: set[int] = set()
-        while current is not None and id(current) not in seen:
-            seen.add(id(current))
-            direct = getattr(current, "status_code", None)
-            if isinstance(direct, int):
-                return direct
+        for current in self._iter_exception_chain(exc):
+            for key in ("status_code", "status", "http_status", "code"):
+                direct = getattr(current, key, None)
+                if isinstance(direct, int) and 400 <= direct <= 599:
+                    return direct
+                if isinstance(direct, str) and direct.isdigit():
+                    parsed = int(direct)
+                    if 400 <= parsed <= 599:
+                        return parsed
+                value = getattr(direct, "value", None)
+                if isinstance(value, int) and 400 <= value <= 599:
+                    return value
             response = getattr(current, "response", None)
             if response is not None:
                 response_code = getattr(response, "status_code", None)
-                if isinstance(response_code, int):
+                if isinstance(response_code, int) and 400 <= response_code <= 599:
                     return response_code
-            current = current.__cause__ or current.__context__
 
         text = self._exception_text_chain(exc)
         for match in re.finditer(r"\b([45]\d{2})\b", text):
