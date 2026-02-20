@@ -1,6 +1,7 @@
-# Skitter
+<h1 align="center">Skitter</h1>
 
 <p align="center">
+  <img src="https://img.shields.io/badge/Warning-Vibe_coded-333333?labelColor=cc1111&style=for-the-badge" alt="Vibe coded" /><br />
   Personal AI assistant platform with a Python agent runtime, secure tool sandbox, and multiple client apps.
 </p>
 
