@@ -115,14 +115,7 @@ class SandboxManager:
         ensure_user_workspace(user_id)
         host_workspace = self._resolve_host_workspace_root(user_id)
         host_workspace.mkdir(parents=True, exist_ok=True)
-        legacy_browser_root = host_workspace / "browser"
         browser_root = host_workspace / ".browser"
-        if not browser_root.exists() and legacy_browser_root.exists() and legacy_browser_root.is_dir():
-            try:
-                legacy_browser_root.rename(browser_root)
-            except OSError:
-                # Fallback for cross-device or lock issues.
-                shutil.copytree(legacy_browser_root, browser_root, dirs_exist_ok=True)
         browser_root.mkdir(parents=True, exist_ok=True)
 
         name = self._container_name(user_id)

@@ -58,7 +58,7 @@ Skitter is a personal agent system with:
 
 ```bash
 git clone <your-repo-url>
-cd Skitter
+cd skitter
 
 python -m venv venv
 source venv/bin/activate
