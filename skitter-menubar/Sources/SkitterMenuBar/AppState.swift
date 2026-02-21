@@ -35,6 +35,15 @@ final class AppState: ObservableObject {
     @Published private(set) var isTranscribing: Bool = false
     @Published private(set) var isTranscriptionStarting: Bool = false
     @Published private(set) var transcriptionStatusText: String = ""
+    @Published private(set) var isConversationWindowVisible: Bool = false
+    @Published private(set) var isConversationListening: Bool = false
+    @Published private(set) var isConversationStarting: Bool = false
+    @Published private(set) var isConversationAwaitingReply: Bool = false
+    @Published private(set) var conversationStatusText: String = ""
+    @Published private(set) var conversationTranscriptText: String = ""
+    @Published private(set) var conversationResponseText: String = ""
+    @Published private(set) var isConversationTTSPlaying: Bool = false
+    @Published private(set) var conversationTTSLevel: Double = 0
     @Published private(set) var whisperDownloadInProgress: Bool = false
     @Published private(set) var whisperDownloadProgress: Double = 0
     @Published private(set) var whisperDownloadStatusText: String = ""
@@ -44,12 +53,18 @@ final class AppState: ObservableObject {
     let settings: SettingsStore
     private let api: APIClient
     private let speechTranscriber = SpeechTranscriber()
+    private let conversationTranscriber = SpeechTranscriber()
+    private let ttsPlayer = OpenAITTSPlayer()
     private var pollTask: Task<Void, Never>?
     private var requestStartedAt: Date?
     private var lastModelFetchAt: Date?
     private var lastAuthUserFetchAt: Date?
     private var localOverlayMessages: [ChatMessage] = []
     private var draftPrefixBeforeTranscription: String = ""
+    private var conversationLatestTranscript: String = ""
+    private var conversationSilenceTask: Task<Void, Never>?
+    private var conversationSubmitTask: Task<Void, Never>?
+    private var conversationTTSTask: Task<Void, Never>?
     private var whisperDownloadRequestID = UUID()
 
     static let commands: [LocalCommand] = [
@@ -71,6 +86,15 @@ final class AppState: ObservableObject {
     init(settings: SettingsStore) {
         self.settings = settings
         self.api = APIClient(settings: settings)
+        self.ttsPlayer.onPlaybackStateChange = { [weak self] isPlaying in
+            self?.isConversationTTSPlaying = isPlaying
+            if !isPlaying {
+                self?.conversationTTSLevel = 0
+            }
+        }
+        self.ttsPlayer.onLevelChange = { [weak self] level in
+            self?.conversationTTSLevel = max(0, min(1, level))
+        }
     }
 
     deinit {
@@ -89,10 +113,12 @@ final class AppState: ObservableObject {
         pollTask?.cancel()
         pollTask = nil
         stopTranscription(clearStatus: true)
+        stopConversationListening(statusText: "")
     }
 
     func reconnect() async {
         stopTranscription(clearStatus: true)
+        stopConversationListening(statusText: "")
         sessionID = nil
         messages = []
         localOverlayMessages = []
@@ -108,6 +134,7 @@ final class AppState: ObservableObject {
 
     func logout() async {
         stopTranscription(clearStatus: true)
+        stopConversationListening(statusText: "")
         settings.apiKey = ""
         currentUserID = ""
         currentUserDisplayName = ""
@@ -487,7 +514,548 @@ final class AppState: ObservableObject {
         return nil
     }
 
+    func setConversationWindowVisible(_ visible: Bool) {
+        isConversationWindowVisible = visible
+        if visible {
+            Task { [weak self] in
+                await self?.startConversationListening()
+            }
+        } else {
+            stopConversationListening(statusText: "")
+        }
+    }
+
+    func toggleConversationListening() async {
+        if isConversationListening || isConversationStarting {
+            stopConversationListening(statusText: "Paused")
+            return
+        }
+        await startConversationListening()
+    }
+
+    private func startConversationListening() async {
+        guard isConversationWindowVisible else { return }
+        guard !isConversationListening else { return }
+        guard !isConversationStarting else { return }
+
+        if isTranscribing {
+            stopTranscription(clearStatus: true)
+        }
+
+        isConversationStarting = true
+        isConversationAwaitingReply = false
+        conversationStatusText = "Starting local Whisper…"
+        conversationTranscriptText = ""
+        conversationLatestTranscript = ""
+        conversationSilenceTask?.cancel()
+        conversationSilenceTask = nil
+
+        do {
+            try await conversationTranscriber.requestMicrophonePermission()
+            var folderPath = settings.whisperModelFolder(for: settings.whisperModel)
+            if folderPath == nil {
+                do {
+                    let discovered = try await WhisperKit.download(variant: settings.whisperModel)
+                    settings.setWhisperModelFolder(discovered.path, for: settings.whisperModel)
+                    folderPath = discovered.path
+                } catch {
+                    // Keep graceful failure path below; transcriber will report a clear "model not downloaded" message.
+                }
+            }
+            try await conversationTranscriber.startStreaming(
+                modelName: settings.whisperModel,
+                modelFolderPath: folderPath,
+                failOnNoAudio: false,
+                onStatus: { [weak self] status in
+                    guard let self else { return }
+                    guard self.isConversationWindowVisible else { return }
+                    self.conversationStatusText = status
+                },
+                onPartial: { [weak self] partial in
+                    guard let self else { return }
+                    self.handleConversationPartial(partial)
+                },
+                onError: { [weak self] error in
+                    guard let self else { return }
+                    self.stopConversationListening(statusText: "")
+                    self.setError(error)
+                }
+            )
+            isConversationListening = true
+            isConversationStarting = false
+            conversationStatusText = "Listening…"
+            errorBanner = nil
+        } catch {
+            stopConversationListening(statusText: "")
+            setError(error)
+        }
+    }
+
+    private func stopConversationListening(statusText: String) {
+        conversationSilenceTask?.cancel()
+        conversationSilenceTask = nil
+        conversationSubmitTask?.cancel()
+        conversationSubmitTask = nil
+        stopConversationTTS()
+        conversationTranscriber.cancelRecording()
+        isConversationListening = false
+        isConversationStarting = false
+        isConversationAwaitingReply = false
+        conversationStatusText = statusText
+        conversationTranscriptText = ""
+        conversationLatestTranscript = ""
+    }
+
+    private func handleConversationPartial(_ partial: String) {
+        guard isConversationListening else { return }
+        guard !isConversationAwaitingReply else { return }
+        let trimmed = cleanedConversationTranscript(from: partial)
+        guard !trimmed.isEmpty else { return }
+        if trimmed == conversationLatestTranscript {
+            return
+        }
+        if conversationTranscriptText.isEmpty {
+            stopConversationTTS()
+            conversationResponseText = ""
+        }
+        conversationLatestTranscript = trimmed
+        conversationTranscriptText = trimmed
+        scheduleConversationAutoSend(expectedTranscript: trimmed)
+    }
+
+    private func cleanedConversationTranscript(from raw: String) -> String {
+        var cleaned = raw
+            .replacingOccurrences(of: "\n", with: " ")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        if cleaned.isEmpty {
+            return ""
+        }
+
+        if (cleaned.hasPrefix("[") && cleaned.hasSuffix("]"))
+            || (cleaned.hasPrefix("(") && cleaned.hasSuffix(")")) {
+            return ""
+        }
+
+        cleaned = cleaned.replacingOccurrences(of: #"\s{2,}"#, with: " ", options: .regularExpression)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+
+        if cleaned.isEmpty {
+            return ""
+        }
+
+        let alnumCount = cleaned.unicodeScalars.filter { CharacterSet.alphanumerics.contains($0) }.count
+        if alnumCount < 2 {
+            return ""
+        }
+
+        return cleaned
+    }
+
+    private func scheduleConversationAutoSend(expectedTranscript: String) {
+        conversationSilenceTask?.cancel()
+        let silenceSeconds = max(0.4, settings.conversationSilenceSeconds)
+        let delayNanos = UInt64((silenceSeconds * 1_000_000_000).rounded())
+        conversationSilenceTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: delayNanos)
+            guard !Task.isCancelled else { return }
+            await self?.enqueueConversationSubmit(expectedTranscript: expectedTranscript)
+        }
+    }
+
+    private func enqueueConversationSubmit(expectedTranscript: String) async {
+        conversationSilenceTask = nil
+        guard conversationSubmitTask == nil else { return }
+        conversationSubmitTask = Task { [weak self] in
+            guard let self else { return }
+            await self.submitConversationTranscriptIfReady(expectedTranscript: expectedTranscript)
+            self.conversationSubmitTask = nil
+        }
+    }
+
+    private func submitConversationTranscriptIfReady(expectedTranscript: String) async {
+        guard isConversationListening else { return }
+        guard !isConversationAwaitingReply else {
+            scheduleConversationAutoSend(expectedTranscript: expectedTranscript)
+            return
+        }
+        guard !isSending else {
+            scheduleConversationAutoSend(expectedTranscript: expectedTranscript)
+            return
+        }
+        let text = conversationLatestTranscript.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty else { return }
+        guard text == expectedTranscript else { return }
+
+        let previousAssistantID = messages.reversed().first(where: { $0.role == .assistant })?.id
+
+        conversationSilenceTask?.cancel()
+        conversationSilenceTask = nil
+        conversationLatestTranscript = ""
+        conversationTranscriptText = ""
+        conversationResponseText = ""
+        stopConversationTTS()
+        isConversationAwaitingReply = true
+        conversationStatusText = "Sending…"
+        conversationTranscriber.resetStreamingBuffer()
+
+        let sendResult = await sendConversationUtterance(text: text, previousAssistantID: previousAssistantID)
+        if let immediateReply = sendResult.immediateReply {
+            applyConversationAssistantReply(immediateReply)
+            isConversationAwaitingReply = false
+            conversationStatusText = isConversationListening ? "Listening…" : ""
+            return
+        }
+
+        if sendResult.shouldPollForReply, let activeSessionID = sendResult.sessionID ?? sessionID {
+            conversationStatusText = "Waiting for response…"
+            if let reply = await waitForConversationAssistantReply(
+                sessionID: activeSessionID,
+                previousAssistantID: previousAssistantID
+            ) {
+                applyConversationAssistantReply(reply)
+            }
+        }
+        isConversationAwaitingReply = false
+        if !isConversationWindowVisible {
+            conversationStatusText = ""
+            return
+        }
+        conversationStatusText = isConversationListening ? "Listening…" : ""
+    }
+
+    private func applyConversationAssistantReply(_ text: String) {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        conversationResponseText = trimmed
+        guard !trimmed.isEmpty else { return }
+        playConversationTTSIfConfigured(text: trimmed)
+    }
+
+    private func playConversationTTSIfConfigured(text: String) {
+        guard isConversationWindowVisible else { return }
+        let trimmedKey = settings.openAIAPIKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedKey.isEmpty else { return }
+
+        let baseURL = settings.openAIBaseURL
+        let model = settings.openAITTSModel
+        let voice = settings.openAITTSVoice
+
+        conversationTTSTask?.cancel()
+        conversationTTSTask = Task { [weak self] in
+            guard let self else { return }
+            do {
+                try await self.ttsPlayer.speak(
+                    baseURL: baseURL,
+                    apiKey: trimmedKey,
+                    model: model,
+                    voice: voice,
+                    text: text
+                )
+            } catch is CancellationError {
+                return
+            } catch {
+                self.errorBanner = "OpenAI TTS failed: \(error.localizedDescription)"
+            }
+        }
+    }
+
+    private func stopConversationTTS() {
+        conversationTTSTask?.cancel()
+        conversationTTSTask = nil
+        ttsPlayer.stop()
+        isConversationTTSPlaying = false
+        conversationTTSLevel = 0
+    }
+
+    private struct ConversationSendResult {
+        let sessionID: String?
+        let immediateReply: String?
+        let shouldPollForReply: Bool
+    }
+
+    private struct ConversationHTTPMessage: Sendable {
+        let id: String
+        let content: String
+        let createdAt: Date
+    }
+
+    private struct ConversationReplyProbe: Sendable {
+        let id: String
+        let content: String
+    }
+
+    private enum ConversationNetworkError: LocalizedError {
+        case invalidBaseURL
+        case missingAuthToken
+        case invalidResponse
+        case http(Int, String)
+        case decoding(String)
+
+        var errorDescription: String? {
+            switch self {
+            case .invalidBaseURL:
+                return "Invalid API URL"
+            case .missingAuthToken:
+                return "Access token is required"
+            case .invalidResponse:
+                return "Invalid server response"
+            case let .http(code, message):
+                return "HTTP \(code): \(message)"
+            case let .decoding(message):
+                return "Decoding error: \(message)"
+            }
+        }
+    }
+
+    private struct ConversationMessageCreateBody: Encodable {
+        let session_id: String
+        let text: String
+        let metadata: [String: String]
+    }
+
+    private struct ConversationMessagePayload: Decodable {
+        let id: String
+        let content: String
+        let created_at: String
+    }
+
+    nonisolated private static let conversationURLSession: URLSession = {
+        let configuration = URLSessionConfiguration.default
+        configuration.timeoutIntervalForRequest = 900
+        configuration.timeoutIntervalForResource = 3600
+        configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
+        return URLSession(configuration: configuration)
+    }()
+
+    private func sendConversationUtterance(text: String, previousAssistantID: String?) async -> ConversationSendResult {
+        var resolvedSessionID: String?
+        do {
+            let id = try await ensureSession(forceNew: false)
+            resolvedSessionID = id
+            let baseURL = settings.apiURL
+            let apiKey = settings.apiKey
+            let userMessage = ChatMessage(
+                id: UUID().uuidString,
+                role: .user,
+                content: text,
+                createdAt: Date(),
+                attachments: []
+            )
+            messages.append(userMessage)
+            isSending = true
+            requestStartedAt = Date()
+            progressStatusText = "Working... 0s\nLast step: thinking"
+            activity = .thinking
+            errorBanner = nil
+
+            let immediateAssistant = try await Self.performConversationSendRequest(
+                baseURL: baseURL,
+                apiKey: apiKey,
+                sessionID: id,
+                text: text
+            )
+            isSending = false
+            requestStartedAt = nil
+            progressStatusText = ""
+            activity = .idle
+
+            let immediateAssistantMessage = ChatMessage(
+                id: immediateAssistant.id,
+                role: .assistant,
+                content: immediateAssistant.content,
+                createdAt: immediateAssistant.createdAt,
+                attachments: []
+            )
+            if !messages.contains(where: { $0.id == immediateAssistantMessage.id }) {
+                messages.append(immediateAssistantMessage)
+            }
+            let immediateText = immediateAssistantMessage.content.trimmingCharacters(in: .whitespacesAndNewlines)
+            if immediateAssistantMessage.id != previousAssistantID && !immediateText.isEmpty {
+                return ConversationSendResult(sessionID: id, immediateReply: immediateText, shouldPollForReply: false)
+            }
+            return ConversationSendResult(sessionID: id, immediateReply: nil, shouldPollForReply: true)
+        } catch {
+            isSending = false
+            requestStartedAt = nil
+            progressStatusText = ""
+            activity = .idle
+
+            if isTimeoutError(error), let sessionID = resolvedSessionID {
+                return ConversationSendResult(sessionID: sessionID, immediateReply: nil, shouldPollForReply: true)
+            }
+
+            setError(error)
+            return ConversationSendResult(sessionID: resolvedSessionID, immediateReply: nil, shouldPollForReply: false)
+        }
+    }
+
+    private func waitForConversationAssistantReply(sessionID: String, previousAssistantID: String?) async -> String? {
+        let baseURL = settings.apiURL
+        let apiKey = settings.apiKey
+        let deadline = Date().addingTimeInterval(180)
+        var lastPollError: Error?
+        while Date() < deadline {
+            do {
+                if let latestAssistant = try await Self.fetchLatestAssistantReply(
+                    baseURL: baseURL,
+                    apiKey: apiKey,
+                    sessionID: sessionID,
+                    previousAssistantID: previousAssistantID
+                )
+                {
+                    if !messages.contains(where: { $0.id == latestAssistant.id }) {
+                        messages.append(
+                            ChatMessage(
+                                id: latestAssistant.id,
+                                role: .assistant,
+                                content: latestAssistant.content,
+                                createdAt: Date(),
+                                attachments: []
+                            )
+                        )
+                    }
+                    return latestAssistant.content
+                }
+            } catch {
+                lastPollError = error
+            }
+            try? await Task.sleep(nanoseconds: 1_500_000_000)
+        }
+        if let lastPollError {
+            setError(lastPollError)
+        }
+        return nil
+    }
+
+    nonisolated private static func performConversationSendRequest(
+        baseURL: String,
+        apiKey: String,
+        sessionID: String,
+        text: String
+    ) async throws -> ConversationHTTPMessage {
+        let url = try conversationURL(baseURL: baseURL, pathSegments: ["v1", "messages"])
+        let token = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !token.isEmpty else {
+            throw ConversationNetworkError.missingAuthToken
+        }
+
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.timeoutInterval = 900
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try JSONEncoder().encode(
+            ConversationMessageCreateBody(session_id: sessionID, text: text, metadata: [:])
+        )
+
+        let (data, response) = try await conversationURLSession.data(for: request)
+        try ensureConversationHTTP200(response: response, data: data)
+
+        let payload: ConversationMessagePayload
+        do {
+            payload = try JSONDecoder().decode(ConversationMessagePayload.self, from: data)
+        } catch {
+            throw ConversationNetworkError.decoding(error.localizedDescription)
+        }
+
+        return ConversationHTTPMessage(
+            id: payload.id,
+            content: payload.content,
+            createdAt: parseConversationDate(payload.created_at)
+        )
+    }
+
+    nonisolated private static func fetchLatestAssistantReply(
+        baseURL: String,
+        apiKey: String,
+        sessionID: String,
+        previousAssistantID: String?
+    ) async throws -> ConversationReplyProbe? {
+        let url = try conversationURL(baseURL: baseURL, pathSegments: ["v1", "sessions", sessionID, "detail"])
+        let token = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !token.isEmpty else {
+            throw ConversationNetworkError.missingAuthToken
+        }
+
+        var request = URLRequest(url: url)
+        request.httpMethod = "GET"
+        request.timeoutInterval = 120
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+
+        let (data, response) = try await conversationURLSession.data(for: request)
+        try ensureConversationHTTP200(response: response, data: data)
+
+        let root: Any
+        do {
+            root = try JSONSerialization.jsonObject(with: data)
+        } catch {
+            throw ConversationNetworkError.decoding(error.localizedDescription)
+        }
+        guard let object = root as? [String: Any],
+              let messages = object["messages"] as? [[String: Any]]
+        else {
+            throw ConversationNetworkError.decoding("Missing messages field")
+        }
+
+        for message in messages.reversed() {
+            guard let role = message["role"] as? String, role.lowercased() == "assistant" else {
+                continue
+            }
+            guard let id = message["id"] as? String else {
+                continue
+            }
+            if let previousAssistantID, id == previousAssistantID {
+                continue
+            }
+            let content = (message["content"] as? String) ?? ""
+            return ConversationReplyProbe(id: id, content: content)
+        }
+        return nil
+    }
+
+    nonisolated private static func conversationURL(baseURL: String, pathSegments: [String]) throws -> URL {
+        let trimmedBase = baseURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard var components = URLComponents(string: trimmedBase) else {
+            throw ConversationNetworkError.invalidBaseURL
+        }
+        if components.host?.lowercased() == "localhost" {
+            components.host = "127.0.0.1"
+        }
+        guard let normalizedBase = components.url else {
+            throw ConversationNetworkError.invalidBaseURL
+        }
+        return pathSegments.reduce(normalizedBase) { partial, segment in
+            partial.appendingPathComponent(segment)
+        }
+    }
+
+    nonisolated private static func ensureConversationHTTP200(response: URLResponse, data: Data) throws {
+        guard let http = response as? HTTPURLResponse else {
+            throw ConversationNetworkError.invalidResponse
+        }
+        guard (200..<300).contains(http.statusCode) else {
+            let message = String(data: data, encoding: .utf8) ?? "request failed"
+            throw ConversationNetworkError.http(http.statusCode, message)
+        }
+    }
+
+    nonisolated private static func parseConversationDate(_ raw: String) -> Date {
+        let withFractional = ISO8601DateFormatter()
+        withFractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        if let date = withFractional.date(from: raw) {
+            return date
+        }
+        let standard = ISO8601DateFormatter()
+        standard.formatOptions = [.withInternetDateTime]
+        if let date = standard.date(from: raw) {
+            return date
+        }
+        return Date()
+    }
+
     func toggleTranscription() async {
+        if isConversationWindowVisible {
+            stopConversationListening(statusText: "Paused")
+        }
         if isTranscriptionStarting {
             return
         }
@@ -629,6 +1197,10 @@ final class AppState: ObservableObject {
 
     private func pollLoop() async {
         while !Task.isCancelled {
+            if isConversationWindowVisible && (isConversationAwaitingReply || isSending) {
+                try? await Task.sleep(nanoseconds: 2_000_000_000)
+                continue
+            }
             await refreshStatus()
             let delay = isSending ? 1_000_000_000 : 8_000_000_000
             try? await Task.sleep(nanoseconds: UInt64(delay))
@@ -802,8 +1374,11 @@ final class AppState: ObservableObject {
 
     private func setError(_ error: Error?) {
         let text = (error?.localizedDescription ?? "Unknown error")
+        let lower = text.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
+        if lower == "cancelled" || lower == "canceled" {
+            return
+        }
         health = .error(text)
-        let lower = text.lowercased()
         if lower.contains("not yet approved") || lower.contains("admin has to approve it first") {
             errorBanner = "Your account is not yet approved. An admin has to approve it first."
             return

@@ -18,18 +18,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private lazy var state = AppState(settings: settings)
     private var statusController: StatusItemController?
     private var chatWindowController: ChatWindowController?
+    private var conversationWindowController: ConversationWindowController?
     private var settingsWindowController: NSWindowController?
     private var aboutWindowController: NSWindowController?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
 
-        let chatController = ChatWindowController(state: state)
+        let conversationController = ConversationWindowController(state: state)
+        conversationWindowController = conversationController
+
+        let chatController = ChatWindowController(
+            state: state,
+            openConversation: { [weak conversationController] in
+                conversationController?.toggle()
+            }
+        )
         chatWindowController = chatController
 
         statusController = StatusItemController(
             state: state,
             chatWindowController: chatController,
+            openConversation: { [weak conversationController] in
+                conversationController?.show()
+            },
             openSettings: { [weak self] in self?.showSettingsWindow() },
             openAbout: { [weak self] in self?.showAboutWindow() }
         )
@@ -70,8 +82,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let window = NSWindow(contentViewController: host)
         window.title = "Skitter Settings"
         window.styleMask = [.titled, .closable, .miniaturizable]
-        window.setContentSize(NSSize(width: 700, height: 560))
-        window.minSize = NSSize(width: 640, height: 520)
+        window.setContentSize(NSSize(width: 760, height: 700))
+        window.minSize = NSSize(width: 680, height: 640)
         window.center()
 
         let controller = NSWindowController(window: window)

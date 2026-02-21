@@ -19,6 +19,26 @@ final class SettingsStore: ObservableObject {
         didSet { UserDefaults.standard.set(whisperModel, forKey: Self.whisperModelKey) }
     }
 
+    @Published var conversationSilenceSeconds: Double {
+        didSet { UserDefaults.standard.set(conversationSilenceSeconds, forKey: Self.conversationSilenceSecondsKey) }
+    }
+
+    @Published var openAIBaseURL: String {
+        didSet { UserDefaults.standard.set(openAIBaseURL, forKey: Self.openAIBaseURLKey) }
+    }
+
+    @Published var openAIAPIKey: String {
+        didSet { UserDefaults.standard.set(openAIAPIKey, forKey: Self.openAIAPIKeyKey) }
+    }
+
+    @Published var openAITTSModel: String {
+        didSet { UserDefaults.standard.set(openAITTSModel, forKey: Self.openAITTSModelKey) }
+    }
+
+    @Published var openAITTSVoice: String {
+        didSet { UserDefaults.standard.set(openAITTSVoice, forKey: Self.openAITTSVoiceKey) }
+    }
+
     @Published private(set) var whisperModelFolders: [String: String] {
         didSet { persistWhisperModelFolders() }
     }
@@ -28,6 +48,11 @@ final class SettingsStore: ObservableObject {
     private static let contextTargetKey = "menubar.context_target"
     private static let whisperModelKey = "menubar.whisper_model"
     private static let whisperModelFoldersKey = "menubar.whisper_model_folders"
+    private static let conversationSilenceSecondsKey = "menubar.conversation_silence_seconds"
+    private static let openAIBaseURLKey = "menubar.openai_base_url"
+    private static let openAIAPIKeyKey = "menubar.openai_api_key"
+    private static let openAITTSModelKey = "menubar.openai_tts_model"
+    private static let openAITTSVoiceKey = "menubar.openai_tts_voice"
 
     static let whisperModelOptions: [String] = ModelVariant.allCases.map(\.description)
 
@@ -43,6 +68,12 @@ final class SettingsStore: ObservableObject {
         } else {
             self.whisperModel = "medium"
         }
+        let savedSilenceSeconds = defaults.double(forKey: Self.conversationSilenceSecondsKey)
+        self.conversationSilenceSeconds = savedSilenceSeconds > 0 ? savedSilenceSeconds : 1.2
+        self.openAIBaseURL = defaults.string(forKey: Self.openAIBaseURLKey) ?? "https://api.openai.com/v1"
+        self.openAIAPIKey = defaults.string(forKey: Self.openAIAPIKeyKey) ?? ""
+        self.openAITTSModel = defaults.string(forKey: Self.openAITTSModelKey) ?? "gpt-4o-mini-tts"
+        self.openAITTSVoice = defaults.string(forKey: Self.openAITTSVoiceKey) ?? "alloy"
         self.whisperModelFolders = Self.loadWhisperModelFolders(defaults: defaults)
     }
 

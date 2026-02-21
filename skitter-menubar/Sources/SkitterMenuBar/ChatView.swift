@@ -3,6 +3,7 @@ import SwiftUI
 
 struct ChatView: View {
     @ObservedObject var state: AppState
+    var onOpenConversation: () -> Void
     @Environment(\.colorScheme) private var colorScheme
     @State private var visibleLimit: Int = 160
     @State private var onboardingChecking: Bool = false
@@ -207,25 +208,27 @@ struct ChatView: View {
                     )
                     .clipShape(RoundedRectangle(cornerRadius: 10))
 
-                    Button(action: {
-                        Task { await state.toggleTranscription() }
-                    }) {
-                        Image(systemName: state.isTranscribing ? "stop.circle.fill" : (state.isTranscriptionStarting ? "waveform.circle.fill" : "mic.circle.fill"))
-                            .font(.title2)
-                            .foregroundStyle(state.isTranscribing ? .red : (state.isTranscriptionStarting ? .orange : .secondary))
-                    }
-                    .buttonStyle(.plain)
-                    .disabled(state.isTranscriptionStarting)
-                    .help(state.isTranscribing ? "Stop voice transcription" : (state.isTranscriptionStarting ? "Starting voice transcription…" : "Start voice transcription"))
+                    VStack(spacing: 8) {
+                        Button(action: {
+                            Task { await state.toggleTranscription() }
+                        }) {
+                            Image(systemName: state.isTranscribing ? "stop.circle.fill" : (state.isTranscriptionStarting ? "waveform.circle.fill" : "mic.circle.fill"))
+                                .font(.title2)
+                                .foregroundStyle(state.isTranscribing ? .red : (state.isTranscriptionStarting ? .orange : .secondary))
+                        }
+                        .buttonStyle(.plain)
+                        .disabled(state.isTranscriptionStarting)
+                        .help(state.isTranscribing ? "Stop voice transcription" : (state.isTranscriptionStarting ? "Starting voice transcription…" : "Start voice transcription"))
 
-                    Button(action: {
-                        Task { await state.sendCurrentDraft() }
-                    }) {
-                        Image(systemName: "arrow.up.circle.fill")
-                            .font(.title2)
+                        Button(action: {
+                            Task { await state.sendCurrentDraft() }
+                        }) {
+                            Image(systemName: "arrow.up.circle.fill")
+                                .font(.title2)
+                        }
+                        .buttonStyle(.plain)
+                        .disabled(state.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                     }
-                    .buttonStyle(.plain)
-                    .disabled(state.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                 }
 
                 HStack {
@@ -233,6 +236,15 @@ struct ChatView: View {
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                     Spacer()
+                    Button(action: onOpenConversation) {
+                        Label(
+                            "Conversation Mode",
+                            systemImage: state.isConversationWindowVisible ? "waveform.circle.fill" : "waveform"
+                        )
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                    .help(state.isConversationWindowVisible ? "Close conversation mode window" : "Open conversation mode window")
                 }
             }
             .padding(12)

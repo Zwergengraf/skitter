@@ -7,11 +7,11 @@ final class ChatWindowController: NSObject, NSPopoverDelegate {
     private let chatPopover = NSPopover()
     private var keyMonitor: Any?
 
-    init(state: AppState) {
+    init(state: AppState, openConversation: @escaping () -> Void) {
         self.state = state
         super.init()
 
-        let content = ChatView(state: state)
+        let content = ChatView(state: state, onOpenConversation: openConversation)
         let host = NSHostingController(rootView: content)
         chatPopover.contentViewController = host
         chatPopover.behavior = .transient

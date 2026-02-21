@@ -79,7 +79,7 @@ write_launch_agent() {
     <string>${APP_EXECUTABLE}</string>
   </array>
   <key>RunAtLoad</key><true/>
-  <key>KeepAlive</key><true/>
+  <key>KeepAlive</key><false/>
   <key>ProcessType</key><string>Interactive</string>
   <key>StandardOutPath</key><string>${LOG_DIR}/stdout.log</string>
   <key>StandardErrorPath</key><string>${LOG_DIR}/stderr.log</string>

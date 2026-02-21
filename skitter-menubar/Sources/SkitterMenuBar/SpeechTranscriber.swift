@@ -46,15 +46,17 @@ final class SpeechTranscriber {
     func startStreaming(
         modelName: String,
         modelFolderPath: String?,
+        failOnNoAudio: Bool = true,
         onStatus: (@MainActor (String) -> Void)? = nil,
         onPartial: @escaping @MainActor (String) -> Void,
         onError: @escaping @MainActor (Error) -> Void
     ) async throws {
         cancelRecording()
 
-        await onStatus?("Loading local Whisper model (\(modelName))…")
+        await onStatus?("Preparing local Whisper…")
         let whisper = try await loadWhisperKitIfNeeded(modelName: modelName, modelFolderPath: modelFolderPath)
         if whisper.modelState != .loaded {
+            await onStatus?("Loading local Whisper model (\(modelName))…")
             do {
                 try await whisper.loadModels()
             } catch {
@@ -101,7 +103,7 @@ final class SpeechTranscriber {
                 let hasSamples = self.audioQueue.sync { !self.capturedSamples.isEmpty }
                 if !hasSamples {
                     emptyAudioTicks += 1
-                    if emptyAudioTicks >= 8 {
+                    if failOnNoAudio, emptyAudioTicks >= 8 {
                         self.isStreaming = false
                         self.streamContinuation?.finish()
                         self.streamContinuation = nil
@@ -159,6 +161,14 @@ final class SpeechTranscriber {
         capturedSamples = []
         lastProcessedSampleCount = 0
         transcriptionInFlight = false
+    }
+
+    func resetStreamingBuffer() {
+        audioQueue.async { [self] in
+            self.capturedSamples.removeAll(keepingCapacity: true)
+            self.lastProcessedSampleCount = 0
+        }
+        latestText = ""
     }
 
     private func appendSamples(_ chunk: [Float]) {
@@ -257,6 +267,9 @@ final class SpeechTranscriber {
                 .joined(separator: " ")
                 .trimmingCharacters(in: .whitespacesAndNewlines)
             if merged.isEmpty {
+                return
+            }
+            if merged == latestText {
                 return
             }
             latestText = merged

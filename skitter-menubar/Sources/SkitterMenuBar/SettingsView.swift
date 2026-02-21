@@ -150,6 +150,58 @@ struct SettingsView: View {
                 }
             }
 
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Voice Conversation")
+                    .font(.subheadline.weight(.semibold))
+                HStack {
+                    Text("Auto-send silence")
+                        .frame(width: 130, alignment: .leading)
+                    Stepper(value: $settings.conversationSilenceSeconds, in: 0.6...5.0, step: 0.1) {
+                        Text("\(settings.conversationSilenceSeconds, specifier: "%.1f") s")
+                            .monospacedDigit()
+                    }
+                    Spacer()
+                }
+                Text("After this much silence, speech is sent to the active session automatically.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            VStack(alignment: .leading, spacing: 8) {
+                Text("OpenAI TTS")
+                    .font(.subheadline.weight(.semibold))
+
+                Grid(alignment: .leading, horizontalSpacing: 14, verticalSpacing: 8) {
+                    GridRow {
+                        Text("Base URL")
+                            .frame(width: 130, alignment: .leading)
+                        TextField("https://api.openai.com/v1", text: $settings.openAIBaseURL)
+                            .textFieldStyle(.roundedBorder)
+                    }
+                    GridRow {
+                        Text("API Key")
+                            .frame(width: 130, alignment: .leading)
+                        SecureField("sk-...", text: $settings.openAIAPIKey)
+                            .textFieldStyle(.roundedBorder)
+                    }
+                    GridRow {
+                        Text("TTS Model")
+                            .frame(width: 130, alignment: .leading)
+                        TextField("gpt-4o-mini-tts", text: $settings.openAITTSModel)
+                            .textFieldStyle(.roundedBorder)
+                    }
+                    GridRow {
+                        Text("Voice Model")
+                            .frame(width: 130, alignment: .leading)
+                        TextField("alloy", text: $settings.openAITTSVoice)
+                            .textFieldStyle(.roundedBorder)
+                    }
+                }
+                Text("Conversation replies use these settings for OpenAI text-to-speech.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
             Spacer(minLength: 8)
 
             HStack {
@@ -160,7 +212,7 @@ struct SettingsView: View {
             }
         }
         .padding(18)
-        .frame(minWidth: 640, minHeight: 520)
+        .frame(minWidth: 680, minHeight: 640)
         .onChange(of: settings.whisperModel) { _, _ in
             state.clearWhisperDownloadStateForModelChange()
         }
