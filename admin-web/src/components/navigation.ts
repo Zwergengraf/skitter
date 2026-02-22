@@ -1,5 +1,4 @@
 import {
-  Activity,
   AlarmClock,
   AppWindow,
   Braces,
@@ -23,7 +22,6 @@ export const navItems = [
   { id: "users", label: "Users", icon: Users },
   { id: "sandbox", label: "Executors", icon: HardDrive },
   { id: "settings", label: "Settings", icon: Settings },
-  { id: "activity", label: "Activity", icon: Activity },
 ] as const;
 
 export type NavItemId = (typeof navItems)[number]["id"];

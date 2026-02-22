@@ -1,8 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   Activity,
-  AlertTriangle,
-  CheckCircle2,
   RefreshCcw,
 } from "lucide-react";
 
@@ -32,7 +30,6 @@ import { Textarea } from "@/components/ui/textarea";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { formatBytes, formatCurrency, formatJsonPreview, formatNumber, formatRelativeTime } from "@/lib/utils";
 import { api, API_BASE } from "@/lib/api";
-import { incidents } from "@/lib/mock";
 import type { NavItemId } from "@/components/navigation";
 import type {
   AgentJobDetail,
@@ -63,7 +60,6 @@ const views: Record<NavItemId, string> = {
   users: "Users",
   sandbox: "Executors",
   settings: "Settings",
-  activity: "Activity",
 };
 
 type OverviewRange = "today" | "24h" | "week" | "month" | "year";
@@ -368,15 +364,20 @@ export default function App() {
     if (active !== "memory") {
       return;
     }
-    const userId = usersData[0]?.id;
+    const userId =
+      memoryUserId && usersData.some((user) => user.id === memoryUserId)
+        ? memoryUserId
+        : usersData[0]?.id;
     if (!userId) {
       setMemoryData([]);
       setMemoryError("No users found yet.");
       setMemoryLoading(false);
       return;
     }
-    setMemoryUserId(userId);
-    refreshMemory();
+    if (userId !== memoryUserId) {
+      setMemoryUserId(userId);
+    }
+    refreshMemory(userId);
   }, [active, usersData]);
 
   useEffect(() => {
@@ -414,7 +415,7 @@ export default function App() {
       .finally(() => {
         setMemoryDetailLoading(false);
       });
-  }, [selectedMemory]);
+  }, [selectedMemory, memoryUserId]);
 
   const handleMemoryReindex = async () => {
     if (!memoryUserId) {
@@ -825,15 +826,16 @@ export default function App() {
       });
   };
 
-  const refreshMemory = () => {
-    if (!memoryUserId) {
+  const refreshMemory = (targetUserId?: string) => {
+    const resolvedUserId = targetUserId || memoryUserId;
+    if (!resolvedUserId) {
       setMemoryError("No user selected for memory.");
       return;
     }
     setMemoryLoading(true);
     setMemoryError(null);
     api
-      .getMemory(memoryUserId)
+      .getMemory(resolvedUserId)
       .then((data) => {
         setMemoryData(data);
       })
@@ -1881,7 +1883,7 @@ export default function App() {
               </Card>
             </div>
 
-            <Card>
+            <Card className="min-w-0">
               <CardHeader>
                 <SectionHeader
                   title="Background jobs"
@@ -1890,7 +1892,7 @@ export default function App() {
                   onAction={refreshAgentJobs}
                 />
               </CardHeader>
-              <CardContent className="space-y-4">
+              <CardContent className="min-w-0 space-y-4">
                 <div className="grid gap-3 md:grid-cols-2">
                   <Select value={agentJobStatusFilter} onValueChange={setAgentJobStatusFilter}>
                     <SelectTrigger>
@@ -1920,7 +1922,7 @@ export default function App() {
                   </Select>
                 </div>
 
-                <Table>
+                <Table className="min-w-[1040px]">
                   <TableHeader>
                     <TableRow>
                       <TableHead>Name</TableHead>
@@ -1973,8 +1975,13 @@ export default function App() {
                               {job.status}
                             </Badge>
                           </TableCell>
-                          <TableCell className="text-xs text-mutedForeground">
-                            {job.target_scope_type}:{job.target_scope_id}
+                          <TableCell className="max-w-[220px] text-xs text-mutedForeground">
+                            <p
+                              className="truncate"
+                              title={`${job.target_scope_type}:${job.target_scope_id}`}
+                            >
+                              {job.target_scope_type}:{job.target_scope_id}
+                            </p>
                           </TableCell>
                           <TableCell className="text-mutedForeground">
                             {formatRelativeTime(job.created_at)}
@@ -2317,6 +2324,42 @@ export default function App() {
                 />
               </CardHeader>
               <CardContent className="space-y-4">
+                <div className="grid gap-2 md:max-w-sm">
+                  <label className="text-xs font-semibold uppercase tracking-[0.2em] text-mutedForeground">
+                    User
+                  </label>
+                  <Select
+                    value={memoryUserId || usersData[0]?.id || "none"}
+                    onValueChange={(value) => {
+                      if (value === "none") {
+                        setMemoryUserId("");
+                        setMemoryData([]);
+                        setMemoryError("No user selected for memory.");
+                        setSelectedMemory(null);
+                        return;
+                      }
+                      setMemoryUserId(value);
+                      setSelectedMemory(null);
+                      refreshMemory(value);
+                    }}
+                  >
+                    <SelectTrigger>
+                      <SelectValue placeholder="Select user" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {usersData.length ? (
+                        usersData.map((user) => (
+                          <SelectItem key={user.id} value={user.id}>
+                            {userLabelFor(user.id)}
+                          </SelectItem>
+                        ))
+                      ) : (
+                        <SelectItem value="none">No users available</SelectItem>
+                      )}
+                    </SelectContent>
+                  </Select>
+                </div>
+
                 {memoryLoading ? (
                   <div className="rounded-2xl border border-dashed border-border bg-muted/40 px-4 py-6 text-sm text-mutedForeground">
                     Loading memory...
@@ -2907,48 +2950,7 @@ export default function App() {
           </div>
         )}
 
-        {active === "activity" && (
-          <div className="grid gap-6">
-            <Card>
-              <CardHeader>
-                <CardTitle>Recent activity</CardTitle>
-                <CardDescription>Incidents, warnings, and human interventions.</CardDescription>
-              </CardHeader>
-              <CardContent className="space-y-4">
-                {incidents.map((incident) => (
-                  <div key={incident.id} className="flex items-center justify-between rounded-2xl border border-border bg-card px-4 py-4">
-                    <div className="flex items-center gap-3">
-                      {incident.severity === "high" ? (
-                        <AlertTriangle className="h-5 w-5 text-rose-500" />
-                      ) : incident.severity === "medium" ? (
-                        <AlertTriangle className="h-5 w-5 text-amber-500" />
-                      ) : (
-                        <CheckCircle2 className="h-5 w-5 text-emerald-500" />
-                      )}
-                      <div>
-                        <p className="text-sm font-semibold">{incident.title}</p>
-                        <p className="text-xs text-mutedForeground">{incident.timestamp}</p>
-                      </div>
-                    </div>
-                    <Badge
-                      variant={
-                        incident.severity === "high"
-                          ? "danger"
-                          : incident.severity === "medium"
-                          ? "warning"
-                          : "secondary"
-                      }
-                    >
-                      {incident.severity}
-                    </Badge>
-                  </div>
-                ))}
-              </CardContent>
-            </Card>
-          </div>
-        )}
-
-        {active !== "overview" && active !== "sessions" && active !== "tools" && active !== "agent-jobs" && active !== "jobs" && active !== "memory" && active !== "secrets" && active !== "users" && active !== "sandbox" && active !== "settings" && active !== "activity" && (
+        {active !== "overview" && active !== "sessions" && active !== "tools" && active !== "agent-jobs" && active !== "jobs" && active !== "memory" && active !== "secrets" && active !== "users" && active !== "sandbox" && active !== "settings" && (
           <Card>
             <CardHeader>
               <CardTitle>Coming soon</CardTitle>
@@ -2956,28 +2958,6 @@ export default function App() {
             </CardHeader>
             <CardContent>
               <Button>Connect API</Button>
-            </CardContent>
-          </Card>
-        )}
-
-
-        {active === "activity" && (
-          <Card>
-            <CardHeader>
-              <CardTitle>Event stream</CardTitle>
-              <CardDescription>Live updates from tool runs and sessions.</CardDescription>
-            </CardHeader>
-            <CardContent>
-              <ScrollArea className="h-56 rounded-2xl border border-border bg-card p-4 text-sm text-mutedForeground">
-                <div className="space-y-2">
-                  <p>[23:40] Tool shell approved by @gabriel</p>
-                  <p>[23:39] Session sess_1d2f summarised and archived</p>
-                  <p>[23:38] Browser action complete: screenshot saved</p>
-                  <p>[23:37] Scheduler job job_1 queued</p>
-                  <p>[23:36] Web fetch success: brave search</p>
-                  <p>[23:35] Memory index updated</p>
-                </div>
-              </ScrollArea>
             </CardContent>
           </Card>
         )}
