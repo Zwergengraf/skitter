@@ -6,10 +6,9 @@ services:
       POSTGRES_USER: ${SKITTER_POSTGRES_USER:-postgres}
       POSTGRES_PASSWORD: ${SKITTER_POSTGRES_PASSWORD:-postgres}
       POSTGRES_DB: ${SKITTER_POSTGRES_DB:-skitter}
-    # For security reasons, we do not expose the Postgres port to the host machine. The API service connects to it via the Docker network.
-    # DO NOT UNCOMMENT THE PORTS SECTION BELOW UNLESS YOU KNOW WHAT YOU ARE DOING AND HAVE SECURED YOUR DATABASE PROPERLY.
-    # ports:
-    #   - "5432:5432"
+    ports:
+      # For security reasons, we only expose the Postgres port to the host machine. The API service connects to it via the Docker network.
+      - "127.0.0.1:5432:5432"
     volumes:
       - skitter_pg:/var/lib/postgresql/data
     healthcheck:
