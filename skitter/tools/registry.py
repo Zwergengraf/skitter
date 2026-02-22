@@ -322,6 +322,14 @@ def default_registry() -> ToolRegistry:
     )
     registry.register(
         ToolSpec(
+            name="list_secrets",
+            description="List available per-user secret names (values are never returned). Useful before using shell secret_refs.",
+            input_schema={"type": "object", "properties": {}},
+            requires_approval=False,
+        )
+    )
+    registry.register(
+        ToolSpec(
             name="memory_search",
             description="Search stored memory embeddings",
             input_schema={

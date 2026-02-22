@@ -627,16 +627,36 @@ class AgentRuntime:
             messages = self._history.get(session_id, [])
             run_status = "failed"
             run_error = str(exc)
-            response = (
-                "I hit an internal error while processing your request. "
-                f"Details: {exc}. Please retry or simplify the task."
-            )
-            await self._trace_event(
-                run_id=run_id,
-                session_id=session_id,
-                event_type="error",
-                payload={"error": run_error},
-            )
+            validation_hint = self._tool_input_validation_hint(exc)
+            if validation_hint:
+                response = validation_hint
+                _logger.warning(
+                    "tool_call_failed: session=%s run=%s reason=tool_input_validation error=%s",
+                    session_id,
+                    run_id,
+                    run_error,
+                )
+                await self._trace_event(
+                    run_id=run_id,
+                    session_id=session_id,
+                    event_type="tool_call_failed",
+                    payload={
+                        "error": run_error,
+                        "failure_type": "tool_input_validation",
+                        "hint": validation_hint,
+                    },
+                )
+            else:
+                response = (
+                    "I hit an internal error while processing your request. "
+                    f"Details: {exc}. Please retry or simplify the task."
+                )
+                await self._trace_event(
+                    run_id=run_id,
+                    session_id=session_id,
+                    event_type="error",
+                    payload={"error": run_error},
+                )
         finally:
             if limit_token is not None:
                 reset_current_run_limits(limit_token)
@@ -1093,6 +1113,26 @@ class AgentRuntime:
         if status_code is None:
             return False
         return 400 <= status_code <= 599
+
+    def _tool_input_validation_hint(self, exc: Exception) -> str | None:
+        text = self._exception_text_chain(exc)
+        is_validation = (
+            "validationerror" in text
+            or "validation error" in text
+            or "input should be" in text
+            or "errors.pydantic.dev" in text
+        )
+        if not is_validation:
+            return None
+        if "secret_refs" in text and "valid list" in text:
+            return (
+                "Tool input validation failed: `shell.secret_refs` must be a list of secret names, "
+                "for example `[\"MOLTBOOK_API_KEY\"]`, not a quoted JSON string."
+            )
+        return (
+            "Tool input validation failed: a tool call used arguments that do not match the expected schema "
+            "(wrong type or shape)."
+        )
 
     async def _build_limit_fallback_response(
         self,

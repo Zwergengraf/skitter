@@ -1181,7 +1181,7 @@ def build_graph(
         secret_refs: Optional[list[str]] = None,
         target_machine: Optional[str] = None,
     ) -> str:
-        """Run a shell command in the sandboxed workspace. Relative paths resolve from /workspace (default cwd). Absolute paths are literal sandbox paths. Use background=true for long-running tasks. Use secret_refs to inject per-user secrets as env vars."""
+        """Run a shell command. Relative paths resolve from the workspace. Absolute paths are literal sandbox paths. Use background=true for long-running tasks. Use secret_refs to inject per-user secrets (e.g. API keys) as env vars. You simply have to reference the secret name and it will be injected."""
         payload = {"cmd": cmd, "background": bool(background)}
         if cwd:
             payload["cwd"] = cwd
@@ -1342,6 +1342,36 @@ def build_graph(
             return f"create_secret error: secret '{secret_name}' already exists"
         await _complete_tool_run(decision.tool_run_id, "completed", {"name": secret_name, "status": "created"})
         return json.dumps({"name": secret_name, "status": "created"})
+
+    @tool("list_secrets")
+    async def list_secrets() -> str:
+        """List available per-user secret names (values are never returned)."""
+        payload: dict[str, Any] = {}
+        budget_message = await _enforce_tool_budget("list_secrets", payload)
+        if budget_message:
+            return budget_message
+        tool_run_id = await _create_auto_tool_run("list_secrets", payload)
+
+        manager = SecretsManager()
+        try:
+            manager.ensure_ready()
+        except RuntimeError as exc:
+            await _complete_tool_run(tool_run_id, "failed", {"error": str(exc)})
+            return f"list_secrets error: {exc}"
+
+        async with SessionLocal() as session:
+            repo = Repository(session)
+            secrets = await repo.list_secrets(_user_id())
+        names = sorted(
+            {
+                name
+                for name in ((secret.name or "").strip() for secret in secrets)
+                if name
+            }
+        )
+        output = {"secret_names": names, "count": len(names)}
+        await _complete_tool_run(tool_run_id, "completed", output)
+        return json.dumps(output)
 
     @tool("web_search")
     async def web_search(
@@ -1841,6 +1871,7 @@ def build_graph(
         machine_list,
         machine_status,
         create_secret,
+        list_secrets,
         memory_search,
         web_search,
         web_fetch,
@@ -1860,8 +1891,35 @@ def build_graph(
         # Raise cancellation through the graph so job runs terminate promptly.
         if isinstance(exc, RunCancelledError):
             raise exc
+        error_text = str(exc).strip()
+        lowered = error_text.lower()
+        is_validation_error = (
+            "validationerror" in lowered
+            or "validation error" in lowered
+            or "input should be" in lowered
+            or "for further information visit https://errors.pydantic.dev" in lowered
+        )
+        if is_validation_error:
+            _logger.warning(
+                "tool_call_failed: session=%s run=%s reason=tool_input_validation error=%s",
+                _session_id(),
+                _run_id() or "-",
+                error_text,
+            )
+            if "secret_refs" in lowered and "valid list" in lowered:
+                return (
+                    "Tool input validation failed: `shell.secret_refs` must be a JSON array of secret names, "
+                    "for example `{\"secret_refs\": [\"MOLTBOOK_API_KEY\"]}`. "
+                    "Do not pass a quoted JSON string like `\"[\\\"MOLTBOOK_API_KEY\\\"]\"`. "
+                    f"Validation detail: {error_text}"
+                )
+            return (
+                "Tool input validation failed: one or more tool arguments have the wrong type/shape for the schema. "
+                "Retry the tool call with correctly typed fields. "
+                f"Validation detail: {error_text}"
+            )
         return (
-            f"Tool call failed after retries with {type(exc).__name__}: {exc}. "
+            f"Tool call failed after retries with {type(exc).__name__}: {error_text}. "
             "Please adjust strategy and continue."
         )
 
