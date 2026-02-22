@@ -14,7 +14,4 @@ skitter-menubar/.module-cache/
 skitter-menubar/.swiftpm-cache/
 skitter-menubar/.clang-cache/
 
-skitter-tui/venv/
-
 workspace/
-browser-data/
