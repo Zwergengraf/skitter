@@ -70,7 +70,7 @@ final class StatusItemController: NSObject, NSMenuDelegate {
     @objc
     private func handleClick(_ sender: Any?) {
         guard let event = NSApp.currentEvent else {
-            chatWindowController.toggle(relativeTo: statusItem.button)
+            chatWindowController.focusOrShow(relativeTo: statusItem.button)
             return
         }
 
@@ -79,7 +79,7 @@ final class StatusItemController: NSObject, NSMenuDelegate {
             chatWindowController.close()
             showStatusMenu(with: event)
         default:
-            chatWindowController.toggle(relativeTo: statusItem.button)
+            chatWindowController.focusOrShow(relativeTo: statusItem.button)
         }
     }
 
@@ -281,7 +281,7 @@ final class StatusItemController: NSObject, NSMenuDelegate {
 
     @objc
     private func openChatFromMenu() {
-        chatWindowController.toggle(relativeTo: statusItem.button)
+        chatWindowController.focusOrShow(relativeTo: statusItem.button)
     }
 
     @objc

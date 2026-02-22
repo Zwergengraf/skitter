@@ -34,11 +34,14 @@ struct ConversationView: View {
 
     var body: some View {
         ZStack {
+            BackdropBlurView(material: .hudWindow, blendingMode: .behindWindow, emphasized: true)
+                .ignoresSafeArea()
+
             LinearGradient(
                 colors: [
-                    Color(red: 0.06, green: 0.09, blue: 0.16),
-                    Color(red: 0.05, green: 0.13, blue: 0.20),
-                    Color(red: 0.09, green: 0.08, blue: 0.15),
+                    Color(red: 0.06, green: 0.09, blue: 0.16).opacity(0.54),
+                    Color(red: 0.05, green: 0.13, blue: 0.20).opacity(0.46),
+                    Color(red: 0.09, green: 0.08, blue: 0.15).opacity(0.54),
                 ],
                 startPoint: .topLeading,
                 endPoint: .bottomTrailing
@@ -89,7 +92,6 @@ struct ConversationView: View {
                         .font(.system(size: 15, weight: .regular, design: .rounded))
                         .foregroundStyle(.white.opacity(0.92))
                         .frame(maxWidth: .infinity, alignment: .leading)
-                        .textSelection(.enabled)
                 }
                 .frame(maxWidth: .infinity, minHeight: 110, maxHeight: 190, alignment: .topLeading)
                 .padding(14)

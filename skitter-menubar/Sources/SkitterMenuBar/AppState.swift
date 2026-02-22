@@ -1,5 +1,6 @@
 import Foundation
 import AppKit
+import os
 import WhisperKit
 
 struct LocalCommand: Identifiable {
@@ -11,6 +12,11 @@ struct LocalCommand: Identifiable {
 
 @MainActor
 final class AppState: ObservableObject {
+    nonisolated private static let perfLogger = Logger(
+        subsystem: "io.skitter.menubar",
+        category: "performance"
+    )
+
     @Published private(set) var health: HealthState = .checking
     @Published private(set) var activity: ActivityState = .idle
     @Published private(set) var contextTokens: Int = 0
@@ -30,6 +36,7 @@ final class AppState: ObservableObject {
     @Published private(set) var decidingToolRunIDs: Set<String> = []
     @Published private(set) var unreadMessageCount: Int = 0
     @Published private(set) var isChatWindowVisible: Bool = false
+    @Published private(set) var isChatPinned: Bool = false
     @Published private(set) var didInitialStatusCheck: Bool = false
     @Published private(set) var hasWorkingConnection: Bool = false
     @Published private(set) var isTranscribing: Bool = false
@@ -1195,6 +1202,14 @@ final class AppState: ObservableObject {
         }
     }
 
+    func setChatPinned(_ pinned: Bool) {
+        isChatPinned = pinned
+    }
+
+    func toggleChatPinned() {
+        isChatPinned.toggle()
+    }
+
     private func pollLoop() async {
         while !Task.isCancelled {
             if isConversationWindowVisible && (isConversationAwaitingReply || isSending) {
@@ -1208,6 +1223,7 @@ final class AppState: ObservableObject {
     }
 
     func refreshStatus() async {
+        let refreshStartedAt = DispatchTime.now().uptimeNanoseconds
         var lastError: Error?
         var anySuccess = false
         var sessionCheckSucceeded = false
@@ -1228,7 +1244,7 @@ final class AppState: ObservableObject {
 
         var activeSessionID: String?
         do {
-            let shouldSyncMessages = isChatWindowVisible && !isSending
+            let shouldSyncMessages = !isChatWindowVisible && !isSending
             let id = try await ensureSession(forceNew: false, syncWithServer: shouldSyncMessages)
             activeSessionID = id
             let snapshot = try await api.sessionSnapshot(sessionID: id)
@@ -1320,6 +1336,7 @@ final class AppState: ObservableObject {
         }
         hasWorkingConnection = sessionCheckSucceeded
         didInitialStatusCheck = true
+        logSlowRefreshStatus(startedAt: refreshStartedAt)
     }
 
     private func appendLocalMessage(_ content: String) {
@@ -1338,8 +1355,10 @@ final class AppState: ObservableObject {
     }
 
     private func applySyncedMessages(_ synced: [ChatMessage]) {
+        let startedAt = DispatchTime.now().uptimeNanoseconds
         let merged = mergedMessagesWithOverlay(synced)
         if hasSameMessageIdentity(messages, merged) {
+            logSlowApplySyncedMessages(startedAt: startedAt, syncedCount: synced.count, mergedCount: merged.count)
             return
         }
         if !isChatWindowVisible {
@@ -1352,6 +1371,7 @@ final class AppState: ObservableObject {
             }
         }
         messages = merged
+        logSlowApplySyncedMessages(startedAt: startedAt, syncedCount: synced.count, mergedCount: merged.count)
     }
 
     private func hasSameMessageIdentity(_ lhs: [ChatMessage], _ rhs: [ChatMessage]) -> Bool {
@@ -1364,6 +1384,22 @@ final class AppState: ObservableObject {
             }
         }
         return true
+    }
+
+    private func logSlowApplySyncedMessages(startedAt: UInt64, syncedCount: Int, mergedCount: Int) {
+        let elapsedMs = Double(DispatchTime.now().uptimeNanoseconds - startedAt) / 1_000_000
+        guard elapsedMs >= 20 else { return }
+        let elapsedText = String(format: "%.1f", elapsedMs)
+        Self.perfLogger.notice(
+            "applySyncedMessages slow: \(elapsedText, privacy: .public)ms synced=\(syncedCount) merged=\(mergedCount)"
+        )
+    }
+
+    private func logSlowRefreshStatus(startedAt: UInt64) {
+        let elapsedMs = Double(DispatchTime.now().uptimeNanoseconds - startedAt) / 1_000_000
+        guard elapsedMs >= 120 else { return }
+        let elapsedText = String(format: "%.1f", elapsedMs)
+        Self.perfLogger.notice("refreshStatus slow: \(elapsedText, privacy: .public)ms")
     }
 
     private func mergedMessagesWithOverlay(_ synced: [ChatMessage]) -> [ChatMessage] {

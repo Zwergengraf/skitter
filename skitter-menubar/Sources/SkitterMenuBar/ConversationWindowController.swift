@@ -53,6 +53,8 @@ final class ConversationWindowController: NSObject, NSWindowDelegate {
         window.titleVisibility = .hidden
         window.isOpaque = false
         window.backgroundColor = .clear
+        window.alphaValue = 1
+        window.hasShadow = true
         window.isMovableByWindowBackground = true
         window.isReleasedWhenClosed = false
         window.level = .floating

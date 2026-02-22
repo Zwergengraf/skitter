@@ -1,16 +1,18 @@
 import AppKit
 import SwiftUI
+import os
 
 struct ChatView: View {
     @ObservedObject var state: AppState
     var onOpenConversation: () -> Void
     @Environment(\.colorScheme) private var colorScheme
-    @State private var visibleLimit: Int = 160
+    @State private var visibleLimit: Int = 40
     @State private var onboardingChecking: Bool = false
     @State private var onboardingStatusText: String?
     @State private var onboardingDisplayName: String = ""
     @State private var onboardingSetupCode: String = ""
     @State private var onboardingPairCode: String = ""
+    @State private var isNearBottom: Bool = true
     private static let progressMessageID = "temporary-progress-message"
     private static let bottomAnchorID = "chat-bottom-anchor"
     private static let relativeTimeFormatter: RelativeDateTimeFormatter = {
@@ -115,10 +117,10 @@ struct ChatView: View {
 
             ScrollViewReader { proxy in
                 ScrollView {
-                    LazyVStack(alignment: .leading, spacing: 10) {
+                    VStack(alignment: .leading, spacing: 10) {
                         if hiddenCount > 0 {
-                            Button("Load \(min(150, hiddenCount)) older messages (\(hiddenCount) remaining)") {
-                                visibleLimit += 150
+                            Button("Load \(min(40, hiddenCount)) older messages (\(hiddenCount) remaining)") {
+                                visibleLimit += 40
                             }
                             .buttonStyle(.bordered)
                             .frame(maxWidth: .infinity, alignment: .center)
@@ -138,11 +140,20 @@ struct ChatView: View {
                     .padding(.top, 12)
                 }
                 .background(Color.clear)
+                .background(
+                    ChatScrollMonitor { nearBottom in
+                        if nearBottom != isNearBottom {
+                            isNearBottom = nearBottom
+                        }
+                    }
+                )
                 .onAppear {
                     scrollToBottom(proxy, animated: false)
                 }
-                .onChange(of: state.messages.count) { _, _ in
-                    scrollToBottom(proxy)
+                .onChange(of: state.messages.count) { oldValue, newValue in
+                    guard newValue > oldValue else { return }
+                    guard isNearBottom else { return }
+                    scrollToBottom(proxy, animated: false)
                 }
                 .onChange(of: state.chatOpenSignal) { _, _ in
                     scrollToBottom(proxy, animated: false)
@@ -299,8 +310,9 @@ struct ChatView: View {
         )
         .background(
             ZStack {
-                Color(nsColor: .windowBackgroundColor)
-                Color(nsColor: .textBackgroundColor).opacity(colorScheme == .dark ? 0.08 : 0.12)
+                BackdropBlurView(material: .hudWindow, blendingMode: .behindWindow, emphasized: true)
+                Color(nsColor: .windowBackgroundColor).opacity(colorScheme == .dark ? 0.56 : 0.66)
+                Color(nsColor: .textBackgroundColor).opacity(colorScheme == .dark ? 0.15 : 0.19)
             }
         )
         .task {
@@ -315,19 +327,34 @@ struct ChatView: View {
 
     @ViewBuilder
     private var headerBar: some View {
-        HStack(spacing: 10) {
+        HStack(spacing: 8) {
             Image(systemName: "bolt.circle.fill")
-                .font(.title3)
+                .font(.system(size: 14, weight: .semibold))
                 .foregroundStyle(Color.accentColor)
             Text("Skitter")
-                .font(.headline)
+                .font(.subheadline.weight(.semibold))
             Spacer(minLength: 8)
+            Button {
+                state.toggleChatPinned()
+            } label: {
+                Image(systemName: state.isChatPinned ? "pin.fill" : "pin")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(state.isChatPinned ? Color.green : Color.secondary)
+                    .frame(width: 20, height: 20)
+                    .background(
+                        Circle()
+                            .fill(Color.secondary.opacity(colorScheme == .dark ? 0.22 : 0.12))
+                    )
+            }
+            .buttonStyle(.plain)
+            .help(state.isChatPinned ? "Unpin chat window" : "Pin chat window")
             statusChip(label: state.health.label.capitalized, color: healthChipColor)
             statusChip(label: state.activity.label.capitalized, color: activityChipColor)
         }
         .padding(.horizontal, 12)
-        .padding(.vertical, 10)
-        .background(Color(nsColor: .windowBackgroundColor).opacity(0.92))
+        .padding(.vertical, 4)
+        .frame(minHeight: 30, maxHeight: 30)
+        .background(.ultraThinMaterial)
     }
 
     @ViewBuilder
@@ -463,57 +490,50 @@ struct ChatView: View {
     @ViewBuilder
     private func messageRow(_ message: ChatMessage) -> some View {
         let isUser = message.role == .user
+        let bubble = VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                Text(label(for: message.role))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Spacer()
+            }
+
+            MarkdownMessageText(message.content.isEmpty ? "(empty)" : message.content)
+
+            if !message.attachments.isEmpty {
+                VStack(alignment: .leading, spacing: 8) {
+                    ForEach(Array(message.attachments.enumerated()), id: \.offset) { _, attachment in
+                        attachmentView(attachment)
+                    }
+                }
+            }
+        }
+        .padding(11)
+        .frame(maxWidth: 470, alignment: .leading)
+        .background(
+            RoundedRectangle(cornerRadius: 12)
+                .fill(isUser ? userBubbleColor : assistantBubbleColor)
+                .overlay(
+                    RoundedRectangle(cornerRadius: 12)
+                        .stroke(bubbleStrokeColor, lineWidth: 1)
+                )
+        )
+        .contextMenu {
+            if message.role == .assistant {
+                Button("Copy Reply") {
+                    copyToPasteboard(message.content)
+                }
+                Button("Copy Reply as Markdown") {
+                    copyToPasteboard(markdownForMessage(message))
+                }
+            }
+        }
+
         HStack(alignment: .bottom) {
             if isUser {
                 Spacer(minLength: 44)
             }
-            VStack(alignment: .leading, spacing: 6) {
-                HStack {
-                    Text(label(for: message.role))
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                    Spacer()
-                    if message.role == .assistant {
-                        Button {
-                            copyToPasteboard(message.content)
-                        } label: {
-                            Label("Copy", systemImage: "doc.on.doc")
-                                .labelStyle(.titleAndIcon)
-                        }
-                        .buttonStyle(.borderless)
-                        .font(.caption)
-
-                        Button {
-                            copyToPasteboard(markdownForMessage(message))
-                        } label: {
-                            Label("Copy MD", systemImage: "doc.text")
-                                .labelStyle(.titleAndIcon)
-                        }
-                        .buttonStyle(.borderless)
-                        .font(.caption)
-                    }
-                }
-
-                MarkdownMessageText(message.content.isEmpty ? "(empty)" : message.content)
-
-                if !message.attachments.isEmpty {
-                    VStack(alignment: .leading, spacing: 8) {
-                        ForEach(Array(message.attachments.enumerated()), id: \.offset) { _, attachment in
-                            attachmentView(attachment)
-                        }
-                    }
-                }
-            }
-            .padding(11)
-            .frame(maxWidth: 470, alignment: .leading)
-            .background(
-                RoundedRectangle(cornerRadius: 12)
-                    .fill(isUser ? userBubbleColor : assistantBubbleColor)
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 12)
-                            .stroke(bubbleStrokeColor, lineWidth: 1)
-                    )
-            )
+            bubble
             if !isUser {
                 Spacer(minLength: 44)
             }
@@ -544,9 +564,6 @@ struct ChatView: View {
                     .buttonStyle(.bordered)
                     .font(.caption)
                 }
-            }
-            if let url, isImageAttachment(attachment) {
-                AttachmentThumbnailView(state: state, url: url, maxWidth: 320)
             }
         }
         .padding(8)
@@ -582,7 +599,6 @@ struct ChatView: View {
                     Text(toolRun.inputPrettyJSON())
                         .font(.caption.monospaced())
                         .frame(maxWidth: .infinity, alignment: .leading)
-                        .textSelection(.enabled)
                 }
                 .frame(maxWidth: .infinity, minHeight: 70, maxHeight: 170)
                 .padding(6)
@@ -681,10 +697,10 @@ struct ChatView: View {
     @ViewBuilder
     private func statusChip(label: String, color: Color) -> some View {
         Text(label)
-            .font(.caption2.weight(.semibold))
+            .font(.caption2.weight(.medium))
             .lineLimit(1)
-            .padding(.horizontal, 8)
-            .padding(.vertical, 4)
+            .padding(.horizontal, 6)
+            .padding(.vertical, 2)
             .background(
                 Capsule()
                     .fill(color.opacity(colorScheme == .dark ? 0.22 : 0.14))
@@ -808,6 +824,12 @@ private struct AttachmentThumbnailView: View {
     let url: URL
     let maxWidth: CGFloat
 
+    private static let imageCache: NSCache<NSString, NSImage> = {
+        let cache = NSCache<NSString, NSImage>()
+        cache.countLimit = 120
+        return cache
+    }()
+
     @State private var image: NSImage?
     @State private var loading = false
 
@@ -817,7 +839,8 @@ private struct AttachmentThumbnailView: View {
                 Image(nsImage: image)
                     .resizable()
                     .scaledToFit()
-                    .frame(maxWidth: maxWidth)
+                    .frame(width: maxWidth, height: 120)
+                    .clipped()
                     .clipShape(RoundedRectangle(cornerRadius: 8))
             } else {
                 RoundedRectangle(cornerRadius: 8)
@@ -832,10 +855,159 @@ private struct AttachmentThumbnailView: View {
     }
 
     private func load() async {
+        let cacheKey = url.absoluteString as NSString
+        if let cached = Self.imageCache.object(forKey: cacheKey) {
+            image = cached
+            return
+        }
+
         loading = true
         defer { loading = false }
         guard let data = await state.fetchAttachmentData(url: url) else { return }
-        guard let image = NSImage(data: data) else { return }
-        self.image = image
+        let decodedImage = await Task.detached(priority: .utility) {
+            NSImage(data: data)
+        }.value
+        guard !Task.isCancelled else { return }
+        guard let decodedImage else { return }
+        Self.imageCache.setObject(decodedImage, forKey: cacheKey)
+        image = decodedImage
+    }
+}
+
+private struct ChatScrollMonitor: NSViewRepresentable {
+    var onNearBottomChange: (Bool) -> Void
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(onNearBottomChange: onNearBottomChange)
+    }
+
+    func makeNSView(context: Context) -> NSView {
+        let view = NSView(frame: .zero)
+        context.coordinator.attach(to: view)
+        return view
+    }
+
+    func updateNSView(_ nsView: NSView, context: Context) {
+        context.coordinator.onNearBottomChange = onNearBottomChange
+        context.coordinator.attach(to: nsView)
+    }
+
+    static func dismantleNSView(_ nsView: NSView, coordinator: Coordinator) {
+        coordinator.detach()
+    }
+
+    final class Coordinator {
+        private static let logger = Logger(subsystem: "io.skitter.menubar", category: "scroll")
+
+        var onNearBottomChange: (Bool) -> Void
+
+        private weak var scrollView: NSScrollView?
+        private weak var observedDocumentView: NSView?
+        private var observers: [NSObjectProtocol] = []
+        private var lastNearBottom: Bool?
+
+        init(onNearBottomChange: @escaping (Bool) -> Void) {
+            self.onNearBottomChange = onNearBottomChange
+        }
+
+        func attach(to view: NSView) {
+            guard let resolved = Self.findScrollView(startingFrom: view) else { return }
+
+            let didChangeTarget = scrollView !== resolved || observedDocumentView !== resolved.documentView
+            if didChangeTarget {
+                removeObservers()
+                scrollView = resolved
+                observedDocumentView = resolved.documentView
+                configure(scrollView: resolved)
+                installObservers(scrollView: resolved)
+            } else {
+                configure(scrollView: resolved)
+            }
+            publishMetrics()
+        }
+
+        func detach() {
+            removeObservers()
+            scrollView = nil
+            observedDocumentView = nil
+            lastNearBottom = nil
+        }
+
+        private func configure(scrollView: NSScrollView) {
+            scrollView.verticalScrollElasticity = .none
+            scrollView.horizontalScrollElasticity = .none
+            scrollView.automaticallyAdjustsContentInsets = false
+            scrollView.contentInsets = NSEdgeInsets()
+            scrollView.contentView.postsBoundsChangedNotifications = true
+            scrollView.documentView?.postsFrameChangedNotifications = true
+        }
+
+        private func installObservers(scrollView: NSScrollView) {
+            let boundsObserver = NotificationCenter.default.addObserver(
+                forName: NSView.boundsDidChangeNotification,
+                object: scrollView.contentView,
+                queue: .main
+            ) { [weak self] _ in
+                self?.publishMetrics()
+            }
+            observers.append(boundsObserver)
+
+            if let documentView = scrollView.documentView {
+                let frameObserver = NotificationCenter.default.addObserver(
+                    forName: NSView.frameDidChangeNotification,
+                    object: documentView,
+                    queue: .main
+                ) { [weak self] _ in
+                    self?.publishMetrics()
+                }
+                observers.append(frameObserver)
+            }
+        }
+
+        private func removeObservers() {
+            for observer in observers {
+                NotificationCenter.default.removeObserver(observer)
+            }
+            observers.removeAll()
+        }
+
+        private func publishMetrics() {
+            guard let scrollView else { return }
+            let clipBounds = scrollView.contentView.bounds
+            let visibleHeight = max(clipBounds.height, 1)
+            let documentHeight = max(scrollView.documentView?.bounds.height ?? 0, visibleHeight)
+            let maxOffsetY = max(0, documentHeight - visibleHeight)
+            let clampedOffsetY = min(max(0, clipBounds.origin.y), maxOffsetY)
+            let distanceFromBottom = maxOffsetY - clampedOffsetY
+            let nearBottom = distanceFromBottom <= 12
+
+            if let previous = lastNearBottom, previous != nearBottom {
+                Self.logger.debug(
+                    "Scroll edge changed. nearBottom=\(nearBottom) offset=\(clampedOffsetY, format: .fixed(precision: 1)) max=\(maxOffsetY, format: .fixed(precision: 1))"
+                )
+            }
+
+            if lastNearBottom != nearBottom {
+                lastNearBottom = nearBottom
+                onNearBottomChange(nearBottom)
+            }
+        }
+
+        private static func findScrollView(startingFrom view: NSView) -> NSScrollView? {
+            if let enclosing = view.enclosingScrollView {
+                return enclosing
+            }
+            var current: NSView? = view
+            while let candidate = current {
+                if let scrollView = candidate as? NSScrollView {
+                    return scrollView
+                }
+                if let enclosing = candidate.enclosingScrollView {
+                    return enclosing
+                }
+                current = candidate.superview
+            }
+            return nil
+        }
     }
 }

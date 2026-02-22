@@ -1,12 +1,21 @@
+import Foundation
 import SwiftUI
 
 struct MarkdownMessageText: View {
-    private enum Segment: Identifiable {
-        case markdown(id: UUID, text: AttributedString)
-        case code(id: UUID, text: String)
-        case blank(id: UUID)
+    private final class SegmentCacheBox: NSObject {
+        let segments: [Segment]
 
-        var id: UUID {
+        init(segments: [Segment]) {
+            self.segments = segments
+        }
+    }
+
+    private enum Segment: Identifiable {
+        case markdown(id: Int, text: AttributedString)
+        case code(id: Int, text: String)
+        case blank(id: Int)
+
+        var id: Int {
             switch self {
             case let .markdown(id, _):
                 return id
@@ -19,10 +28,22 @@ struct MarkdownMessageText: View {
     }
 
     private let segments: [Segment]
+    private static let segmentCache: NSCache<NSString, SegmentCacheBox> = {
+        let cache = NSCache<NSString, SegmentCacheBox>()
+        cache.countLimit = 500
+        return cache
+    }()
 
     init(_ text: String) {
         let normalized = Self.normalizeNewlines(text)
-        self.segments = Self.buildSegments(from: normalized)
+        let cacheKey = normalized as NSString
+        if let cached = Self.segmentCache.object(forKey: cacheKey) {
+            self.segments = cached.segments
+            return
+        }
+        let built = Self.buildSegments(from: normalized)
+        self.segments = built
+        Self.segmentCache.setObject(SegmentCacheBox(segments: built), forKey: cacheKey)
     }
 
     var body: some View {
@@ -48,7 +69,6 @@ struct MarkdownMessageText: View {
                 }
             }
         }
-        .textSelection(.enabled)
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 
@@ -69,11 +89,13 @@ struct MarkdownMessageText: View {
         var out: [Segment] = []
         var inFence = false
         var codeLines: [String] = []
+        var nextSegmentID = 0
 
         func flushCode() {
             guard !codeLines.isEmpty else { return }
             let body = codeLines.joined(separator: "\n")
-            out.append(.code(id: UUID(), text: body))
+            out.append(.code(id: nextSegmentID, text: body))
+            nextSegmentID += 1
             codeLines.removeAll(keepingCapacity: true)
         }
 
@@ -97,7 +119,8 @@ struct MarkdownMessageText: View {
             }
 
             if line.isEmpty {
-                out.append(.blank(id: UUID()))
+                out.append(.blank(id: nextSegmentID))
+                nextSegmentID += 1
                 continue
             }
 
@@ -109,10 +132,11 @@ struct MarkdownMessageText: View {
                     failurePolicy: .returnPartiallyParsedIfPossible
                 )
             ) {
-                out.append(.markdown(id: UUID(), text: rendered))
+                out.append(.markdown(id: nextSegmentID, text: rendered))
             } else {
-                out.append(.markdown(id: UUID(), text: AttributedString(displayLine)))
+                out.append(.markdown(id: nextSegmentID, text: AttributedString(displayLine)))
             }
+            nextSegmentID += 1
         }
 
         if inFence {
@@ -120,7 +144,7 @@ struct MarkdownMessageText: View {
         }
 
         if out.isEmpty {
-            return [.markdown(id: UUID(), text: AttributedString(""))]
+            return [.markdown(id: 0, text: AttributedString(""))]
         }
         return out
     }
