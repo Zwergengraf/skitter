@@ -1,5 +1,6 @@
 import AppKit
 import Foundation
+import SwiftUI
 
 @MainActor
 final class StatusItemController: NSObject, NSMenuDelegate {
@@ -11,7 +12,10 @@ final class StatusItemController: NSObject, NSMenuDelegate {
     private let openAbout: () -> Void
     private let statusMenu = NSMenu()
     private let unreadBadgeView = NSView(frame: .zero)
+    private var statusIconHostingView: PassthroughHostingView<MenuBarStatusIconView>?
+    private var lastStatusIconStyle: MenuBarStatusIconStyle?
     private var refreshTimer: Timer?
+    private let statusSymbolPointSize: CGFloat = 19
 
     init(
         state: AppState,
@@ -25,7 +29,7 @@ final class StatusItemController: NSObject, NSMenuDelegate {
         self.openConversation = openConversation
         self.openSettings = openSettings
         self.openAbout = openAbout
-        self.statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
+        self.statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
         super.init()
         configureButton()
         refreshAppearance()
@@ -46,8 +50,37 @@ final class StatusItemController: NSObject, NSMenuDelegate {
         button.action = #selector(handleClick(_:))
         button.sendAction(on: [.leftMouseUp, .rightMouseUp])
         button.imagePosition = .imageOnly
+        installStatusIcon(on: button)
         button.toolTip = "Skitter"
         configureUnreadBadge(for: button)
+    }
+
+    private func installStatusIcon(on button: NSStatusBarButton?) {
+        guard let button else { return }
+
+        statusIconHostingView?.removeFromSuperview()
+        statusIconHostingView = nil
+        button.image = nil
+
+        let style = currentStatusIconStyle()
+        let hostingView = PassthroughHostingView(
+            rootView: MenuBarStatusIconView(
+                style: style,
+                pointSize: statusSymbolPointSize
+            )
+        )
+        hostingView.translatesAutoresizingMaskIntoConstraints = false
+
+        button.addSubview(hostingView)
+        NSLayoutConstraint.activate([
+            hostingView.centerXAnchor.constraint(equalTo: button.centerXAnchor),
+            hostingView.centerYAnchor.constraint(equalTo: button.centerYAnchor),
+            hostingView.widthAnchor.constraint(equalToConstant: statusSymbolPointSize + 2),
+            hostingView.heightAnchor.constraint(equalToConstant: statusSymbolPointSize + 2),
+        ])
+
+        statusIconHostingView = hostingView
+        lastStatusIconStyle = style
     }
 
     private func configureUnreadBadge(for button: NSStatusBarButton) {
@@ -312,28 +345,7 @@ final class StatusItemController: NSObject, NSMenuDelegate {
 
     private func refreshAppearance() {
         guard let button = statusItem.button else { return }
-
-        let symbolName: String
-
-        switch state.health {
-        case .checking:
-            symbolName = "clock"
-        case .healthy:
-            switch state.activity {
-            case .idle:
-                symbolName = "checkmark.circle"
-            case .thinking:
-                symbolName = "ellipsis.bubble"
-            case .activeTasks:
-                symbolName = "bolt.circle"
-            }
-        case .error:
-            symbolName = "exclamationmark.triangle"
-        }
-
-        button.image = NSImage(systemSymbolName: symbolName, accessibilityDescription: "Skitter status")
-        button.image?.isTemplate = true
-        button.contentTintColor = nil
+        updateStatusIcon(button: button)
         if state.hasUnreadMessages {
             unreadBadgeView.isHidden = false
             button.toolTip = "\(state.health.label), \(state.activity.label) · \(state.unreadMessageCount) unread"
@@ -341,5 +353,91 @@ final class StatusItemController: NSObject, NSMenuDelegate {
             unreadBadgeView.isHidden = true
             button.toolTip = "\(state.health.label), \(state.activity.label)"
         }
+    }
+
+    private func updateStatusIcon(button: NSStatusBarButton) {
+        if statusIconHostingView == nil {
+            installStatusIcon(on: button)
+            return
+        }
+
+        let style = currentStatusIconStyle()
+        guard style != lastStatusIconStyle else { return }
+        statusIconHostingView?.rootView = MenuBarStatusIconView(
+            style: style,
+            pointSize: statusSymbolPointSize
+        )
+        lastStatusIconStyle = style
+    }
+
+    private func currentStatusIconStyle() -> MenuBarStatusIconStyle {
+        switch state.health {
+        case .error:
+            return MenuBarStatusIconStyle(boltTone: .error, isPulsing: false)
+        case .checking:
+            return MenuBarStatusIconStyle(boltTone: .accent, isPulsing: true)
+        case .healthy:
+            switch state.activity {
+            case .idle:
+                return MenuBarStatusIconStyle(boltTone: .primary, isPulsing: false)
+            case .thinking, .activeTasks:
+                return MenuBarStatusIconStyle(boltTone: .accent, isPulsing: true)
+            }
+        }
+    }
+}
+
+private enum MenuBarBoltTone: Equatable {
+    case primary
+    case accent
+    case error
+}
+
+private struct MenuBarStatusIconStyle: Equatable {
+    let boltTone: MenuBarBoltTone
+    let isPulsing: Bool
+}
+
+private struct MenuBarStatusIconView: View {
+    let style: MenuBarStatusIconStyle
+    let pointSize: CGFloat
+
+    private var boltColor: Color {
+        switch style.boltTone {
+        case .primary:
+            return .primary
+        case .accent:
+            return .accentColor
+        case .error:
+            return .red
+        }
+    }
+
+    private var baseIcon: some View {
+        Image(systemName: "bolt.circle")
+            .font(.system(size: pointSize, weight: .semibold))
+            .symbolRenderingMode(.palette)
+            .foregroundStyle(boltColor, Color.primary.opacity(0.58))
+    }
+
+    var body: some View {
+        Group {
+            if style.isPulsing {
+                if #available(macOS 15.0, *) {
+                    baseIcon.symbolEffect(.pulse, options: .repeat(.continuous))
+                } else {
+                    baseIcon.symbolEffect(.pulse)
+                }
+            } else {
+                baseIcon
+            }
+        }
+        .frame(width: pointSize + 1, height: pointSize + 1)
+    }
+}
+
+private final class PassthroughHostingView<Content: View>: NSHostingView<Content> {
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        nil
     }
 }
