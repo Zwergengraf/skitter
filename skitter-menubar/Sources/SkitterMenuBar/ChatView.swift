@@ -496,6 +496,15 @@ struct ChatView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 Spacer()
+                Button {
+                    copyToPasteboard(markdownForMessage(message))
+                } label: {
+                    Image(systemName: "doc.on.doc")
+                        .font(.caption)
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(.secondary)
+                .help("Copy message as markdown")
             }
 
             MarkdownMessageText(message.content.isEmpty ? "(empty)" : message.content)
