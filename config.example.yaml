@@ -79,7 +79,7 @@ embeddings:
 web_search:
   engine: brave # Options: searxng, brave
   searxng:
-    api_base: http://localhost:8080/search
+    api_base: http://searxng:8080/search
   brave:
     api_key: ""
     api_base: https://api.search.brave.com/res/v1/web/search

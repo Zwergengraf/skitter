@@ -7,6 +7,7 @@ Use Docker Compose when you want a containerized core stack.
 - `postgres`: PostgreSQL + pgvector
 - `api`: Skitter API server
 - `admin-web`: admin UI (served by nginx)
+- `searxng` (profile `searxng`): optional local web search engine
 - `sandbox` (profile `sandbox`): image build target used by API-managed Docker executors
 
 ## Required Environment
@@ -46,10 +47,10 @@ Endpoints:
 
 ## Optional: Run Local SearXNG
 
-This repository includes a separate SearXNG stack:
+SearXNG is included in the root compose file behind a profile:
 
 ```bash
-docker compose -f searxng/docker-compose.yml up -d
+docker compose --profile searxng up -d searxng
 ```
 
 Then set in `config.yaml`:
@@ -58,7 +59,7 @@ Then set in `config.yaml`:
 web_search:
   engine: searxng
   searxng:
-    api_base: http://localhost:8080/search
+    api_base: http://searxng:8080/search
 ```
 
 ## Volume and Mount Behavior

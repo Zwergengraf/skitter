@@ -184,7 +184,7 @@ Notes:
 Optional: run local SearXNG from this repo:
 
 ```bash
-docker compose -f searxng/docker-compose.yml up -d
+docker compose --profile searxng up -d searxng
 ```
 
 Then set in `config.yaml`:
@@ -193,7 +193,7 @@ Then set in `config.yaml`:
 web_search:
   engine: searxng
   searxng:
-    api_base: http://localhost:8888/search
+    api_base: http://searxng:8080/search
 ```
 
 ## Executor Workflow
