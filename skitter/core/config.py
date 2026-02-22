@@ -173,7 +173,14 @@ def _detect_system_timezone() -> str:
 
 
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_prefix="SKITTER_", env_file=".env", env_file_encoding="utf-8")
+    # Ignore unrelated keys in .env (e.g. frontend-only variables) so API startup
+    # does not fail when the repository uses a shared dotenv file.
+    model_config = SettingsConfigDict(
+        env_prefix="SKITTER_",
+        env_file=".env",
+        env_file_encoding="utf-8",
+        extra="ignore",
+    )
 
     db_url: str = Field(default="postgresql+asyncpg://postgres:postgres@localhost:5432/skitter")
     providers: list[ProviderConfig] = Field(default_factory=list)
