@@ -417,7 +417,7 @@ private struct MenuBarStatusIconView: View {
         Image(systemName: "bolt.circle")
             .font(.system(size: pointSize, weight: .semibold))
             .symbolRenderingMode(.palette)
-            .foregroundStyle(boltColor, Color.primary.opacity(0.58))
+            .foregroundStyle(boltColor, Color.white.opacity(0.92))
     }
 
     var body: some View {

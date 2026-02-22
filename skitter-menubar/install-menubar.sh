@@ -6,12 +6,23 @@ BUNDLE_ID="io.skitter.menubar"
 PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 APP_BUNDLE="${HOME}/Applications/${APP_NAME}.app"
 APP_EXECUTABLE="${APP_BUNDLE}/Contents/MacOS/${APP_NAME}"
+RESOURCES_DIR="${APP_BUNDLE}/Contents/Resources"
 INFO_PLIST="${APP_BUNDLE}/Contents/Info.plist"
 LAUNCH_AGENT="${HOME}/Library/LaunchAgents/${BUNDLE_ID}.plist"
 LOG_DIR="${HOME}/Library/Logs/${APP_NAME}"
 LAUNCH_LABEL="${BUNDLE_ID}"
 GUI_DOMAIN="gui/$(id -u)"
 MODE="${1:-install}"
+APP_ICON_NAME="AppIcon.icns"
+ICON_SCRIPT="${PROJECT_DIR}/scripts/generate_app_icon.swift"
+ICON_BUILD_DIR="${PROJECT_DIR}/.build/icon-build"
+ICONSET_DIR="${ICON_BUILD_DIR}/AppIcon.iconset"
+ICON_SOURCE_PNG="${ICON_BUILD_DIR}/AppIcon-1024.png"
+ICON_DEST_PATH="${RESOURCES_DIR}/${APP_ICON_NAME}"
+CLANG_CACHE_DIR="${PROJECT_DIR}/.build/clang-module-cache"
+
+mkdir -p "${CLANG_CACHE_DIR}"
+export CLANG_MODULE_CACHE_PATH="${CLANG_MODULE_CACHE_PATH:-${CLANG_CACHE_DIR}}"
 
 print_usage() {
   cat <<'EOF'
@@ -30,6 +41,41 @@ build_release() {
   swift build -c release --package-path "${PROJECT_DIR}"
 }
 
+generate_app_icon() {
+  if [[ ! -f "${ICON_SCRIPT}" ]]; then
+    return
+  fi
+  if ! command -v sips >/dev/null 2>&1 || ! command -v iconutil >/dev/null 2>&1; then
+    echo "Warning: sips or iconutil missing; skipping app icon generation."
+    return
+  fi
+
+  rm -rf "${ICON_BUILD_DIR}"
+  mkdir -p "${ICONSET_DIR}"
+
+  if ! swift "${ICON_SCRIPT}" "${ICON_SOURCE_PNG}"; then
+    echo "Warning: app icon PNG generation failed; continuing without app icon."
+    rm -rf "${ICON_BUILD_DIR}"
+    return
+  fi
+
+  sips -s format png -z 16 16 "${ICON_SOURCE_PNG}" --out "${ICONSET_DIR}/icon_16x16.png" >/dev/null
+  sips -s format png -z 32 32 "${ICON_SOURCE_PNG}" --out "${ICONSET_DIR}/icon_16x16@2x.png" >/dev/null
+  sips -s format png -z 32 32 "${ICON_SOURCE_PNG}" --out "${ICONSET_DIR}/icon_32x32.png" >/dev/null
+  sips -s format png -z 64 64 "${ICON_SOURCE_PNG}" --out "${ICONSET_DIR}/icon_32x32@2x.png" >/dev/null
+  sips -s format png -z 128 128 "${ICON_SOURCE_PNG}" --out "${ICONSET_DIR}/icon_128x128.png" >/dev/null
+  sips -s format png -z 256 256 "${ICON_SOURCE_PNG}" --out "${ICONSET_DIR}/icon_128x128@2x.png" >/dev/null
+  sips -s format png -z 256 256 "${ICON_SOURCE_PNG}" --out "${ICONSET_DIR}/icon_256x256.png" >/dev/null
+  sips -s format png -z 512 512 "${ICON_SOURCE_PNG}" --out "${ICONSET_DIR}/icon_256x256@2x.png" >/dev/null
+  sips -s format png -z 512 512 "${ICON_SOURCE_PNG}" --out "${ICONSET_DIR}/icon_512x512.png" >/dev/null
+  sips -s format png -z 1024 1024 "${ICON_SOURCE_PNG}" --out "${ICONSET_DIR}/icon_512x512@2x.png" >/dev/null
+
+  if ! iconutil -c icns "${ICONSET_DIR}" -o "${ICON_DEST_PATH}"; then
+    echo "Warning: iconutil failed; continuing without app icon."
+  fi
+  rm -rf "${ICON_BUILD_DIR}"
+}
+
 install_app_bundle() {
   local release_bin="${PROJECT_DIR}/.build/release/${APP_NAME}"
   if [[ ! -x "${release_bin}" ]]; then
@@ -38,15 +84,17 @@ install_app_bundle() {
   fi
 
   echo "[2/4] Installing app bundle at ${APP_BUNDLE}..."
-  mkdir -p "${APP_BUNDLE}/Contents/MacOS"
+  mkdir -p "${APP_BUNDLE}/Contents/MacOS" "${RESOURCES_DIR}"
   cp "${release_bin}" "${APP_EXECUTABLE}"
   chmod +x "${APP_EXECUTABLE}"
+  generate_app_icon
 
   cat > "${INFO_PLIST}" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
+  <key>CFBundleIconFile</key><string>AppIcon</string>
   <key>CFBundleName</key><string>${APP_NAME}</string>
   <key>CFBundleDisplayName</key><string>${APP_NAME}</string>
   <key>CFBundleIdentifier</key><string>${BUNDLE_ID}</string>
