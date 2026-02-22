@@ -104,11 +104,14 @@ indirect enum JSONValue: Equatable, Decodable {
 }
 
 struct MessageAttachment: Identifiable, Equatable {
-    let id = UUID()
     let filename: String
     let contentType: String
     let downloadURL: String?
     let sourceURL: String?
+
+    var id: String {
+        "\(filename)|\(contentType)|\(downloadURL ?? "")|\(sourceURL ?? "")"
+    }
 }
 
 struct ChatMessage: Identifiable, Equatable {

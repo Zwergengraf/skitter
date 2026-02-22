@@ -1339,7 +1339,7 @@ final class AppState: ObservableObject {
 
     private func applySyncedMessages(_ synced: [ChatMessage]) {
         let merged = mergedMessagesWithOverlay(synced)
-        if messages == merged {
+        if hasSameMessageIdentity(messages, merged) {
             return
         }
         if !isChatWindowVisible {
@@ -1352,6 +1352,18 @@ final class AppState: ObservableObject {
             }
         }
         messages = merged
+    }
+
+    private func hasSameMessageIdentity(_ lhs: [ChatMessage], _ rhs: [ChatMessage]) -> Bool {
+        guard lhs.count == rhs.count else {
+            return false
+        }
+        for (left, right) in zip(lhs, rhs) {
+            if left.id != right.id {
+                return false
+            }
+        }
+        return true
     }
 
     private func mergedMessagesWithOverlay(_ synced: [ChatMessage]) -> [ChatMessage] {

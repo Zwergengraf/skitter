@@ -34,6 +34,11 @@ struct APIClient {
         formatter.formatOptions = [.withInternetDateTime]
         return formatter
     }()
+    private static let decodeQueue = DispatchQueue(
+        label: "io.skitter.menubar.api.decode",
+        qos: .userInitiated,
+        attributes: .concurrent
+    )
 
     init(settings: SettingsStore, session: URLSession? = nil) {
         self.settings = settings
@@ -55,7 +60,7 @@ struct APIClient {
         request.httpMethod = "GET"
         let (data, response) = try await session.data(for: request)
         try ensureHTTP200(response: response, data: data)
-        let payload = try decode(HealthPayload.self, from: data)
+        let payload = try await decode(HealthPayload.self, from: data)
         return payload.status.lowercased() == "ok"
     }
 
@@ -335,7 +340,7 @@ struct APIClient {
         }
         let (data, response) = try await session.data(for: request)
         try ensureHTTP200(response: response, data: data)
-        return try decode(T.self, from: data)
+        return try await decode(T.self, from: data)
     }
 
     private func buildRequest(path: String, method: String, requiresAPIKey: Bool) throws -> URLRequest {
@@ -413,12 +418,22 @@ struct APIClient {
         }
     }
 
-    private func decode<T: Decodable>(_ type: T.Type, from data: Data) throws -> T {
-        do {
-            return try JSONDecoder().decode(type, from: data)
-        } catch {
-            throw APIError.decoding(error.localizedDescription)
+    private func decode<T: Decodable>(_ type: T.Type, from data: Data) async throws -> T {
+        let decodeData = data
+        return try await withCheckedThrowingContinuation { continuation in
+            Self.decodeQueue.async {
+                do {
+                    let value: T = try Self.decodeFromData(decodeData)
+                    continuation.resume(returning: value)
+                } catch {
+                    continuation.resume(throwing: APIError.decoding(error.localizedDescription))
+                }
+            }
         }
+    }
+
+    nonisolated private static func decodeFromData<T: Decodable>(_ data: Data) throws -> T {
+        try JSONDecoder().decode(T.self, from: data)
     }
 
     private func parseDate(_ raw: String) -> Date {
