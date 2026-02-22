@@ -755,6 +755,17 @@ class AgentRuntime:
     async def _get_session_model(self, session_id: str, envelope: MessageEnvelope) -> str:
         if envelope.origin == "heartbeat":
             return resolve_model_name(None, purpose="heartbeat")
+        metadata = envelope.metadata or {}
+        model_override = str(metadata.get("model_name") or "").strip()
+        if model_override:
+            try:
+                return resolve_model_name(model_override, purpose="main")
+            except Exception:
+                _logger.warning(
+                    "Ignoring invalid per-message model override '%s' for session=%s",
+                    model_override,
+                    session_id,
+                )
         cached = self._session_models.get(session_id)
         if cached:
             return cached

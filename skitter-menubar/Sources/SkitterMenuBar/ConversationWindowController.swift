@@ -47,8 +47,8 @@ final class ConversationWindowController: NSObject, NSWindowDelegate {
         let window = NSWindow(contentViewController: host)
         window.title = "Skitter Conversation"
         window.styleMask = [.titled, .closable, .fullSizeContentView]
-        window.setContentSize(NSSize(width: 500, height: 720))
-        window.minSize = NSSize(width: 460, height: 660)
+        window.setContentSize(NSSize(width: 500, height: 700))
+        window.minSize = NSSize(width: 460, height: 650)
         window.titlebarAppearsTransparent = true
         window.titleVisibility = .hidden
         window.isOpaque = false

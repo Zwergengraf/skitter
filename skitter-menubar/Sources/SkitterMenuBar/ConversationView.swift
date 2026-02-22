@@ -2,6 +2,7 @@ import SwiftUI
 
 struct ConversationView: View {
     @ObservedObject var state: AppState
+    private let orbDiameter: CGFloat = 262
 
     private var statusLine: String {
         if !state.conversationStatusText.isEmpty {
@@ -32,6 +33,24 @@ struct ConversationView: View {
         return Color.secondary
     }
 
+    private var selectedConversationModelName: String {
+        state.conversationModelName.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private var conversationModelMenuLabel: String {
+        if selectedConversationModelName.isEmpty {
+            return "Session default"
+        }
+        return selectedConversationModelName
+    }
+
+    private var conversationModelHint: String {
+        if selectedConversationModelName.isEmpty {
+            return "Uses active session model"
+        }
+        return "Conversation-only model override"
+    }
+
     var body: some View {
         ZStack {
             BackdropBlurView(material: .hudWindow, blendingMode: .behindWindow, emphasized: true)
@@ -57,64 +76,128 @@ struct ConversationView: View {
             .blendMode(.plusLighter)
             .offset(y: -28)
 
-            VStack(spacing: 16) {
-                Text("Skitter Voice")
-                    .font(.system(size: 18, weight: .semibold, design: .rounded))
-                    .foregroundStyle(.white.opacity(0.94))
-                    .frame(maxWidth: .infinity, alignment: .center)
+            VStack(spacing: 0) {
+                VStack(spacing: 16) {
+                    Text("Skitter Voice")
+                        .font(.system(size: 18, weight: .semibold, design: .rounded))
+                        .foregroundStyle(.white.opacity(0.94))
+                        .frame(maxWidth: .infinity, alignment: .center)
 
-                VoiceOrbView(
-                    ttsLevel: state.conversationTTSLevel,
-                    isSpeaking: state.isConversationTTSPlaying,
-                    isListening: state.isConversationListening,
-                    isWaiting: state.isConversationAwaitingReply || state.isConversationStarting
-                )
-                .frame(width: 308, height: 308)
-                .padding(.top, 2)
+                    VoiceOrbView(
+                        ttsLevel: state.conversationTTSLevel,
+                        isSpeaking: state.isConversationTTSPlaying,
+                        isListening: state.isConversationListening,
+                        isWaiting: state.isConversationAwaitingReply || state.isConversationStarting
+                    )
+                    .frame(width: orbDiameter, height: orbDiameter)
+                    .padding(.top, 2)
 
-                Button(state.isConversationListening || state.isConversationStarting ? "Stop" : "Start") {
-                    Task { await state.toggleConversationListening() }
+                    Button(state.isConversationListening || state.isConversationStarting ? "Stop" : "Start") {
+                        Task { await state.toggleConversationListening() }
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .tint(state.isConversationListening ? .red.opacity(0.85) : statusTint.opacity(0.85))
+
+                    Text(statusLine)
+                        .font(.system(size: 13, weight: .medium, design: .rounded))
+                        .foregroundStyle(statusTint.opacity(0.95))
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 7)
+                        .background(.thinMaterial, in: Capsule())
+
+                    transcriptSlot
+
+                    ScrollView {
+                        Text(responseText)
+                            .font(.system(size: 15, weight: .regular, design: .rounded))
+                            .foregroundStyle(.white.opacity(0.92))
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    .frame(maxWidth: .infinity, minHeight: 96, maxHeight: 176, alignment: .topLeading)
+                    .padding(14)
+                    .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 20, style: .continuous))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 20, style: .continuous)
+                            .stroke(.white.opacity(0.12), lineWidth: 1)
+                    )
+                    .shadow(color: .black.opacity(0.30), radius: 20, x: 0, y: 10)
+
+                    if let banner = state.errorBanner, !banner.isEmpty {
+                        Text(banner)
+                            .font(.system(size: 12, weight: .medium, design: .rounded))
+                            .foregroundStyle(Color(red: 1.0, green: 0.66, blue: 0.66))
+                            .padding(.horizontal, 10)
+                            .lineLimit(3)
+                    }
                 }
-                .buttonStyle(.borderedProminent)
-                .tint(state.isConversationListening ? .red.opacity(0.85) : statusTint.opacity(0.85))
+                .padding(.top, 28)
+                .padding(.horizontal, 20)
+                .padding(.bottom, 10)
 
-                Text(statusLine)
-                    .font(.system(size: 13, weight: .medium, design: .rounded))
-                    .foregroundStyle(statusTint.opacity(0.95))
+                Divider()
+
+                conversationModelPicker
                     .padding(.horizontal, 12)
-                    .padding(.vertical, 7)
-                    .background(.thinMaterial, in: Capsule())
-
-                transcriptSlot
-
-                ScrollView {
-                    Text(responseText)
-                        .font(.system(size: 15, weight: .regular, design: .rounded))
-                        .foregroundStyle(.white.opacity(0.92))
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                }
-                .frame(maxWidth: .infinity, minHeight: 110, maxHeight: 190, alignment: .topLeading)
-                .padding(14)
-                .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 20, style: .continuous))
-                .overlay(
-                    RoundedRectangle(cornerRadius: 20, style: .continuous)
-                        .stroke(.white.opacity(0.12), lineWidth: 1)
-                )
-                .shadow(color: .black.opacity(0.30), radius: 20, x: 0, y: 10)
-
-                if let banner = state.errorBanner, !banner.isEmpty {
-                    Text(banner)
-                        .font(.system(size: 12, weight: .medium, design: .rounded))
-                        .foregroundStyle(Color(red: 1.0, green: 0.66, blue: 0.66))
-                        .padding(.horizontal, 10)
-                        .lineLimit(3)
-                }
+                    .padding(.vertical, 6)
             }
-            .padding(.top, 34)
-            .padding(.horizontal, 20)
-            .padding(.bottom, 20)
         }
         .frame(minWidth: 460, minHeight: 660)
+    }
+
+    @ViewBuilder
+    private var conversationModelPicker: some View {
+        HStack(spacing: 10) {
+            Label("Model:", systemImage: "cpu")
+                .lineLimit(1)
+                .foregroundStyle(.white.opacity(0.78))
+
+            Menu {
+                Button {
+                    state.setConversationModelName("")
+                } label: {
+                    if selectedConversationModelName.isEmpty {
+                        Label("Session default (\(state.modelName))", systemImage: "checkmark")
+                    } else {
+                        Text("Session default (\(state.modelName))")
+                    }
+                }
+
+                if !state.availableModels.isEmpty {
+                    Divider()
+                    ForEach(state.availableModels, id: \.self) { model in
+                        Button {
+                            state.setConversationModelName(model)
+                        } label: {
+                            if model == selectedConversationModelName {
+                                Label(model, systemImage: "checkmark")
+                            } else {
+                                Text(model)
+                            }
+                        }
+                    }
+                }
+            } label: {
+                Text(conversationModelMenuLabel)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 3)
+                    .background(
+                        RoundedRectangle(cornerRadius: 6)
+                            .fill(Color.white.opacity(0.10))
+                    )
+            }
+            .menuStyle(.borderlessButton)
+
+            Text(conversationModelHint)
+                .lineLimit(1)
+                .truncationMode(.middle)
+                .minimumScaleFactor(0.85)
+
+            Spacer()
+        }
+        .font(.caption.monospaced())
+        .foregroundStyle(.white.opacity(0.76))
     }
 
     @ViewBuilder

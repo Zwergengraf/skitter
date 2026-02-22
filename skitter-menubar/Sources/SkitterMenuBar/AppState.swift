@@ -49,6 +49,7 @@ final class AppState: ObservableObject {
     @Published private(set) var conversationStatusText: String = ""
     @Published private(set) var conversationTranscriptText: String = ""
     @Published private(set) var conversationResponseText: String = ""
+    @Published private(set) var conversationModelName: String = ""
     @Published private(set) var isConversationTTSPlaying: Bool = false
     @Published private(set) var conversationTTSLevel: Double = 0
     @Published private(set) var whisperDownloadInProgress: Bool = false
@@ -93,6 +94,7 @@ final class AppState: ObservableObject {
     init(settings: SettingsStore) {
         self.settings = settings
         self.api = APIClient(settings: settings)
+        self.conversationModelName = settings.conversationModelName.trimmingCharacters(in: .whitespacesAndNewlines)
         self.ttsPlayer.onPlaybackStateChange = { [weak self] isPlaying in
             self?.isConversationTTSPlaying = isPlaying
             if !isPlaying {
@@ -840,6 +842,7 @@ final class AppState: ObservableObject {
             resolvedSessionID = id
             let baseURL = settings.apiURL
             let apiKey = settings.apiKey
+            let modelNameOverride = conversationModelName.trimmingCharacters(in: .whitespacesAndNewlines)
             let userMessage = ChatMessage(
                 id: UUID().uuidString,
                 role: .user,
@@ -858,7 +861,8 @@ final class AppState: ObservableObject {
                 baseURL: baseURL,
                 apiKey: apiKey,
                 sessionID: id,
-                text: text
+                text: text,
+                modelNameOverride: modelNameOverride.isEmpty ? nil : modelNameOverride
             )
             isSending = false
             requestStartedAt = nil
@@ -937,7 +941,8 @@ final class AppState: ObservableObject {
         baseURL: String,
         apiKey: String,
         sessionID: String,
-        text: String
+        text: String,
+        modelNameOverride: String?
     ) async throws -> ConversationHTTPMessage {
         let url = try conversationURL(baseURL: baseURL, pathSegments: ["v1", "messages"])
         let token = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -950,8 +955,15 @@ final class AppState: ObservableObject {
         request.timeoutInterval = 900
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        var metadata: [String: String] = [:]
+        if let modelNameOverride {
+            let cleaned = modelNameOverride.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !cleaned.isEmpty {
+                metadata["model_name"] = cleaned
+            }
+        }
         request.httpBody = try JSONEncoder().encode(
-            ConversationMessageCreateBody(session_id: sessionID, text: text, metadata: [:])
+            ConversationMessageCreateBody(session_id: sessionID, text: text, metadata: metadata)
         )
 
         let (data, response) = try await conversationURLSession.data(for: request)
@@ -1210,6 +1222,16 @@ final class AppState: ObservableObject {
         isChatPinned.toggle()
     }
 
+    func setConversationModelName(_ modelName: String) {
+        let cleaned = modelName.trimmingCharacters(in: .whitespacesAndNewlines)
+        conversationModelName = cleaned
+        settings.conversationModelName = cleaned
+        if !cleaned.isEmpty && !availableModels.contains(cleaned) {
+            availableModels.append(cleaned)
+            availableModels.sort()
+        }
+    }
+
     private func pollLoop() async {
         while !Task.isCancelled {
             if isConversationWindowVisible && (isConversationAwaitingReply || isSending) {
@@ -1322,6 +1344,10 @@ final class AppState: ObservableObject {
         }
         if !modelName.isEmpty && !availableModels.contains(modelName) {
             availableModels.append(modelName)
+            availableModels.sort()
+        }
+        if !conversationModelName.isEmpty && !availableModels.contains(conversationModelName) {
+            availableModels.append(conversationModelName)
             availableModels.sort()
         }
         if shouldRefreshAuthUser() {

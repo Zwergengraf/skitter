@@ -263,7 +263,7 @@ struct ChatView: View {
             Divider()
 
             HStack(spacing: 10) {
-                Text("Model:")
+                Label("Model:", systemImage: "cpu")
                     .lineLimit(1)
                 Menu {
                     if state.availableModels.isEmpty {
