@@ -694,6 +694,11 @@ final class AppState: ObservableObject {
         let text = conversationLatestTranscript.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else { return }
         guard text == expectedTranscript else { return }
+        let silenceSeconds = max(0.4, settings.conversationSilenceSeconds)
+        if conversationTranscriber.hasRecentSpeechActivity(within: silenceSeconds) {
+            scheduleConversationAutoSend(expectedTranscript: expectedTranscript)
+            return
+        }
 
         let previousAssistantID = messages.reversed().first(where: { $0.role == .assistant })?.id
 

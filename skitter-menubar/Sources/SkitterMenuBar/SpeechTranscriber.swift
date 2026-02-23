@@ -32,6 +32,9 @@ final class SpeechTranscriber {
     private let audioQueue = DispatchQueue(label: "io.skitter.menubar.audio", qos: .userInitiated)
     private var capturedSamples: [Float] = []
     private var lastProcessedSampleCount: Int = 0
+    private var lastSpeechActivityUptimeNanos: UInt64 = 0
+    private var noiseFloorMeanAbs: Float = 0
+    private var hasNoiseFloorEstimate = false
     private var transcriptionInFlight = false
     private var latestText: String = ""
     private var isStreaming = false
@@ -72,6 +75,9 @@ final class SpeechTranscriber {
         latestText = ""
         capturedSamples = []
         lastProcessedSampleCount = 0
+        lastSpeechActivityUptimeNanos = 0
+        noiseFloorMeanAbs = 0
+        hasNoiseFloorEstimate = false
         transcriptionInFlight = false
 
         let (stream, continuation) = whisper.audioProcessor.startStreamingRecordingLive()
@@ -160,6 +166,9 @@ final class SpeechTranscriber {
         latestText = ""
         capturedSamples = []
         lastProcessedSampleCount = 0
+        lastSpeechActivityUptimeNanos = 0
+        noiseFloorMeanAbs = 0
+        hasNoiseFloorEstimate = false
         transcriptionInFlight = false
     }
 
@@ -171,8 +180,25 @@ final class SpeechTranscriber {
         latestText = ""
     }
 
+    func hasRecentSpeechActivity(within seconds: Double) -> Bool {
+        let windowSeconds = max(0, seconds)
+        if windowSeconds == 0 {
+            return false
+        }
+        let windowNanos = UInt64((windowSeconds * 1_000_000_000).rounded())
+        return audioQueue.sync {
+            guard lastSpeechActivityUptimeNanos > 0 else { return false }
+            let now = DispatchTime.now().uptimeNanoseconds
+            let elapsed = now >= lastSpeechActivityUptimeNanos
+                ? now - lastSpeechActivityUptimeNanos
+                : 0
+            return elapsed <= windowNanos
+        }
+    }
+
     private func appendSamples(_ chunk: [Float]) {
         audioQueue.async {
+            self.registerSpeechActivity(chunk)
             self.capturedSamples.append(contentsOf: chunk)
             let maxSamples = WhisperKit.sampleRate * 120
             if self.capturedSamples.count > maxSamples {
@@ -181,6 +207,39 @@ final class SpeechTranscriber {
                 self.lastProcessedSampleCount = max(0, self.lastProcessedSampleCount - removeCount)
             }
         }
+    }
+
+    private func registerSpeechActivity(_ chunk: [Float]) {
+        guard !chunk.isEmpty else { return }
+
+        var sumAbs: Float = 0
+        var peakAbs: Float = 0
+        for sample in chunk {
+            let magnitude = Swift.abs(sample)
+            sumAbs += magnitude
+            if magnitude > peakAbs {
+                peakAbs = magnitude
+            }
+        }
+
+        let meanAbs = sumAbs / Float(chunk.count)
+        if !hasNoiseFloorEstimate {
+            noiseFloorMeanAbs = meanAbs
+            hasNoiseFloorEstimate = true
+        }
+
+        let baseline = max(noiseFloorMeanAbs, 0.0007)
+        let speechMeanThreshold = max(0.0022, baseline * 3.2)
+        let speechPeakThreshold = max(0.016, baseline * 10.0)
+        let isSpeech = meanAbs >= speechMeanThreshold || peakAbs >= speechPeakThreshold
+        if isSpeech {
+            lastSpeechActivityUptimeNanos = DispatchTime.now().uptimeNanoseconds
+            return
+        }
+
+        // Adapt noise floor only from quiet chunks, so speech does not raise the silence baseline.
+        let alpha: Float = 0.04
+        noiseFloorMeanAbs = ((1 - alpha) * noiseFloorMeanAbs) + (alpha * meanAbs)
     }
 
     private func loadWhisperKitIfNeeded(modelName: String, modelFolderPath: String?) async throws -> WhisperKit {
