@@ -38,11 +38,23 @@ class SessionManager:
     ) -> str:
         key = cache_key or scope_id
         cached = self._scope_session.get(key)
-        if cached:
-            return cached
         ensure_user_workspace(user_id)
         async with SessionLocal() as session:
             repo = Repository(session)
+            if cached:
+                cached_session = await repo.get_session(cached)
+                if (
+                    cached_session is not None
+                    and cached_session.status == "active"
+                    and cached_session.user_id == user_id
+                    and (cached_session.scope_type or "private") == scope_type
+                    and (cached_session.scope_id or "") == scope_id
+                ):
+                    self._scope_session[scope_id] = cached_session.id
+                    return cached_session.id
+                self._scope_session.pop(key, None)
+                if key != scope_id:
+                    self._scope_session.pop(scope_id, None)
             active = await repo.get_active_session_by_scope(scope_type, scope_id)
             if active is None:
                 model_name = resolve_model_name(None, purpose="main")
@@ -54,6 +66,7 @@ class SessionManager:
                     scope_id=scope_id,
                 )
         self._scope_session[key] = active.id
+        self._scope_session[scope_id] = active.id
         return active.id
 
     async def start_new_session(
