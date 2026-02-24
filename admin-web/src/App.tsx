@@ -63,10 +63,55 @@ const views: Record<NavItemId, string> = {
 };
 
 type OverviewRange = "today" | "24h" | "week" | "month" | "year";
+type TableRange = "all" | "today" | "week" | "month";
+
+const SESSIONS_PAGE_SIZE = 25;
+const TOOL_RUNS_PAGE_SIZE = 15;
+
+const rangeStart = (range: TableRange): number | null => {
+  const now = new Date();
+  if (range === "all") {
+    return null;
+  }
+  if (range === "today") {
+    const start = new Date(now);
+    start.setHours(0, 0, 0, 0);
+    return start.getTime();
+  }
+  if (range === "week") {
+    const start = new Date(now);
+    const day = (start.getDay() + 6) % 7;
+    start.setDate(start.getDate() - day);
+    start.setHours(0, 0, 0, 0);
+    return start.getTime();
+  }
+  const start = new Date(now.getFullYear(), now.getMonth(), 1);
+  start.setHours(0, 0, 0, 0);
+  return start.getTime();
+};
+
+const inRange = (value: string | null | undefined, range: TableRange): boolean => {
+  const start = rangeStart(range);
+  if (start == null) {
+    return true;
+  }
+  if (!value) {
+    return false;
+  }
+  const ts = Date.parse(value);
+  if (Number.isNaN(ts)) {
+    return false;
+  }
+  return ts >= start;
+};
 
 export default function App() {
   const [active, setActive] = useState<NavItemId>("overview");
   const [filter, setFilter] = useState("all");
+  const [sessionsRange, setSessionsRange] = useState<TableRange>("today");
+  const [sessionsPage, setSessionsPage] = useState<number>(1);
+  const [toolRunsRange, setToolRunsRange] = useState<TableRange>("today");
+  const [toolRunsPage, setToolRunsPage] = useState<number>(1);
   const [overview, setOverview] = useState<OverviewResponse | null>(null);
   const [overviewError, setOverviewError] = useState<string | null>(null);
   const [overviewLoading, setOverviewLoading] = useState<boolean>(false);
@@ -245,6 +290,15 @@ export default function App() {
       return 0;
     });
   }, [sessionsData]);
+  const visibleSessions = useMemo(() => {
+    return sessionsByLastActive.filter((session) => inRange(session.last_active_at, sessionsRange));
+  }, [sessionsByLastActive, sessionsRange]);
+  const sessionsPageCount = Math.max(1, Math.ceil(visibleSessions.length / SESSIONS_PAGE_SIZE));
+  const pagedSessions = useMemo(() => {
+    const clampedPage = Math.min(sessionsPage, sessionsPageCount);
+    const start = (clampedPage - 1) * SESSIONS_PAGE_SIZE;
+    return visibleSessions.slice(start, start + SESSIONS_PAGE_SIZE);
+  }, [visibleSessions, sessionsPage, sessionsPageCount]);
   const sessionTimeline = useMemo(() => {
     if (!sessionDetail) {
       return [];
@@ -1002,6 +1056,16 @@ export default function App() {
     refreshConfig();
   }, [active]);
 
+  useEffect(() => {
+    setSessionsPage(1);
+  }, [sessionsRange, filter]);
+
+  useEffect(() => {
+    if (sessionsPage > sessionsPageCount) {
+      setSessionsPage(sessionsPageCount);
+    }
+  }, [sessionsPage, sessionsPageCount]);
+
   const userLabelFor = (userId: string) => {
     const user = usersData.find(
       (item) => item.id === userId || item.transport_user_id === userId
@@ -1103,6 +1167,25 @@ export default function App() {
       return true;
     });
   }, [toolRunsData, toolRunToolFilter, toolRunUserFilter, toolRunExecutorFilter]);
+  const visibleToolRuns = useMemo(() => {
+    return filteredToolRuns.filter((tool) => inRange(tool.created_at, toolRunsRange));
+  }, [filteredToolRuns, toolRunsRange]);
+  const toolRunsPageCount = Math.max(1, Math.ceil(visibleToolRuns.length / TOOL_RUNS_PAGE_SIZE));
+  const pagedToolRuns = useMemo(() => {
+    const clampedPage = Math.min(toolRunsPage, toolRunsPageCount);
+    const start = (clampedPage - 1) * TOOL_RUNS_PAGE_SIZE;
+    return visibleToolRuns.slice(start, start + TOOL_RUNS_PAGE_SIZE);
+  }, [visibleToolRuns, toolRunsPage, toolRunsPageCount]);
+
+  useEffect(() => {
+    setToolRunsPage(1);
+  }, [toolRunsRange, toolRunToolFilter, toolRunUserFilter, toolRunExecutorFilter]);
+
+  useEffect(() => {
+    if (toolRunsPage > toolRunsPageCount) {
+      setToolRunsPage(toolRunsPageCount);
+    }
+  }, [toolRunsPage, toolRunsPageCount]);
 
   const agentJobUsers = useMemo(() => {
     return Array.from(
@@ -1589,11 +1672,12 @@ export default function App() {
                     </TabsList>
                   </Tabs>
                   <div className="flex items-center gap-3">
-                    <Select defaultValue="today">
+                    <Select value={sessionsRange} onValueChange={(value) => setSessionsRange(value as TableRange)}>
                       <SelectTrigger className="w-40">
                         <SelectValue placeholder="Timeframe" />
                       </SelectTrigger>
                       <SelectContent>
+                        <SelectItem value="all">All</SelectItem>
                         <SelectItem value="today">Today</SelectItem>
                         <SelectItem value="week">This week</SelectItem>
                         <SelectItem value="month">This month</SelectItem>
@@ -1628,8 +1712,8 @@ export default function App() {
                           {sessionsError}
                         </TableCell>
                       </TableRow>
-                    ) : sessionsByLastActive.length ? (
-                      sessionsByLastActive.map((session) => (
+                    ) : visibleSessions.length ? (
+                      pagedSessions.map((session) => (
                         <TableRow
                           key={session.id}
                           className="cursor-pointer"
@@ -1670,12 +1754,44 @@ export default function App() {
                     ) : (
                       <TableRow>
                         <TableCell colSpan={8} className="text-center text-sm text-mutedForeground">
-                          No sessions found.
+                          {sessionsData.length
+                            ? "No sessions found for the selected timeframe."
+                            : "No sessions found."}
                         </TableCell>
                       </TableRow>
                     )}
                   </TableBody>
                 </Table>
+                {!sessionsLoading && !sessionsError && visibleSessions.length ? (
+                  <div className="mt-4 flex items-center justify-between gap-3 border-t border-border pt-4 text-xs text-mutedForeground">
+                    <span>
+                      Showing {(Math.min(sessionsPage, sessionsPageCount) - 1) * SESSIONS_PAGE_SIZE + 1}
+                      –{Math.min(Math.min(sessionsPage, sessionsPageCount) * SESSIONS_PAGE_SIZE, visibleSessions.length)}
+                      {" "}of {visibleSessions.length}
+                    </span>
+                    <div className="flex items-center gap-2">
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        disabled={sessionsPage <= 1}
+                        onClick={() => setSessionsPage((page) => Math.max(1, page - 1))}
+                      >
+                        Previous
+                      </Button>
+                      <span>
+                        Page {Math.min(sessionsPage, sessionsPageCount)} of {sessionsPageCount}
+                      </span>
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        disabled={sessionsPage >= sessionsPageCount}
+                        onClick={() => setSessionsPage((page) => Math.min(sessionsPageCount, page + 1))}
+                      >
+                        Next
+                      </Button>
+                    </div>
+                  </div>
+                ) : null}
               </CardContent>
             </Card>
           </div>
@@ -1731,6 +1847,17 @@ export default function App() {
                       ))}
                     </SelectContent>
                   </Select>
+                  <Select value={toolRunsRange} onValueChange={(value) => setToolRunsRange(value as TableRange)}>
+                    <SelectTrigger className="w-40">
+                      <SelectValue placeholder="Timeframe" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="all">All</SelectItem>
+                      <SelectItem value="today">Today</SelectItem>
+                      <SelectItem value="week">This week</SelectItem>
+                      <SelectItem value="month">This month</SelectItem>
+                    </SelectContent>
+                  </Select>
                   <Button
                     variant="outline"
                     size="sm"
@@ -1738,6 +1865,7 @@ export default function App() {
                       setToolRunToolFilter("all");
                       setToolRunUserFilter("all");
                       setToolRunExecutorFilter("all");
+                      setToolRunsRange("today");
                     }}
                   >
                     Clear filters
@@ -1755,8 +1883,8 @@ export default function App() {
                   <div className="rounded-2xl border border-dashed border-border bg-muted/40 px-4 py-6 text-sm text-mutedForeground">
                     {toolRunsError}
                   </div>
-                ) : filteredToolRuns.length ? (
-                  filteredToolRuns.map((tool) => (
+                ) : visibleToolRuns.length ? (
+                  pagedToolRuns.map((tool) => (
                     <div
                       key={tool.id}
                       className="cursor-pointer rounded-2xl border border-border bg-card px-5 py-4 transition-colors hover:bg-muted/20"
@@ -1867,9 +1995,41 @@ export default function App() {
                   ))
                 ) : (
                   <div className="rounded-2xl border border-dashed border-border bg-muted/40 px-4 py-6 text-sm text-mutedForeground">
-                    {toolRunsData.length ? "No tool runs match the selected filters." : "No tool runs found."}
+                    {toolRunsData.length
+                      ? "No tool runs match the selected filters and timeframe."
+                      : "No tool runs found."}
                   </div>
                 )}
+                {!toolRunsLoading && !toolRunsError && visibleToolRuns.length ? (
+                  <div className="flex items-center justify-between gap-3 border-t border-border pt-4 text-xs text-mutedForeground">
+                    <span>
+                      Showing {(Math.min(toolRunsPage, toolRunsPageCount) - 1) * TOOL_RUNS_PAGE_SIZE + 1}
+                      –{Math.min(Math.min(toolRunsPage, toolRunsPageCount) * TOOL_RUNS_PAGE_SIZE, visibleToolRuns.length)}
+                      {" "}of {visibleToolRuns.length}
+                    </span>
+                    <div className="flex items-center gap-2">
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        disabled={toolRunsPage <= 1}
+                        onClick={() => setToolRunsPage((page) => Math.max(1, page - 1))}
+                      >
+                        Previous
+                      </Button>
+                      <span>
+                        Page {Math.min(toolRunsPage, toolRunsPageCount)} of {toolRunsPageCount}
+                      </span>
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        disabled={toolRunsPage >= toolRunsPageCount}
+                        onClick={() => setToolRunsPage((page) => Math.min(toolRunsPageCount, page + 1))}
+                      >
+                        Next
+                      </Button>
+                    </div>
+                  </div>
+                ) : null}
               </CardContent>
             </Card>
           </div>
