@@ -99,8 +99,13 @@ class SchedulerService:
             repo = Repository(session)
             jobs = await repo.list_scheduled_jobs_all()
         for job in jobs:
+            next_run: datetime | None = None
             if job.enabled:
                 self._schedule_job(job.id, job.schedule_type, job.schedule_expr, job.timezone)
+                next_run = self._next_run_utc(job.id)
+            async with SessionLocal() as session:
+                repo = Repository(session)
+                await repo.update_scheduled_job(job.id, next_run_at=next_run)
 
     def _parse_run_date(self, run_at: str, timezone: str) -> datetime:
         dt = datetime.fromisoformat(run_at)
@@ -343,3 +348,10 @@ class SchedulerService:
                     finished_at=self._utcnow(),
                     error=str(exc),
                 )
+        finally:
+            async with SessionLocal() as session:
+                repo = Repository(session)
+                refreshed = await repo.get_scheduled_job(job_id)
+                if refreshed is not None:
+                    next_run = self._next_run_utc(job_id) if refreshed.enabled else None
+                    await repo.update_scheduled_job(job_id, next_run_at=next_run)

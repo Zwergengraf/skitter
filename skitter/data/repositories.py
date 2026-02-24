@@ -900,7 +900,13 @@ class Repository:
         if job is None:
             return None
         for key, value in fields.items():
-            if hasattr(job, key) and value is not None:
+            if not hasattr(job, key):
+                continue
+            if key == "next_run_at":
+                # Allow explicitly clearing next run timestamps for paused/one-shot jobs.
+                setattr(job, key, value)
+                continue
+            if value is not None:
                 setattr(job, key, value)
         job.updated_at = self._utcnow()
         await self.session.commit()
