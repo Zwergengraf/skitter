@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 
 import pytest
 
@@ -56,6 +57,14 @@ class _FakeRepo:
         self.sessions[row.id] = row
         return row
 
+    async def end_session(self, session_id: str, status: str = "ended") -> _SessionRow | None:
+        row = self.sessions.get(session_id)
+        if row is None:
+            return None
+        row.status = status
+        self.sessions[session_id] = row
+        return row
+
 
 class _SessionCtx:
     def __init__(self, token: object) -> None:
@@ -70,7 +79,8 @@ class _SessionCtx:
 
 
 class _RuntimeStub:
-    async def summarize_session(self, session_id: str) -> str:
+    async def summarize_session(self, session_id: str, model_name: str | None = None) -> str:
+        _ = model_name
         _ = session_id
         return "summary"
 
@@ -122,3 +132,57 @@ async def test_get_or_create_session_refreshes_stale_cached_session(
     assert resolved == new_session.id
     assert manager._scope_session["private:user-1"] == new_session.id
     assert repo.create_calls == 0
+
+
+@pytest.mark.asyncio
+async def test_start_new_session_uses_active_model_for_summary(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    repo = _FakeRepo()
+    active_session = _SessionRow(
+        id="session-active",
+        user_id="user-1",
+        status="active",
+        scope_type="private",
+        scope_id="private:user-1",
+        model="provider/session-model",
+    )
+    repo.sessions = {active_session.id: active_session}
+
+    token = object()
+    monkeypatch.setattr(sessions_module, "SessionLocal", lambda: _SessionCtx(token))
+    monkeypatch.setattr(sessions_module, "Repository", lambda _session: repo)
+    monkeypatch.setattr(sessions_module, "ensure_user_workspace", lambda _user_id: None)
+    monkeypatch.setattr(sessions_module, "user_workspace_root", lambda user_id: tmp_path / user_id)
+    monkeypatch.setattr(sessions_module, "resolve_model_name", lambda _value, purpose: f"{purpose}-model")
+
+    captured: dict[str, str | None] = {"session_id": None, "model_name": None}
+
+    class _RuntimeCapture:
+        async def summarize_session(self, session_id: str, model_name: str | None = None) -> str:
+            captured["session_id"] = session_id
+            captured["model_name"] = model_name
+            return "summary"
+
+        def clear_history(self, session_id: str) -> None:
+            _ = session_id
+
+    class _MemoryStub:
+        async def index_file(self, user_id: str, session_id: str, summary_path: object, force: bool = False) -> None:
+            _ = user_id, session_id, summary_path, force
+
+    manager = SessionManager(runtime=_RuntimeCapture(), workspace_root="workspace", memory_service=_MemoryStub())
+
+    summary_path, new_session_id = await manager.start_new_session_for_scope(
+        user_id="user-1",
+        scope_type="private",
+        scope_id="private:user-1",
+        origin="discord",
+        channel_id=None,
+    )
+
+    assert summary_path is not None
+    assert new_session_id.startswith("created-")
+    assert captured["session_id"] == "session-active"
+    assert captured["model_name"] == "provider/session-model"

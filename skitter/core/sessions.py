@@ -109,7 +109,15 @@ class SessionManager:
             active = await repo.get_active_session_by_scope(scope_type, scope_id)
             if active is not None:
                 if scope_type == "private":
-                    summary = await self.runtime.summarize_session(active.id)
+                    summary_model_name = (
+                        str(getattr(active, "last_model", "") or "").strip()
+                        or str(getattr(active, "model", "") or "").strip()
+                        or None
+                    )
+                    summary = await self.runtime.summarize_session(
+                        active.id,
+                        model_name=summary_model_name,
+                    )
                     summary_path, _ = self._write_summary(user_id, summary, active.id)
                     if summary_path is not None:
                         await self.memory_service.index_file(user_id, active.id, summary_path, force=True)

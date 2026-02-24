@@ -1329,7 +1329,7 @@ class AgentRuntime:
             repo = Repository(session)
             await repo.set_session_context_summary(session_id, new_summary, checkpoint)
 
-    async def summarize_session(self, session_id: str) -> str:
+    async def summarize_session(self, session_id: str, model_name: str | None = None) -> str:
         await self._ensure_history(session_id)
         messages = self._history.get(session_id, [])
         if not messages:
@@ -1345,7 +1345,7 @@ class AgentRuntime:
         if not list_models():
             return transcript
 
-        llm = build_llm()
+        llm = build_llm(model_name=model_name, purpose="main")
         prompt = [
             SystemMessage(
                 content=("""
