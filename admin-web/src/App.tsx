@@ -222,6 +222,29 @@ export default function App() {
   const sandboxWorkspaces = sandboxStatus?.workspaces ?? [];
   const onlineExecutors = executorsData.filter((executor) => executor.online && !executor.disabled).length;
   const approvedUsers = usersData.filter((user) => user.approved);
+  const sessionsByLastActive = useMemo(() => {
+    const toTs = (value: string | null | undefined) => {
+      if (!value) return 0;
+      const parsed = Date.parse(value);
+      return Number.isNaN(parsed) ? 0 : parsed;
+    };
+    return [...sessionsData].sort((a, b) => {
+      const diff = toTs(b.last_active_at) - toTs(a.last_active_at);
+      if (diff !== 0) {
+        return diff;
+      }
+      if (a.status === b.status) {
+        return 0;
+      }
+      if (a.status === "active") {
+        return -1;
+      }
+      if (b.status === "active") {
+        return 1;
+      }
+      return 0;
+    });
+  }, [sessionsData]);
   const sessionTimeline = useMemo(() => {
     if (!sessionDetail) {
       return [];
@@ -1341,7 +1364,7 @@ export default function App() {
     <div className="app-shell">
       <Sidebar active={active} onSelect={setActive} />
       <div className="flex flex-col gap-8 px-10 py-10 pl-[300px]">
-        <div className="mx-auto flex w-full max-w-[1200px] flex-col gap-8">
+        <div className="mx-auto flex w-full max-w-[1520px] flex-col gap-8">
           <Topbar isDark={isDark} onToggleTheme={setIsDark} />
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-3">
@@ -1605,8 +1628,8 @@ export default function App() {
                           {sessionsError}
                         </TableCell>
                       </TableRow>
-                    ) : sessionsData.length ? (
-                      sessionsData.map((session) => (
+                    ) : sessionsByLastActive.length ? (
+                      sessionsByLastActive.map((session) => (
                         <TableRow
                           key={session.id}
                           className="cursor-pointer"
@@ -3731,7 +3754,7 @@ export default function App() {
                     </div>
                     <div className="rounded-2xl border border-border bg-card p-4">
                       <p className="text-xs uppercase tracking-[0.2em] text-mutedForeground">User</p>
-                      <div className="mt-2">{renderUser(sessionDetail.user)}</div>
+                      <div className="mt-2">{renderUser(sessionDetail.user_id)}</div>
                       <p className="mt-1 text-xs text-mutedForeground">
                         Last active {formatRelativeTime(sessionDetail.last_active_at)}
                       </p>

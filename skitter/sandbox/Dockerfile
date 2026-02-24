@@ -37,9 +37,6 @@ WORKDIR /app
 
 COPY skitter/sandbox/runner.py /app/runner.py
 
-# Set your timezone if needed
-ENV TZ="Europe/Berlin"
-
 ENV SKITTER_WORKSPACE_ROOT=/workspace
 ENV SKITTER_BROWSER_EXECUTABLE=/usr/bin/brave-browser
 ENV HOMEBREW_PREFIX=/home/linuxbrew/.linuxbrew
