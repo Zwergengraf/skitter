@@ -5,13 +5,9 @@ import os
 struct ChatView: View {
     @ObservedObject var state: AppState
     var onOpenConversation: () -> Void
+    var onOpenSetupWizard: () -> Void
     @Environment(\.colorScheme) private var colorScheme
     @State private var visibleLimit: Int = 40
-    @State private var onboardingChecking: Bool = false
-    @State private var onboardingStatusText: String?
-    @State private var onboardingDisplayName: String = ""
-    @State private var onboardingSetupCode: String = ""
-    @State private var onboardingPairCode: String = ""
     @State private var isNearBottom: Bool = true
     private static let progressMessageID = "temporary-progress-message"
     private static let bottomAnchorID = "chat-bottom-anchor"
@@ -111,7 +107,7 @@ struct ChatView: View {
             }
 
             if state.shouldShowOnboarding {
-                onboardingCard()
+                onboardingNotice()
                 Divider()
             }
 
@@ -358,133 +354,26 @@ struct ChatView: View {
     }
 
     @ViewBuilder
-    private func onboardingCard() -> some View {
-        let apiURLBinding = Binding<String>(
-            get: { state.settings.apiURL },
-            set: { state.settings.apiURL = $0 }
-        )
-        let apiKeyBinding = Binding<String>(
-            get: { state.settings.apiKey },
-            set: { state.settings.apiKey = $0 }
-        )
-        VStack(alignment: .leading, spacing: 10) {
-            Text("Welcome to Skitter")
-                .font(.headline)
-            Text("Connect with an existing access token, or bootstrap/pair this device.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-
-            Grid(alignment: .leading, horizontalSpacing: 10, verticalSpacing: 8) {
-                GridRow {
-                    Text("API URL")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .frame(width: 86, alignment: .leading)
-                    TextField("http://localhost:8000", text: apiURLBinding)
-                        .textFieldStyle(.roundedBorder)
-                }
-                GridRow {
-                    Text("Access Token")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .frame(width: 86, alignment: .leading)
-                    SecureField("Optional (set by bootstrap/pair)", text: apiKeyBinding)
-                        .textFieldStyle(.roundedBorder)
-                }
-            }
-
-            HStack(spacing: 8) {
-                Button(onboardingChecking ? "Testing..." : "Test Connection") {
-                    Task {
-                        onboardingChecking = true
-                        onboardingStatusText = nil
-                        await state.reconnect()
-                        onboardingChecking = false
-                        if state.hasWorkingConnection {
-                            onboardingStatusText = "Connected."
-                        } else {
-                            onboardingStatusText = state.errorBanner ?? "Connection failed. Check URL and API key."
-                        }
-                    }
-                }
-                .buttonStyle(.borderedProminent)
-                .disabled(onboardingChecking)
-
-                if state.hasWorkingConnection {
-                    Label("Connected", systemImage: "checkmark.circle.fill")
-                        .font(.caption)
-                        .foregroundStyle(.green)
-                } else {
-                    Label("Not connected", systemImage: "exclamationmark.triangle.fill")
-                        .font(.caption)
-                        .foregroundStyle(.orange)
-                }
-            }
-
-            Divider()
-
-            Grid(alignment: .leading, horizontalSpacing: 10, verticalSpacing: 8) {
-                GridRow {
-                    Text("Name")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .frame(width: 86, alignment: .leading)
-                    TextField("Your display name", text: $onboardingDisplayName)
-                        .textFieldStyle(.roundedBorder)
-                }
-                GridRow {
-                    Text("Setup Code")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .frame(width: 86, alignment: .leading)
-                    SecureField("First-time setup code", text: $onboardingSetupCode)
-                        .textFieldStyle(.roundedBorder)
-                }
-            }
-            HStack(spacing: 8) {
-                Button("Register & Connect") {
-                    Task {
-                        await state.bootstrapAccount(
-                            setupCode: onboardingSetupCode,
-                            displayName: onboardingDisplayName
-                        )
-                        onboardingStatusText = state.errorBanner ?? "Registered and connected."
-                    }
-                }
-                .buttonStyle(.bordered)
-                Spacer()
-            }
-
-            Grid(alignment: .leading, horizontalSpacing: 10, verticalSpacing: 8) {
-                GridRow {
-                    Text("Pair Code")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .frame(width: 86, alignment: .leading)
-                    TextField("ABCD-1234", text: $onboardingPairCode)
-                        .textFieldStyle(.roundedBorder)
-                }
-            }
-            HStack(spacing: 8) {
-                Button("Pair Existing Account") {
-                    Task {
-                        await state.pairAccount(pairCode: onboardingPairCode)
-                        onboardingStatusText = state.errorBanner ?? "Paired and connected."
-                    }
-                }
-                .buttonStyle(.bordered)
-                Spacer()
-            }
-
-            if let onboardingStatusText, !onboardingStatusText.isEmpty {
-                Text(onboardingStatusText)
-                    .font(.caption2)
+    private func onboardingNotice() -> some View {
+        HStack(spacing: 10) {
+            Image(systemName: "wand.and.stars")
+                .foregroundStyle(Color.accentColor)
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Setup required")
+                    .font(.subheadline.weight(.semibold))
+                Text("Open the setup wizard to connect this device.")
+                    .font(.caption)
                     .foregroundStyle(.secondary)
             }
+            Spacer()
+            Button("Open Setup Wizard") {
+                onOpenSetupWizard()
+            }
+            .buttonStyle(.borderedProminent)
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 10)
-        .background(Color.secondary.opacity(0.08))
+        .background(Color.orange.opacity(colorScheme == .dark ? 0.12 : 0.08))
     }
 
     @ViewBuilder

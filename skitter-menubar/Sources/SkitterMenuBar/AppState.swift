@@ -354,6 +354,21 @@ final class AppState: ObservableObject {
         }
     }
 
+    func testServerConnection() async -> Bool {
+        do {
+            let ok = try await api.health()
+            if ok {
+                errorBanner = nil
+            } else {
+                errorBanner = "Server health check reported a non-OK status."
+            }
+            return ok
+        } catch {
+            setError(error)
+            return false
+        }
+    }
+
     func clearWhisperDownloadStateForModelChange() {
         whisperDownloadRequestID = UUID()
         whisperDownloadInProgress = false

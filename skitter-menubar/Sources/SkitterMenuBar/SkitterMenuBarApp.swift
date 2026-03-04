@@ -19,6 +19,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var statusController: StatusItemController?
     private var chatWindowController: ChatWindowController?
     private var conversationWindowController: ConversationWindowController?
+    private var onboardingWindowController: NSWindowController?
     private var settingsWindowController: NSWindowController?
     private var aboutWindowController: NSWindowController?
 
@@ -32,6 +33,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             state: state,
             openConversation: { [weak conversationController] in
                 conversationController?.toggle()
+            },
+            openSetupWizard: { [weak self] in
+                self?.showOnboardingWindow()
             }
         )
         chatWindowController = chatController
@@ -42,11 +46,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             openConversation: { [weak conversationController] in
                 conversationController?.show()
             },
+            openSetupWizard: { [weak self] in self?.showOnboardingWindow() },
             openSettings: { [weak self] in self?.showSettingsWindow() },
             openAbout: { [weak self] in self?.showAboutWindow() }
         )
 
         state.start()
+        if state.shouldShowOnboarding {
+            showOnboardingWindow()
+        }
     }
 
     func applicationWillTerminate(_ notification: Notification) {
@@ -88,6 +96,38 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         let controller = NSWindowController(window: window)
         settingsWindowController = controller
+        controller.showWindow(nil)
+        NSApp.activate(ignoringOtherApps: true)
+    }
+
+    private func showOnboardingWindow() {
+        if let window = onboardingWindowController?.window {
+            window.makeKeyAndOrderFront(nil)
+            NSApp.activate(ignoringOtherApps: true)
+            return
+        }
+
+        let root = OnboardingWizardView(
+            settings: settings,
+            state: state,
+            onClose: { [weak self] in
+                self?.onboardingWindowController?.close()
+            },
+            onFinish: { [weak self] in
+                self?.onboardingWindowController?.close()
+            }
+        )
+        let host = NSHostingController(rootView: root)
+
+        let window = NSWindow(contentViewController: host)
+        window.title = "Skitter Setup"
+        window.styleMask = [.titled, .closable, .miniaturizable]
+        window.setContentSize(NSSize(width: 720, height: 560))
+        window.minSize = NSSize(width: 660, height: 520)
+        window.center()
+
+        let controller = NSWindowController(window: window)
+        onboardingWindowController = controller
         controller.showWindow(nil)
         NSApp.activate(ignoringOtherApps: true)
     }

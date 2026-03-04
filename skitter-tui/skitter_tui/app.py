@@ -18,6 +18,7 @@ from textual.message import Message
 from textual.widgets import Footer, Header, Input, RichLog, Static
 
 from .client import ApiError, AuthUser, SkitterApiClient, StreamEvent
+from .onboarding import OnboardingData, OnboardingWizard
 
 
 @dataclass(slots=True)
@@ -27,6 +28,7 @@ class AppConfig:
     device_name: str | None = None
     session_id: str | None = None
     prefer_saved_token: bool = True
+    prefer_saved_api_url: bool = True
 
 
 @dataclass(slots=True)
@@ -114,7 +116,6 @@ class SkitterTuiApp(App[None]):
     def __init__(self, config: AppConfig) -> None:
         super().__init__()
         self.config = config
-        self.api = SkitterApiClient(config.api_url, api_key=config.access_token)
         self._session_id: str | None = config.session_id
         self._busy = False
         self._stream_stop = asyncio.Event()
@@ -125,6 +126,14 @@ class SkitterTuiApp(App[None]):
         self._persisted_state = self._load_state()
         saved_theme = self._persisted_state.get("theme")
         self._saved_theme = saved_theme if isinstance(saved_theme, str) and saved_theme.strip() else None
+        saved_api_url = self._persisted_state.get("api_url")
+        if (
+            self.config.prefer_saved_api_url
+            and isinstance(saved_api_url, str)
+            and saved_api_url.strip()
+        ):
+            self.config.api_url = saved_api_url.strip()
+        self.config.api_url = self._normalize_api_url(self.config.api_url)
         saved_token = self._persisted_state.get("access_token")
         if (
             self.config.prefer_saved_token
@@ -132,9 +141,10 @@ class SkitterTuiApp(App[None]):
             and saved_token.strip()
         ):
             self.config.access_token = saved_token.strip()
-            self.api.set_token(self.config.access_token)
         elif self.config.access_token:
             self._save_access_token(self.config.access_token)
+        self.api = SkitterApiClient(self.config.api_url, api_key=self.config.access_token)
+        self._save_api_url(self.config.api_url)
         self._auth_user: AuthUser | None = None
 
     def compose(self) -> ComposeResult:
@@ -143,7 +153,7 @@ class SkitterTuiApp(App[None]):
             yield Static("Connecting...", id="status")
             yield RichLog(id="chat", highlight=True, markup=True, wrap=True)
             yield Input(
-                placeholder="Type a message. Commands: /new /memory_reindex /memory_search /schedule_list /model /machine /pair /info /help",
+                placeholder="Type a message. Commands: /new /memory_reindex /memory_search /schedule_list /model /machine /pair /setup /info /help",
                 id="input",
             )
         yield Footer()
@@ -156,10 +166,10 @@ class SkitterTuiApp(App[None]):
         if not self.api.has_token:
             self._append_system(
                 "No access token configured.\n"
-                "Use `/bootstrap <setup_code> <display_name>` for first-time setup, "
-                "or `/pair <pair_code>` to pair an existing account."
+                "Opening setup wizard. You can also run `/setup` later."
             )
-            self._update_status("Ready", "unauthenticated")
+            self._update_status("Setup required", "onboarding")
+            self._present_onboarding_wizard()
         self.run_worker(self._bootstrap(), name="bootstrap", group="bootstrap", exclusive=True)
 
     def watch_theme(self, theme_name: str) -> None:
@@ -170,6 +180,62 @@ class SkitterTuiApp(App[None]):
     async def on_unmount(self) -> None:
         self._stream_stop.set()
         await self.api.aclose()
+
+    def _present_onboarding_wizard(self) -> None:
+        if isinstance(self.screen, OnboardingWizard):
+            return
+        self.push_screen(
+            OnboardingWizard(
+                initial_api_url=self.config.api_url,
+                default_display_name=(self.config.device_name or "Skitter User"),
+            ),
+            self._on_onboarding_closed,
+        )
+
+    def _on_onboarding_closed(self, result: OnboardingData | None) -> None:
+        if result is None:
+            self._append_system("Onboarding canceled. Run `/setup` to continue setup.")
+            self._update_status("Ready", "unauthenticated")
+            return
+        self.run_worker(
+            self._apply_onboarding_data(result),
+            name="onboarding",
+            group="bootstrap",
+            exclusive=True,
+        )
+
+    async def _apply_onboarding_data(self, data: OnboardingData) -> None:
+        self._update_status("Onboarding", "applying configuration")
+        self._stream_stop.set()
+        self._session_id = None
+        self._auth_user = None
+        try:
+            await self._set_api_url(data.api_url)
+        except Exception as exc:
+            self._append_error(f"Invalid API URL: {exc}")
+            self._update_status("Error", "onboarding failed")
+            self._present_onboarding_wizard()
+            return
+
+        if data.auth_mode == "token":
+            token = data.access_token.strip()
+            if not token:
+                self._append_error("Access token is required.")
+                self._update_status("Ready", "unauthenticated")
+                self._present_onboarding_wizard()
+                return
+            self.api.set_token(token)
+            self.config.access_token = token
+            self._save_access_token(token)
+            self._append_system("Token saved. Reconnecting…")
+            self.run_worker(self._bootstrap(), name="bootstrap", group="bootstrap", exclusive=True)
+            return
+
+        if data.auth_mode == "setup":
+            await self._run_bootstrap_command(data.setup_code, data.display_name)
+            return
+
+        await self._run_pair_command(data.pair_code)
 
     async def on_resize(self, event: events.Resize) -> None:
         del event
@@ -194,6 +260,9 @@ class SkitterTuiApp(App[None]):
         except Exception as exc:
             self.post_message(SystemLog(f"Connection failed: {exc}"))
             self.post_message(StatusUpdate("Connection failed", str(exc)))
+            if self.api.has_token and "401" in str(exc):
+                self.post_message(SystemLog("Authentication failed. Opening setup wizard."))
+                self.call_after_refresh(self._present_onboarding_wizard)
 
     async def on_session_ready(self, message: SessionReady) -> None:
         self._session_id = message.session_id
@@ -388,6 +457,7 @@ class SkitterTuiApp(App[None]):
                 "- `/info` show session usage info\n"
                 "- `/session` show current session id\n"
                 "- `/whoami` show authenticated user info\n"
+                "- `/setup` open the onboarding wizard\n"
                 "- `/bootstrap <setup_code> <display_name>` first-time account setup\n"
                 "- `/pair <pair_code>` pair this client to an existing account (if not authenticated)\n"
                 "- `/token <access_token>` set access token manually\n"
@@ -420,6 +490,9 @@ class SkitterTuiApp(App[None]):
                     f"User ID: `{self._auth_user.id}`\n"
                     f"Status: {approval}"
                 )
+            return
+        if cmd == "/setup":
+            self._present_onboarding_wizard()
             return
         if cmd == "/token":
             token = arg.strip()
@@ -840,3 +913,24 @@ class SkitterTuiApp(App[None]):
             self._state_path.write_text(json.dumps(self._persisted_state), encoding="utf-8")
         except OSError:
             return
+
+    async def _set_api_url(self, api_url: str) -> None:
+        normalized = self._normalize_api_url(api_url)
+        if normalized == self.config.api_url:
+            return
+        old_api = self.api
+        self.api = SkitterApiClient(normalized, api_key=self.config.access_token)
+        self.config.api_url = normalized
+        self.sub_title = normalized
+        self._save_api_url(normalized)
+        await old_api.aclose()
+
+    def _save_api_url(self, api_url: str) -> None:
+        self._save_state_value("api_url", self._normalize_api_url(api_url))
+
+    @staticmethod
+    def _normalize_api_url(value: str) -> str:
+        normalized = (value or "").strip().rstrip("/")
+        if not normalized:
+            return "http://localhost:8000"
+        return normalized

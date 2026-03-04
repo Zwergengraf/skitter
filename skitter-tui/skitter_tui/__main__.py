@@ -9,6 +9,11 @@ from .app import AppConfig, SkitterTuiApp
 
 
 def _parse_args(argv: list[str]) -> argparse.Namespace:
+    api_url_explicit = any(
+        arg == "--api-url"
+        or arg.startswith("--api-url=")
+        for arg in argv
+    )
     token_explicit = any(
         arg == "--access-token"
         or arg.startswith("--access-token=")
@@ -19,7 +24,7 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Standalone TUI client for Skitter API")
     parser.add_argument(
         "--api-url",
-        default=os.environ.get("SKITTER_API_URL", "").strip(),
+        default=os.environ.get("SKITTER_API_URL", "").strip() or "http://localhost:8000",
         help="Skitter server base URL, e.g. http://localhost:8000",
     )
     parser.add_argument(
@@ -35,21 +40,20 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
         help="Optional existing session id to attach to",
     )
     args = parser.parse_args(argv)
+    setattr(args, "api_url_explicit", api_url_explicit)
     setattr(args, "access_token_explicit", token_explicit)
     return args
 
 
 def main() -> None:
     args = _parse_args(sys.argv[1:])
-    if not args.api_url:
-        print("Error: --api-url is required (or set SKITTER_API_URL).", file=sys.stderr)
-        raise SystemExit(2)
 
     config = AppConfig(
         api_url=args.api_url,
         access_token=args.access_token or None,
         device_name=socket.gethostname().strip() or None,
         session_id=args.session_id,
+        prefer_saved_api_url=not bool(getattr(args, "api_url_explicit", False)),
         prefer_saved_token=not bool(getattr(args, "access_token_explicit", False)),
     )
     app = SkitterTuiApp(config)

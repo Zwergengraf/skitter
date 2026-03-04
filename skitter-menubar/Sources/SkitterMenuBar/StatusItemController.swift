@@ -8,6 +8,7 @@ final class StatusItemController: NSObject, NSMenuDelegate {
     private let state: AppState
     private let chatWindowController: ChatWindowController
     private let openConversation: () -> Void
+    private let openSetupWizard: () -> Void
     private let openSettings: () -> Void
     private let openAbout: () -> Void
     private let statusMenu = NSMenu()
@@ -21,12 +22,14 @@ final class StatusItemController: NSObject, NSMenuDelegate {
         state: AppState,
         chatWindowController: ChatWindowController,
         openConversation: @escaping () -> Void,
+        openSetupWizard: @escaping () -> Void,
         openSettings: @escaping () -> Void,
         openAbout: @escaping () -> Void
     ) {
         self.state = state
         self.chatWindowController = chatWindowController
         self.openConversation = openConversation
+        self.openSetupWizard = openSetupWizard
         self.openSettings = openSettings
         self.openAbout = openAbout
         self.statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
@@ -171,6 +174,7 @@ final class StatusItemController: NSObject, NSMenuDelegate {
         statusMenu.addItem(.separator())
         statusMenu.addItem(actionItem(title: "Open Chat", icon: "bubble.left.and.bubble.right", action: #selector(openChatFromMenu)))
         statusMenu.addItem(actionItem(title: "Open Conversation Mode", icon: "waveform", action: #selector(openConversationFromMenu)))
+        statusMenu.addItem(actionItem(title: "Setup Wizard…", icon: "wand.and.stars", action: #selector(openSetupWizardFromMenu)))
         statusMenu.addItem(actionItem(title: "Settings…", icon: "gearshape", action: #selector(openSettingsFromMenu)))
         statusMenu.addItem(actionItem(title: "About…", icon: "info.circle", action: #selector(openAboutFromMenu)))
         statusMenu.addItem(.separator())
@@ -320,6 +324,11 @@ final class StatusItemController: NSObject, NSMenuDelegate {
     @objc
     private func openConversationFromMenu() {
         openConversation()
+    }
+
+    @objc
+    private func openSetupWizardFromMenu() {
+        openSetupWizard()
     }
 
     @objc

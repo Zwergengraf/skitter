@@ -17,9 +17,19 @@ final class ChatWindowController: NSObject, NSWindowDelegate {
     private var globalClickMonitor: Any?
     private var pinObserver: AnyCancellable?
 
-    init(state: AppState, openConversation: @escaping () -> Void) {
+    init(
+        state: AppState,
+        openConversation: @escaping () -> Void,
+        openSetupWizard: @escaping () -> Void
+    ) {
         self.state = state
-        self.hostController = NSHostingController(rootView: ChatView(state: state, onOpenConversation: openConversation))
+        self.hostController = NSHostingController(
+            rootView: ChatView(
+                state: state,
+                onOpenConversation: openConversation,
+                onOpenSetupWizard: openSetupWizard
+            )
+        )
         super.init()
         pinObserver = state.$isChatPinned
             .receive(on: RunLoop.main)
