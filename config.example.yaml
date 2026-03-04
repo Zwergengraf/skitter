@@ -41,9 +41,9 @@ providers:
 models:
   - name: main
     provider: openai
-    model_id: gpt-5
-    input_cost_per_1m: 0
-    output_cost_per_1m: 0
+    model_id: gpt-5-2025-08-07
+    input_cost_per_1m: 1.25
+    output_cost_per_1m: 10.0
     # Optional per-model override (deep-merged over global reasoning settings):
     # reasoning:
     #   openai:
@@ -51,9 +51,9 @@ models:
     #     summary: detailed
   - name: heartbeat
     provider: openai
-    model_id: gpt-5-mini
-    input_cost_per_1m: 0
-    output_cost_per_1m: 0
+    model_id: gpt-5-mini-2025-08-07
+    input_cost_per_1m: 0.25
+    output_cost_per_1m: 2.0
     # reasoning:
     #   anthropic:
     #     thinking:
