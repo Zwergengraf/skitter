@@ -47,37 +47,31 @@ Skitter is a personal agent system with:
 
 ## Prerequisites
 
-- Python `3.11+`
-- Node.js `18+` (admin UI)
-- Docker (for Postgres + sandbox containers)
-- PostgreSQL with pgvector (the provided Docker image includes it)
+- Docker + Docker Compose
+- LLM provider access (API base + key) for `config.yaml`
 - macOS 14+ with Swift toolchain (menubar app only)
+- Python `3.11+` and Node.js `18+` (only needed for non-Docker/local development)
 
-## Setup
+## Setup (Docker, Recommended)
 
-### 1) Clone, install backend, and prepare config
+### 1) Clone the repo and prepare config files
 
 ```bash
 git clone <your-repo-url>
-cd skitter
-
-python -m venv venv
-source venv/bin/activate
-pip install -e .[dev]
-
+cd <repo-dir>
 cp config.example.yaml config.yaml
 cp .env.example .env
 ```
 
-### 2) Configure auth, passwords and secrets encryption (env-only)
+### 2) Configure required env vars in `.env`
 
-Generate a valid Fernet key (SKITTER_SECRETS_MASTER_KEY):
+Generate a valid Fernet key for `SKITTER_SECRETS_MASTER_KEY`:
 
 ```bash
 python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
 ```
 
-Set these in `.env`:
+Set these values in `.env`:
 
 ```bash
 SKITTER_CONFIG_PATH=config.yaml
@@ -85,86 +79,40 @@ SKITTER_API_KEY=long-random-admin-key
 SKITTER_BOOTSTRAP_CODE=one-time-setup-code
 SKITTER_POSTGRES_PASSWORD=secure-postgres-password
 SKITTER_SECRETS_MASTER_KEY=fernet-key
+ADMIN_WEB_API_BASE_URL=http://localhost:8000
 ```
 
-To generate random strings with openssl:
+You can generate random values with:
 
 ```bash
 openssl rand -hex 24
 ```
 
-### 3) Configure models and services in `config.yaml`
+### 3) Configure models/providers in `config.yaml`
 
 At minimum, set:
 
 - `providers` (`name`, optional `api_type` = `openai|anthropic`, `api_base`, `api_key`)
 - `models` (`name`, `provider`, `model_id`, token costs)
-- `main_model` as an ordered array of selectors (`provider/model`)
-- `heartbeat_model` as an ordered array of selectors (`provider/model`)
-- `database.url` (if not using default)
-- `discord.token` (if using Discord transport)
+- `main_model` (ordered fallback list of `provider/model`)
+- `heartbeat_model` (ordered fallback list of `provider/model`)
+- `discord.token` (if Discord transport is enabled)
 
-Web search provider config:
+Web search config:
 
 - `web_search.engine`: `brave` or `searxng`
 - `web_search.brave.api_key` / `web_search.brave.api_base`
-- `web_search.searxng.api_base`
+- `web_search.searxng.api_base` (for local profile use `http://searxng:8080/search`)
 
-`web_search` tool inputs are intentionally minimal: `query` and optional `count`.
-
-### 4) Start infrastructure
-
-Start PostgreSQL (pgvector enabled):
-
-```bash
-docker compose up -d postgres
-```
-
-Build sandbox image used for per-user Docker executors:
-
-```bash
-docker build -f skitter/sandbox/Dockerfile -t skitter-sandbox .
-```
-
-If you only use external executor nodes and disable Docker auto-fallback, sandbox image build is optional.
-
-Initialize database schema:
-
-```bash
-python -m skitter.data.init_db
-```
-
-### 5) Run the server
-
-You can either run the server like this, or in Docker
-
-```bash
-python -m skitter.server
-```
-
-This starts:
-
-- FastAPI on `http://localhost:8000`
-- Discord transport (unless disabled)
-- scheduler and heartbeat services
-
-To disable Discord:
-
-```bash
-SKITTER_ENABLE_DISCORD=false python -m skitter.server
-```
-
-## Docker Compose (DB + API + Admin Web)
-
-Use this when you want core components fully containerized.
-
-### 1) Build all required images (API, Admin Web, Sandbox)
+### 4) Build images
 
 ```bash
 docker compose --profile sandbox build
 ```
 
-### 2) Start core services
+This builds `api`, `admin-web`, and `skitter-sandbox`.
+
+### 5) Start the stack
 
 ```bash
 docker compose up -d postgres api admin-web
@@ -177,11 +125,13 @@ Endpoints:
 
 Notes:
 
-- `api` auto-runs DB initialization on startup (`python -m skitter.data.init_db`).
-- `sandbox` image is built but not started as a long-running service. The API spawns per-user sandbox containers on demand via Docker socket access.
-- The admin web image is built with `VITE_API_KEY`; this key is embedded in client-side assets. Do not expose this UI publicly without additional auth controls.
+- The `api` service auto-runs DB initialization on startup (`python -m skitter.data.init_db`).
+- The `sandbox` image is built but not started as a long-running service. The API spawns per-user sandbox containers on demand via Docker socket access.
+- The admin web build embeds `VITE_API_KEY` in client assets. Do not expose the UI publicly without additional auth controls.
 
-Optional: run local SearXNG from this repo:
+### 6) Optional profiles
+
+Run SearXNG locally:
 
 ```bash
 docker compose --profile searxng up -d searxng
@@ -304,6 +254,49 @@ Open app settings and provide:
 - Access token, or use:
   - Register & Connect (bootstrap code + display name), or
   - Pair Existing Account (pair code)
+
+## Non-Docker Server Setup (Local/Advanced)
+
+Use this only if you do not want to run the API in Docker.
+
+### 1) Install backend dependencies locally
+
+```bash
+python -m venv venv
+source venv/bin/activate
+pip install -e .[dev]
+```
+
+### 2) Start PostgreSQL
+
+Quick option (still using Docker for DB only):
+
+```bash
+docker compose up -d postgres
+```
+
+Or run your own PostgreSQL+pgvector and point `database.url` in `config.yaml` to it.
+
+### 3) Build sandbox image (if using Docker executor fallback)
+
+```bash
+docker build -f skitter/sandbox/Dockerfile -t skitter-sandbox .
+```
+
+If you only use external executor nodes and disable Docker auto-fallback, this can be skipped.
+
+### 4) Initialize DB schema and run server
+
+```bash
+python -m skitter.data.init_db
+python -m skitter.server
+```
+
+To run without Discord:
+
+```bash
+SKITTER_ENABLE_DISCORD=false python -m skitter.server
+```
 
 ## API Auth
 
