@@ -1,5 +1,5 @@
 database:
-  url: postgresql+asyncpg://postgres:postgres@localhost:5432/skitter
+  url: postgresql+asyncpg://postgres:postgres@postgres:5432/skitter
 logging:
   level: INFO
 prompt:
@@ -11,34 +11,37 @@ prompt:
   - AGENTS.md
   - TOOLS.md
 context:
-  max_tool_messages: 8
+  max_tool_messages: 32
   max_chat_messages: 32
   compact_every_messages: 16
 limits:
-  max_tool_calls: 16
+  max_tool_calls: 32
   max_runtime_seconds: 600
-  max_cost_usd: 0.10
+  max_cost_usd: 0.50
 jobs:
   enabled: true
   poll_interval_seconds: 2
   max_concurrent: 2
   limits:
-    max_tool_calls: 32
-    max_runtime_seconds: 900
-    max_cost_usd: 5.0
+    max_tool_calls: 128
+    max_runtime_seconds: 1800
+    max_cost_usd: 2.0
 providers:
-  - name: local
+  - name: openai
     # api_type: openai   # optional (default)
-    api_base: http://localhost:1234/v1
+    api_base: https://api.openai.com/v1
     api_key: ""
+  # - name: local
+  #   api_base: http://localhost:1234/v1
+  #   api_key: ""
   # - name: anthropic
   #   api_type: anthropic
   #   api_base: https://api.anthropic.com
   #   api_key: ""
 models:
   - name: main
-    provider: local
-    model_id: local-main
+    provider: openai
+    model_id: gpt-5
     input_cost_per_1m: 0
     output_cost_per_1m: 0
     # Optional per-model override (deep-merged over global reasoning settings):
@@ -47,8 +50,8 @@ models:
     #     effort: high
     #     summary: detailed
   - name: heartbeat
-    provider: local
-    model_id: local-heartbeat
+    provider: openai
+    model_id: gpt-5-mini
     input_cost_per_1m: 0
     output_cost_per_1m: 0
     # reasoning:
@@ -56,9 +59,9 @@ models:
     #     thinking:
     #       budget_tokens: 4096
 main_model:
-  - local/main
+  - openai/main
 heartbeat_model:
-  - local/heartbeat
+  - openai/heartbeat
 reasoning:
   enabled: true
   openai:
@@ -70,9 +73,9 @@ reasoning:
     budget_tokens: 2048
     output_version: ""
 embeddings:
-  api_base: http://127.0.0.1:1234/v1
+  api_base: https://api.openai.com/v1
   api_key: ""
-  model: text-embedding-embeddinggemma-300m
+  model: text-embedding-3-small
   target_chunk_chars: 700
   max_chunk_chars: 1000
   max_distance: 0.45
