@@ -34,6 +34,7 @@ from .embeddings import EmbeddingsClient
 from .memory_service import MemoryService
 from .workspace import user_workspace_root
 from .secrets import SecretsManager
+from .mcp import MCPError, extract_mcp_text, mcp_registry
 from .web_search import WebSearchConfigError, WebSearchError, search_web
 
 _logger = logging.getLogger(__name__)
@@ -1373,6 +1374,70 @@ def build_graph(
         await _complete_tool_run(tool_run_id, "completed", output)
         return json.dumps(output)
 
+    @tool("mcp_list_tools")
+    async def mcp_list_tools(server_name: str | None = None) -> str:
+        """List tools from configured and enabled MCP servers."""
+        payload: dict[str, Any] = {}
+        if server_name:
+            payload["server_name"] = server_name
+        budget_message = await _enforce_tool_budget("mcp_list_tools", payload)
+        if budget_message:
+            return budget_message
+        tool_run_id = await _create_auto_tool_run("mcp_list_tools", payload)
+        try:
+            output = await mcp_registry.list_tools(server_name=server_name)
+        except Exception as exc:
+            await _complete_tool_run(tool_run_id, "failed", {"error": str(exc)})
+            return f"mcp_list_tools error: {exc}"
+        await _complete_tool_run(tool_run_id, "completed", output)
+        return json.dumps(output)
+
+    @tool("mcp_call")
+    async def mcp_call(
+        server_name: str,
+        tool_name: str,
+        arguments: dict[str, Any] | None = None,
+    ) -> str:
+        """Call a tool exposed by an MCP server."""
+        payload: dict[str, Any] = {
+            "server_name": server_name,
+            "tool_name": tool_name,
+            "arguments": arguments or {},
+        }
+        budget_message = await _enforce_tool_budget("mcp_call", payload)
+        if budget_message:
+            return budget_message
+        if not (server_name or "").strip():
+            return await _fail_untracked_call("mcp_call", payload, "mcp_call error: server_name is required")
+        if not (tool_name or "").strip():
+            return await _fail_untracked_call("mcp_call", payload, "mcp_call error: tool_name is required")
+        decision = await _maybe_approve("mcp_call", payload, approval_service, policy)
+        if not decision.approved:
+            return _denied_message("mcp_call")
+        try:
+            result = await mcp_registry.call_tool(
+                server_name=server_name.strip(),
+                tool_name=tool_name.strip(),
+                arguments=arguments or {},
+            )
+        except MCPError as exc:
+            await _complete_tool_run(decision.tool_run_id, "failed", {"error": str(exc)})
+            return f"mcp_call error: {exc}"
+        except Exception as exc:  # pragma: no cover - defensive
+            await _complete_tool_run(decision.tool_run_id, "failed", {"error": str(exc)})
+            return f"mcp_call error: {exc}"
+
+        output = {
+            "server_name": server_name.strip(),
+            "tool_name": tool_name.strip(),
+            "result": result,
+        }
+        await _complete_tool_run(decision.tool_run_id, "completed", output)
+        text = extract_mcp_text(result)
+        if text.strip():
+            return text
+        return json.dumps(output)
+
     @tool("web_search")
     async def web_search(
         query: str,
@@ -1872,6 +1937,8 @@ def build_graph(
         machine_status,
         create_secret,
         list_secrets,
+        mcp_list_tools,
+        mcp_call,
         memory_search,
         web_search,
         web_fetch,

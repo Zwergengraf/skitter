@@ -685,6 +685,13 @@ def build_config_from_settings(current: Any) -> dict:
         data["main_model"] = getattr(current, "main_model")
     if hasattr(current, "heartbeat_model") and getattr(current, "heartbeat_model"):
         data["heartbeat_model"] = getattr(current, "heartbeat_model")
+    if hasattr(current, "mcp_servers"):
+        try:
+            servers = [server.model_dump() for server in current.mcp_servers]
+        except Exception:
+            servers = []
+        if servers:
+            data.setdefault("mcp", {})["servers"] = servers
     return data
 
 

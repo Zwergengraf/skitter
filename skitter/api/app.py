@@ -13,6 +13,7 @@ from ..core.runtime import AgentRuntime
 from ..core.scheduler import SchedulerService
 from ..core.config import settings
 from ..core.llm import invalid_model_selectors, list_models
+from ..core.mcp import mcp_registry
 from ..data.db import SessionLocal
 from ..data.repositories import Repository
 from ..observability.logging import configure_logging
@@ -28,6 +29,7 @@ from .routes import (
     executors,
     events,
     memory,
+    mcp,
     messages,
     models,
     overview,
@@ -120,6 +122,10 @@ def create_app() -> FastAPI:
         if sandbox_manager is not None:
             await sandbox_manager.start()
 
+    @app.on_event("shutdown")
+    async def _stop_mcp_registry() -> None:
+        await mcp_registry.shutdown()
+
     app.include_router(sessions.router)
     app.include_router(auth.router)
     app.include_router(commands.router)
@@ -132,6 +138,7 @@ def create_app() -> FastAPI:
     app.include_router(models.router)
     app.include_router(secrets.router)
     app.include_router(memory.router)
+    app.include_router(mcp.router)
     app.include_router(overview.router)
     app.include_router(schedules.router)
     app.include_router(users.router)

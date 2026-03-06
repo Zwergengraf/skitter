@@ -495,6 +495,27 @@ class ConfigUpdate(BaseModel):
     values: dict[str, Any]
 
 
+class MCPServerOut(BaseModel):
+    name: str
+    enabled: bool
+    transport: str = "stdio"
+    command: str
+    args: list[str] = Field(default_factory=list)
+    url: str = ""
+    cwd: str = ""
+    running: bool = False
+    last_error: str | None = None
+    last_seen_at: datetime | None = None
+
+
+class MCPServersOut(BaseModel):
+    servers: list[MCPServerOut] = Field(default_factory=list)
+
+
+class MCPServerToggleRequest(BaseModel):
+    enabled: bool
+
+
 class CommandExecuteRequest(BaseModel):
     command: str
     args: dict[str, Any] = Field(default_factory=dict)

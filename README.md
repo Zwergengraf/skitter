@@ -104,6 +104,23 @@ Web search config:
 - `web_search.brave.api_key` / `web_search.brave.api_base`
 - `web_search.searxng.api_base` (for local profile use `http://searxng:8080/search`)
 
+MCP config (bring-your-own MCP servers):
+
+- `mcp.servers[]` entries with:
+  - `name`
+  - `description` for prompt-time discovery and use-case guidance
+  - `enabled`
+  - `transport`: `stdio` (default) or `http`
+  - for `stdio`: `command`, `args`, optional `env`, `cwd`
+  - for `http`: `url`, optional `headers`
+  - optional for both: `startup_timeout_seconds`, `request_timeout_seconds`
+- Agent tools:
+  - `mcp_list_tools` to discover available MCP tools
+  - `mcp_call` to invoke a specific MCP tool by `server_name` + `tool_name`
+- Runtime toggling:
+  - `GET /v1/mcp/servers`
+  - `PUT /v1/mcp/servers/{name}` with `{ \"enabled\": true|false }`
+
 ### 4) Build images
 
 ```bash

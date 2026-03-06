@@ -96,6 +96,33 @@ Use `list_secrets` to check which secret names are available before setting `sec
     return "\n".join(lines)
 
 
+def build_mcp_index() -> str | None:
+    servers = [
+        server
+        for server in getattr(settings, "mcp_servers", []) or []
+        if getattr(server, "enabled", False)
+    ]
+    if not servers:
+        return None
+
+    servers = sorted(servers, key=lambda item: item.name.lower())
+    lines = [
+        "## MCP Servers",
+        "The following MCP servers are available in this session.",
+        "If a server seems relevant, call `mcp_list_tools` with its `server_name` before using `mcp_call`.",
+        "Do not guess MCP tool names or arguments. Inspect the server first, then call the specific tool you need.",
+        "<available_mcp_servers>",
+    ]
+    for server in servers:
+        description = server.description or "No description configured."
+        lines.append("  <server>")
+        lines.append(f"    <name>{server.name}</name>")
+        lines.append(f"    <description>{description}</description>")
+        lines.append("  </server>")
+    lines.append("</available_mcp_servers>")
+    return "\n".join(lines)
+
+
 def build_system_prompt(user_id: str) -> str:
     # Important: Only include the BOOTSTRAP.md content if it's present.
     # This allows for one-time setup instructions without affecting the prompt on subsequent runs.
@@ -114,6 +141,9 @@ def build_system_prompt(user_id: str) -> str:
     skills_index = build_skills_index(user_id)
     if skills_index:
         parts.append(skills_index)
+    mcp_index = build_mcp_index()
+    if mcp_index:
+        parts.append(mcp_index)
     context = build_context_block(user_id)
     if context:
         parts.append(context)

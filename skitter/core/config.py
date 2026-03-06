@@ -9,6 +9,7 @@ import yaml
 from pydantic import Field, BaseModel
 from pydantic import ConfigDict
 from pydantic import field_validator
+from pydantic import model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -45,6 +46,113 @@ class ProviderConfig(BaseModel):
         if not text:
             return "openai"
         return text
+
+
+class MCPServerConfig(BaseModel):
+    name: str
+    description: str = Field(default="")
+    transport: Literal["stdio", "http"] = Field(default="stdio")
+    command: str = Field(default="")
+    args: list[str] = Field(default_factory=list)
+    url: str = Field(default="")
+    headers: dict[str, str] = Field(default_factory=dict)
+    env: dict[str, str] = Field(default_factory=dict)
+    cwd: str = Field(default="")
+    enabled: bool = Field(default=True)
+    startup_timeout_seconds: float = Field(default=15.0)
+    request_timeout_seconds: float = Field(default=120.0)
+
+    model_config = ConfigDict(extra="ignore")
+
+    @field_validator("name", mode="before")
+    @classmethod
+    def _normalize_name(cls, value: Any) -> str:
+        return str(value or "").strip()
+
+    @field_validator("description", mode="before")
+    @classmethod
+    def _normalize_description(cls, value: Any) -> str:
+        return str(value or "").strip()
+
+    @field_validator("command", mode="before")
+    @classmethod
+    def _normalize_command(cls, value: Any) -> str:
+        return str(value or "").strip()
+
+    @field_validator("transport", mode="before")
+    @classmethod
+    def _normalize_transport(cls, value: Any) -> str:
+        text = str(value or "stdio").strip().lower()
+        return text or "stdio"
+
+    @field_validator("args", mode="before")
+    @classmethod
+    def _normalize_args(cls, value: Any) -> list[str]:
+        if value is None:
+            return []
+        if isinstance(value, str):
+            return [item for item in value.split(" ") if item]
+        if isinstance(value, (list, tuple, set)):
+            out: list[str] = []
+            for item in value:
+                text = str(item).strip()
+                if text:
+                    out.append(text)
+            return out
+        text = str(value).strip()
+        return [text] if text else []
+
+    @field_validator("env", mode="before")
+    @classmethod
+    def _normalize_env(cls, value: Any) -> dict[str, str]:
+        if value is None:
+            return {}
+        if isinstance(value, dict):
+            out: dict[str, str] = {}
+            for key, item in value.items():
+                k = str(key).strip()
+                if not k:
+                    continue
+                out[k] = str(item)
+            return out
+        return {}
+
+    @field_validator("headers", mode="before")
+    @classmethod
+    def _normalize_headers(cls, value: Any) -> dict[str, str]:
+        if value is None:
+            return {}
+        if isinstance(value, dict):
+            out: dict[str, str] = {}
+            for key, item in value.items():
+                k = str(key).strip()
+                if not k:
+                    continue
+                out[k] = str(item)
+            return out
+        return {}
+
+    @field_validator("url", mode="before")
+    @classmethod
+    def _normalize_url(cls, value: Any) -> str:
+        return str(value or "").strip()
+
+    @field_validator("cwd", mode="before")
+    @classmethod
+    def _normalize_cwd(cls, value: Any) -> str:
+        return str(value or "").strip()
+
+    @model_validator(mode="after")
+    def _validate_transport_config(self) -> MCPServerConfig:
+        if not self.enabled:
+            return self
+        if self.transport == "stdio":
+            if not self.command.strip():
+                raise ValueError("mcp server command is required for stdio transport")
+            return self
+        if not self.url.strip():
+            raise ValueError("mcp server url is required for http transport")
+        return self
 
 
 def _normalize_model_reference(provider: str, model_name: str) -> str:
@@ -185,6 +293,7 @@ class Settings(BaseSettings):
     db_url: str = Field(default="postgresql+asyncpg://postgres:postgres@localhost:5432/skitter")
     providers: list[ProviderConfig] = Field(default_factory=list)
     models: list[ModelConfig] = Field(default_factory=list)
+    mcp_servers: list[MCPServerConfig] = Field(default_factory=list)
     main_model: list[str] = Field(default_factory=list)
     heartbeat_model: list[str] = Field(default_factory=list)
     reasoning_enabled: bool = Field(default=True)
@@ -251,7 +360,7 @@ class Settings(BaseSettings):
     tool_approval_tools: str = Field(
         default=(
             "read,write,edit,list,delete,download,transfer_file,attach_file,"
-            "browser,browser_action,sub_agent,sub_agent_batch,job_start,shell,create_secret"
+            "browser,browser_action,sub_agent,sub_agent_batch,job_start,shell,create_secret,mcp_call"
         )
     )
     approval_secrets_required: str = Field(default="always")
@@ -373,6 +482,11 @@ if _yaml_config:
         flat["main_model"] = _yaml_config.get("main_model")
     if "heartbeat_model" in _yaml_config:
         flat["heartbeat_model"] = _yaml_config.get("heartbeat_model")
+    mcp_cfg = _yaml_config.get("mcp")
+    if isinstance(mcp_cfg, dict) and isinstance(mcp_cfg.get("servers"), list):
+        flat["mcp_servers"] = mcp_cfg.get("servers")
+    elif "mcp_servers" in _yaml_config and isinstance(_yaml_config.get("mcp_servers"), list):
+        flat["mcp_servers"] = _yaml_config.get("mcp_servers")
     apply_settings_update(flat)
     # Keep explicit SKITTER_* env vars authoritative over YAML values.
     if _env_overrides:
