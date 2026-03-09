@@ -286,8 +286,42 @@ export interface ConfigCategory {
   fields: ConfigField[];
 }
 
+export interface ConfigProviderItem {
+  name: string;
+  api_type?: string;
+  api_base?: string;
+  api_key?: string;
+}
+
+export interface ConfigModelItem {
+  name: string;
+  provider: string;
+  model_id?: string;
+  input_cost_per_1m?: number;
+  output_cost_per_1m?: number;
+  reasoning?: Record<string, unknown>;
+}
+
+export interface ConfigMcpServerItem {
+  name: string;
+  description?: string;
+  transport?: string;
+  command?: string;
+  args?: string[];
+  url?: string;
+  headers?: Record<string, string>;
+  env?: Record<string, string>;
+  cwd?: string;
+  enabled?: boolean;
+  startup_timeout_seconds?: number;
+  request_timeout_seconds?: number;
+}
+
 export interface ConfigResponse {
   categories: ConfigCategory[];
+  providers: ConfigProviderItem[];
+  models: ConfigModelItem[];
+  mcp_servers: ConfigMcpServerItem[];
 }
 
 export interface SecretItem {

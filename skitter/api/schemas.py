@@ -489,6 +489,9 @@ class ConfigCategoryOut(BaseModel):
 
 class ConfigResponse(BaseModel):
     categories: list[ConfigCategoryOut]
+    providers: list[dict[str, Any]] = Field(default_factory=list)
+    models: list[dict[str, Any]] = Field(default_factory=list)
+    mcp_servers: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class ConfigUpdate(BaseModel):

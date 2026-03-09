@@ -19,6 +19,28 @@ def _config_path() -> Path:
 
 def _build_response() -> ConfigResponse:
     data = build_config_from_settings(config_module.settings)
+    try:
+        providers = [provider.model_dump() for provider in getattr(config_module.settings, "providers", []) or []]
+    except Exception:
+        providers = data.get("providers") if isinstance(data.get("providers"), list) else []
+    try:
+        models = [model.model_dump(by_alias=True) for model in getattr(config_module.settings, "models", []) or []]
+    except Exception:
+        models = data.get("models") if isinstance(data.get("models"), list) else []
+    try:
+        mcp_servers = [server.model_dump() for server in getattr(config_module.settings, "mcp_servers", []) or []]
+    except Exception:
+        mcp_cfg = data.get("mcp") if isinstance(data.get("mcp"), dict) else {}
+        mcp_servers = mcp_cfg.get("servers") if isinstance(mcp_cfg.get("servers"), list) else []
+
+    sanitized_providers: list[dict[str, Any]] = []
+    for item in providers:
+        if not isinstance(item, dict):
+            continue
+        row = dict(item)
+        row["api_key"] = ""
+        sanitized_providers.append(row)
+
     categories = []
     for category_id, label in CATEGORIES.items():
         fields = []
@@ -49,7 +71,12 @@ def _build_response() -> ConfigResponse:
                 )
             )
         categories.append(ConfigCategoryOut(id=category_id, label=label, fields=fields))
-    return ConfigResponse(categories=categories)
+    return ConfigResponse(
+        categories=categories,
+        providers=sanitized_providers,
+        models=[dict(item) for item in models if isinstance(item, dict)],
+        mcp_servers=[dict(item) for item in mcp_servers if isinstance(item, dict)],
+    )
 
 
 @router.get("", response_model=ConfigResponse)
@@ -74,6 +101,31 @@ async def update_config(payload: ConfigUpdate, request: Request) -> ConfigRespon
             elif isinstance(value, str):
                 value = ",".join([item.strip() for item in value.split(",") if item.strip()])
         updates[spec.key] = value
+
+    current_provider_map = {
+        str(provider.name or "").strip().lower(): provider.model_dump()
+        for provider in getattr(config_module.settings, "providers", []) or []
+        if str(provider.name or "").strip()
+    }
+    for extra_key in ("providers", "models", "mcp_servers"):
+        if extra_key not in payload.values:
+            continue
+        value = payload.values.get(extra_key)
+        if extra_key == "providers" and isinstance(value, list):
+            merged_providers: list[dict[str, Any]] = []
+            for item in value:
+                if not isinstance(item, dict):
+                    continue
+                row = dict(item)
+                name_key = str(row.get("name") or "").strip().lower()
+                if name_key and not str(row.get("api_key") or "").strip():
+                    existing = current_provider_map.get(name_key)
+                    if existing is not None and str(existing.get("api_key") or "").strip():
+                        row["api_key"] = existing["api_key"]
+                merged_providers.append(row)
+            updates[extra_key] = merged_providers
+            continue
+        updates[extra_key] = value
     try:
         validated = config_module.apply_settings_update(updates)
     except Exception as exc:

@@ -1,6 +1,16 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
   Activity,
+  Bot,
+  Cable,
+  Clock3,
+  Database,
+  Globe,
+  Plus,
+  Search,
+  Shield,
+  Trash2,
+  Wrench,
   RefreshCcw,
 } from "lucide-react";
 
@@ -35,6 +45,9 @@ import type {
   AgentJobDetail,
   AgentJobListItem,
   ChannelListItem,
+  ConfigMcpServerItem,
+  ConfigModelItem,
+  ConfigProviderItem,
   ExecutorItem,
   MemoryEntry,
   OverviewResponse,
@@ -64,6 +77,13 @@ const views: Record<NavItemId, string> = {
 
 type OverviewRange = "today" | "24h" | "week" | "month" | "year";
 type TableRange = "all" | "today" | "week" | "month";
+type SettingsTabId = "core" | "models" | "automation" | "execution" | "integrations" | "advanced";
+type StructuredValueType = "string" | "number" | "boolean" | "json";
+type StructuredValueRow = {
+  keyPath: string;
+  valueType: StructuredValueType;
+  value: string;
+};
 
 const SESSIONS_PAGE_SIZE = 25;
 const TOOL_RUNS_PAGE_SIZE = 15;
@@ -103,6 +123,159 @@ const inRange = (value: string | null | undefined, range: TableRange): boolean =
     return false;
   }
   return ts >= start;
+};
+
+const SETTINGS_TEXTAREA_FIELDS = new Set([
+  "heartbeat_prompt",
+  "user_approved_message",
+  "cors_origins",
+  "prompt_context_files",
+  "tool_approval_tools",
+]);
+
+const SETTINGS_TAB_META: Record<
+  SettingsTabId,
+  { label: string; icon: typeof Activity; categories: string[] }
+> = {
+  core: {
+    label: "Core",
+    icon: Activity,
+    categories: ["database", "prompt", "context", "logging", "users"],
+  },
+  models: {
+    label: "Models",
+    icon: Bot,
+    categories: ["models", "reasoning"],
+  },
+  automation: {
+    label: "Automation",
+    icon: Clock3,
+    categories: ["heartbeat", "jobs", "sub_agents", "scheduler"],
+  },
+  execution: {
+    label: "Execution",
+    icon: Wrench,
+    categories: ["browser", "sandbox", "workspace", "tools"],
+  },
+  integrations: {
+    label: "Integrations",
+    icon: Globe,
+    categories: ["web_search", "discord"],
+  },
+  advanced: {
+    label: "Advanced",
+    icon: Shield,
+    categories: ["cors"],
+  },
+};
+
+const isPlainObject = (value: unknown): value is Record<string, unknown> =>
+  Boolean(value) && typeof value === "object" && !Array.isArray(value);
+
+const inferStructuredValueType = (value: unknown): StructuredValueType => {
+  if (typeof value === "number") {
+    return "number";
+  }
+  if (typeof value === "boolean") {
+    return "boolean";
+  }
+  if (typeof value === "string") {
+    return "string";
+  }
+  return "json";
+};
+
+const stringifyStructuredValue = (value: unknown, valueType: StructuredValueType): string => {
+  if (valueType === "json") {
+    return JSON.stringify(value ?? {}, null, 2);
+  }
+  return String(value ?? "");
+};
+
+const flattenStructuredObject = (value: unknown, prefix = ""): StructuredValueRow[] => {
+  if (!isPlainObject(value)) {
+    return [];
+  }
+  const rows: StructuredValueRow[] = [];
+  for (const [key, entryValue] of Object.entries(value)) {
+    const keyPath = prefix ? `${prefix}.${key}` : key;
+    if (isPlainObject(entryValue) && Object.keys(entryValue).length > 0) {
+      rows.push(...flattenStructuredObject(entryValue, keyPath));
+      continue;
+    }
+    const valueType = inferStructuredValueType(entryValue);
+    rows.push({
+      keyPath,
+      valueType,
+      value: stringifyStructuredValue(entryValue, valueType),
+    });
+  }
+  return rows;
+};
+
+const parseStructuredValue = (row: StructuredValueRow): unknown => {
+  if (row.valueType === "number") {
+    const parsed = Number(row.value);
+    return Number.isFinite(parsed) ? parsed : 0;
+  }
+  if (row.valueType === "boolean") {
+    return row.value === "true";
+  }
+  if (row.valueType === "json") {
+    return row.value.trim() ? JSON.parse(row.value) : {};
+  }
+  return row.value;
+};
+
+const expandStructuredRows = (rows: StructuredValueRow[]): Record<string, unknown> => {
+  const result: Record<string, unknown> = {};
+  for (const row of rows) {
+    const trimmedPath = row.keyPath.trim();
+    if (!trimmedPath) {
+      continue;
+    }
+    const segments = trimmedPath
+      .split(".")
+      .map((segment) => segment.trim())
+      .filter(Boolean);
+    if (!segments.length) {
+      continue;
+    }
+    let cursor: Record<string, unknown> = result;
+    for (const segment of segments.slice(0, -1)) {
+      const existing = cursor[segment];
+      if (!isPlainObject(existing)) {
+        cursor[segment] = {};
+      }
+      cursor = cursor[segment] as Record<string, unknown>;
+    }
+    cursor[segments[segments.length - 1]] = parseStructuredValue(row);
+  }
+  return result;
+};
+
+const uniqueStructuredKey = (existing: string[], base: string): string => {
+  if (!existing.includes(base)) {
+    return base;
+  }
+  let index = 2;
+  while (existing.includes(`${base}_${index}`)) {
+    index += 1;
+  }
+  return `${base}_${index}`;
+};
+
+const buildConfigDraft = (data: ConfigResponse): Record<string, unknown> => {
+  const nextDraft: Record<string, unknown> = {};
+  data.categories.forEach((category) => {
+    category.fields.forEach((field) => {
+      nextDraft[field.key] = field.value ?? "";
+    });
+  });
+  nextDraft.providers = data.providers ?? [];
+  nextDraft.models = data.models ?? [];
+  nextDraft.mcp_servers = data.mcp_servers ?? [];
+  return nextDraft;
 };
 
 export default function App() {
@@ -202,6 +375,8 @@ export default function App() {
   const [configLoading, setConfigLoading] = useState<boolean>(false);
   const [configSaving, setConfigSaving] = useState<boolean>(false);
   const [configError, setConfigError] = useState<string | null>(null);
+  const [settingsTab, setSettingsTab] = useState<SettingsTabId>("core");
+  const [settingsQuery, setSettingsQuery] = useState<string>("");
   const [channelsData, setChannelsData] = useState<ChannelListItem[]>([]);
   const [directoryError, setDirectoryError] = useState<string | null>(null);
   const [jobDialogOpen, setJobDialogOpen] = useState(false);
@@ -268,6 +443,44 @@ export default function App() {
   const visibleExecutors = executorsData.filter((executor) => executor.kind !== "docker");
   const onlineExecutors = visibleExecutors.filter((executor) => executor.online && !executor.disabled).length;
   const approvedUsers = usersData.filter((user) => user.approved);
+  const configProviders = (Array.isArray(configDraft.providers) ? configDraft.providers : []) as ConfigProviderItem[];
+  const configModels = (Array.isArray(configDraft.models) ? configDraft.models : []) as ConfigModelItem[];
+  const configMcpServers = (Array.isArray(configDraft.mcp_servers) ? configDraft.mcp_servers : []) as ConfigMcpServerItem[];
+  const settingsQueryNormalized = settingsQuery.trim().toLowerCase();
+  const filteredConfigCategories = useMemo(() => {
+    if (!configData) {
+      return [] as ConfigResponse["categories"];
+    }
+    return configData.categories
+      .map((category) => {
+        if (!settingsQueryNormalized) {
+          return category;
+        }
+        const categoryMatches = category.label.toLowerCase().includes(settingsQueryNormalized);
+        const fields = category.fields.filter((field) => {
+          const haystack = [
+            field.label,
+            field.key,
+            field.description ?? "",
+          ]
+            .join(" ")
+            .toLowerCase();
+          return categoryMatches || haystack.includes(settingsQueryNormalized);
+        });
+        return { ...category, fields };
+      })
+      .filter((category) => category.fields.length > 0);
+  }, [configData, settingsQueryNormalized]);
+  const settingsCategoriesByTab = useMemo(() => {
+    const entries = Object.entries(SETTINGS_TAB_META).map(([tabId, meta]) => {
+      const categories = filteredConfigCategories.filter((category) => meta.categories.includes(category.id));
+      return [tabId, categories] as const;
+    });
+    return Object.fromEntries(entries) as Record<SettingsTabId, ConfigResponse["categories"]>;
+  }, [filteredConfigCategories]);
+  const settingsProviderCount = configProviders.length;
+  const settingsModelCount = configModels.length;
+  const settingsMcpCount = configMcpServers.length;
   const sessionsByLastActive = useMemo(() => {
     const toTs = (value: string | null | undefined) => {
       if (!value) return 0;
@@ -556,6 +769,30 @@ export default function App() {
     setConfigDraft((prev) => ({ ...prev, [key]: value }));
   };
 
+  const updateStructuredObjectRows = (
+    currentValue: Record<string, unknown> | undefined,
+    nextRows: StructuredValueRow[],
+    onValid: (value: Record<string, unknown>) => void,
+    errorMessage: string,
+  ) => {
+    try {
+      const nextValue = expandStructuredRows(nextRows);
+      onValid(nextValue);
+      setConfigError(null);
+    } catch {
+      onValid(currentValue ?? {});
+      setConfigError(errorMessage);
+    }
+  };
+
+  const updateStructuredRow = (
+    rows: StructuredValueRow[],
+    index: number,
+    patch: Partial<StructuredValueRow>,
+  ): StructuredValueRow[] => rows.map((row, currentIndex) => (
+    currentIndex === index ? { ...row, ...patch } : row
+  ));
+
   const saveConfig = async () => {
     if (!configData) {
       return;
@@ -563,15 +800,14 @@ export default function App() {
     setConfigSaving(true);
     setConfigError(null);
     try {
-      const response = await api.updateConfig(configDraft);
-      setConfigData(response);
-      const nextDraft: Record<string, unknown> = {};
-      response.categories.forEach((category) => {
-        category.fields.forEach((field) => {
-          nextDraft[field.key] = field.value ?? "";
-        });
+      const response = await api.updateConfig({
+        ...configDraft,
+        providers: configProviders,
+        models: configModels,
+        mcp_servers: configMcpServers,
       });
-      setConfigDraft(nextDraft);
+      setConfigData(response);
+      setConfigDraft(buildConfigDraft(response));
     } catch (error) {
       setConfigError((error as Error).message);
     } finally {
@@ -953,13 +1189,7 @@ export default function App() {
       .getConfig()
       .then((data) => {
         setConfigData(data);
-        const nextDraft: Record<string, unknown> = {};
-        data.categories.forEach((category) => {
-          category.fields.forEach((field) => {
-            nextDraft[field.key] = field.value ?? "";
-          });
-        });
-        setConfigDraft(nextDraft);
+        setConfigDraft(buildConfigDraft(data));
       })
       .catch((error: Error) => {
         setConfigError(error.message);
@@ -1443,6 +1673,815 @@ export default function App() {
       setJobSaving(false);
     }
   };
+
+  const renderConfigInput = (field: ConfigResponse["categories"][number]["fields"][number]) => {
+    if (field.type === "boolean") {
+      return (
+        <Switch
+          checked={Boolean(configDraft[field.key])}
+          onCheckedChange={(value) => updateConfigValue(field.key, value)}
+        />
+      );
+    }
+    if (field.type === "number") {
+      return (
+        <Input
+          type="number"
+          min={field.minimum ?? undefined}
+          max={field.maximum ?? undefined}
+          step={field.step ?? 1}
+          value={String(configDraft[field.key] ?? "")}
+          onChange={(event) => updateConfigValue(field.key, Number(event.target.value))}
+        />
+      );
+    }
+    if (field.type === "list") {
+      return (
+        <Textarea
+          rows={3}
+          placeholder="item1, item2"
+          value={Array.isArray(configDraft[field.key])
+            ? (configDraft[field.key] as string[]).join(", ")
+            : String(configDraft[field.key] ?? "")}
+          onChange={(event) => updateConfigValue(field.key, event.target.value)}
+        />
+      );
+    }
+    if (SETTINGS_TEXTAREA_FIELDS.has(field.key)) {
+      return (
+        <Textarea
+          rows={4}
+          placeholder={field.secret ? "••••••••" : undefined}
+          value={String(configDraft[field.key] ?? "")}
+          onChange={(event) => updateConfigValue(field.key, event.target.value)}
+        />
+      );
+    }
+    return (
+      <Input
+        type={field.secret ? "password" : "text"}
+        placeholder={field.secret ? "••••••••" : undefined}
+        value={String(configDraft[field.key] ?? "")}
+        onChange={(event) => updateConfigValue(field.key, event.target.value)}
+      />
+    );
+  };
+
+  const renderConfigCategoryCard = (category: ConfigResponse["categories"][number]) => (
+    <Card key={category.id} className="border-border/80 bg-card/95 shadow-sm">
+      <CardHeader className="space-y-1">
+        <CardTitle className="text-base">{category.label}</CardTitle>
+        <CardDescription>
+          {category.fields.length} option{category.fields.length === 1 ? "" : "s"}
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="grid gap-4 md:grid-cols-2">
+        {category.fields.map((field) => (
+          <div
+            key={field.key}
+            className="rounded-2xl border border-border/70 bg-muted/20 p-4"
+          >
+            <div className="mb-3 flex items-start justify-between gap-4">
+              <div>
+                <label className="text-xs font-semibold uppercase tracking-[0.2em] text-mutedForeground">
+                  {field.label}
+                </label>
+                <p className="mt-1 text-[11px] text-mutedForeground">{field.key}</p>
+              </div>
+              {field.type === "boolean" ? renderConfigInput(field) : null}
+            </div>
+            {field.type !== "boolean" ? renderConfigInput(field) : null}
+            {field.description ? (
+              <p className="mt-2 text-xs leading-relaxed text-mutedForeground">{field.description}</p>
+            ) : null}
+          </div>
+        ))}
+      </CardContent>
+    </Card>
+  );
+
+  const updateProviderItem = (
+    index: number,
+    key: keyof ConfigProviderItem,
+    value: string,
+  ) => {
+    const next = configProviders.map((item, currentIndex) =>
+      currentIndex === index ? { ...item, [key]: value } : item
+    );
+    updateConfigValue("providers", next);
+  };
+
+  const addProviderItem = () => {
+    updateConfigValue("providers", [
+      ...configProviders,
+      { name: "", api_type: "openai", api_base: "", api_key: "" },
+    ]);
+  };
+
+  const removeProviderItem = (index: number) => {
+    updateConfigValue(
+      "providers",
+      configProviders.filter((_, currentIndex) => currentIndex !== index)
+    );
+  };
+
+  const updateModelItem = (
+    index: number,
+    key: keyof ConfigModelItem,
+    value: string | number | Record<string, unknown>,
+  ) => {
+    const next = configModels.map((item, currentIndex) =>
+      currentIndex === index ? { ...item, [key]: value } : item
+    );
+    updateConfigValue("models", next);
+  };
+
+  const addModelItem = () => {
+    updateConfigValue("models", [
+      ...configModels,
+      {
+        name: "",
+        provider: configProviders[0]?.name ?? "",
+        model_id: "",
+        input_cost_per_1m: 0,
+        output_cost_per_1m: 0,
+        reasoning: {},
+      },
+    ]);
+  };
+
+  const removeModelItem = (index: number) => {
+    updateConfigValue(
+      "models",
+      configModels.filter((_, currentIndex) => currentIndex !== index)
+    );
+  };
+
+  const updateMcpServerItem = (
+    index: number,
+    key: keyof ConfigMcpServerItem,
+    value: unknown,
+  ) => {
+    const next = configMcpServers.map((item, currentIndex) =>
+      currentIndex === index ? { ...item, [key]: value } : item
+    );
+    updateConfigValue("mcp_servers", next);
+  };
+
+  const addMcpServerItem = () => {
+    updateConfigValue("mcp_servers", [
+      ...configMcpServers,
+      {
+        name: "",
+        description: "",
+        transport: "stdio",
+        command: "",
+        args: [],
+        url: "",
+        headers: {},
+        env: {},
+        cwd: "",
+        enabled: true,
+        startup_timeout_seconds: 15,
+        request_timeout_seconds: 120,
+      },
+    ]);
+  };
+
+  const removeMcpServerItem = (index: number) => {
+    updateConfigValue(
+      "mcp_servers",
+      configMcpServers.filter((_, currentIndex) => currentIndex !== index)
+    );
+  };
+
+  const renderStructuredEditorShell = ({
+    title,
+    description,
+    count,
+    icon: Icon,
+    onAdd,
+    addLabel,
+    children,
+  }: {
+    title: string;
+    description: string;
+    count: number;
+    icon: typeof Activity;
+    onAdd: () => void;
+    addLabel: string;
+    children: ReactNode;
+  }) => (
+    <Card className="border-border/80 bg-card/95 shadow-sm">
+      <CardHeader className="space-y-1">
+        <div className="flex items-center justify-between gap-3">
+          <div className="flex items-center gap-3">
+            <div className="rounded-2xl border border-border/70 bg-muted/30 p-2 text-mutedForeground">
+              <Icon className="h-4 w-4" />
+            </div>
+            <div>
+              <CardTitle className="text-base">{title}</CardTitle>
+              <CardDescription>{description}</CardDescription>
+            </div>
+          </div>
+          <div className="flex items-center gap-2">
+            <Badge variant="secondary">{count}</Badge>
+            <Button size="sm" variant="outline" onClick={onAdd}>
+              <Plus className="mr-2 h-4 w-4" />
+              {addLabel}
+            </Button>
+          </div>
+        </div>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        {children}
+      </CardContent>
+    </Card>
+  );
+
+  const renderProvidersEditor = () => (
+    renderStructuredEditorShell({
+      title: "Providers",
+      description: "Provider endpoints, API types, and credentials.",
+      count: settingsProviderCount,
+      icon: Globe,
+      onAdd: addProviderItem,
+      addLabel: "Add provider",
+      children: configProviders.length ? (
+        configProviders.map((provider, index) => (
+          <div key={`provider-${index}`} className="rounded-2xl border border-border/70 bg-muted/20 p-4">
+            <div className="mb-4 flex items-center justify-between gap-3">
+              <div>
+                <p className="text-sm font-semibold">{provider.name || `Provider ${index + 1}`}</p>
+                <p className="text-xs text-mutedForeground">API endpoint and authentication</p>
+              </div>
+              <Button size="sm" variant="outline" onClick={() => removeProviderItem(index)}>
+                <Trash2 className="mr-2 h-4 w-4" />
+                Remove
+              </Button>
+            </div>
+            <div className="grid gap-4 md:grid-cols-2">
+              <div className="space-y-2">
+                <label className="text-xs font-semibold uppercase tracking-[0.2em] text-mutedForeground">Name</label>
+                <Input
+                  value={provider.name ?? ""}
+                  onChange={(event) => updateProviderItem(index, "name", event.target.value)}
+                />
+              </div>
+              <div className="space-y-2">
+                <label className="text-xs font-semibold uppercase tracking-[0.2em] text-mutedForeground">API Type</label>
+                <Select
+                  value={provider.api_type || "openai"}
+                  onValueChange={(value) => updateProviderItem(index, "api_type", value)}
+                >
+                  <SelectTrigger>
+                    <SelectValue placeholder="Select API type" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="openai">openai</SelectItem>
+                    <SelectItem value="anthropic">anthropic</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="space-y-2 md:col-span-2">
+                <label className="text-xs font-semibold uppercase tracking-[0.2em] text-mutedForeground">API Base</label>
+                <Input
+                  value={provider.api_base ?? ""}
+                  onChange={(event) => updateProviderItem(index, "api_base", event.target.value)}
+                />
+              </div>
+              <div className="space-y-2 md:col-span-2">
+                <label className="text-xs font-semibold uppercase tracking-[0.2em] text-mutedForeground">API Key</label>
+                <Input
+                  type="password"
+                  placeholder="Leave blank to keep existing secret"
+                  value={provider.api_key ?? ""}
+                  onChange={(event) => updateProviderItem(index, "api_key", event.target.value)}
+                />
+              </div>
+            </div>
+          </div>
+        ))
+      ) : (
+        <div className="rounded-2xl border border-dashed border-border bg-muted/40 px-4 py-6 text-sm text-mutedForeground">
+          No providers configured.
+        </div>
+      ),
+    })
+  );
+
+  const renderModelsEditor = () => (
+    renderStructuredEditorShell({
+      title: "Models",
+      description: "Model registry, costs, and per-model reasoning overrides.",
+      count: settingsModelCount,
+      icon: Bot,
+      onAdd: addModelItem,
+      addLabel: "Add model",
+      children: configModels.length ? (
+        configModels.map((model, index) => {
+          const reasoningRows = flattenStructuredObject(model.reasoning ?? {});
+          return (
+          <div key={`model-${index}`} className="rounded-2xl border border-border/70 bg-muted/20 p-4">
+            <div className="mb-4 flex items-center justify-between gap-3">
+              <div>
+                <p className="text-sm font-semibold">{model.name || `Model ${index + 1}`}</p>
+                <p className="text-xs text-mutedForeground">Model selector, provider, pricing</p>
+              </div>
+              <Button size="sm" variant="outline" onClick={() => removeModelItem(index)}>
+                <Trash2 className="mr-2 h-4 w-4" />
+                Remove
+              </Button>
+            </div>
+            <div className="grid gap-4 md:grid-cols-2">
+              <div className="space-y-2">
+                <label className="text-xs font-semibold uppercase tracking-[0.2em] text-mutedForeground">Name</label>
+                <Input
+                  value={model.name ?? ""}
+                  onChange={(event) => updateModelItem(index, "name", event.target.value)}
+                />
+              </div>
+              <div className="space-y-2">
+                <label className="text-xs font-semibold uppercase tracking-[0.2em] text-mutedForeground">Provider</label>
+                <Select
+                  value={model.provider ?? ""}
+                  onValueChange={(value) => updateModelItem(index, "provider", value)}
+                >
+                  <SelectTrigger>
+                    <SelectValue placeholder="Select provider" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {configProviders.length ? (
+                      configProviders.map((provider, providerIndex) => (
+                        <SelectItem
+                          key={`${provider.name || "provider"}-${providerIndex}`}
+                          value={provider.name || `provider-${providerIndex}`}
+                        >
+                          {provider.name || `provider-${providerIndex}`}
+                        </SelectItem>
+                      ))
+                    ) : (
+                      <SelectItem value="__none" disabled>
+                        No providers available
+                      </SelectItem>
+                    )}
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="space-y-2 md:col-span-2">
+                <label className="text-xs font-semibold uppercase tracking-[0.2em] text-mutedForeground">Model ID</label>
+                <Input
+                  value={model.model_id ?? ""}
+                  onChange={(event) => updateModelItem(index, "model_id", event.target.value)}
+                />
+              </div>
+              <div className="space-y-2">
+                <label className="text-xs font-semibold uppercase tracking-[0.2em] text-mutedForeground">Input cost / 1M</label>
+                <Input
+                  type="number"
+                  step="0.0001"
+                  value={String(model.input_cost_per_1m ?? 0)}
+                  onChange={(event) => updateModelItem(index, "input_cost_per_1m", Number(event.target.value))}
+                />
+              </div>
+              <div className="space-y-2">
+                <label className="text-xs font-semibold uppercase tracking-[0.2em] text-mutedForeground">Output cost / 1M</label>
+                <Input
+                  type="number"
+                  step="0.0001"
+                  value={String(model.output_cost_per_1m ?? 0)}
+                  onChange={(event) => updateModelItem(index, "output_cost_per_1m", Number(event.target.value))}
+                />
+              </div>
+              <div className="space-y-2 md:col-span-2">
+                <div className="flex items-center justify-between gap-3">
+                  <label className="text-xs font-semibold uppercase tracking-[0.2em] text-mutedForeground">Reasoning Overrides</label>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={() => {
+                      const nextRows = [
+                        ...reasoningRows,
+                        {
+                          keyPath: uniqueStructuredKey(reasoningRows.map((row) => row.keyPath), "provider.setting"),
+                          valueType: "string" as const,
+                          value: "",
+                        },
+                      ];
+                      updateStructuredObjectRows(
+                        model.reasoning,
+                        nextRows,
+                        (value) => updateModelItem(index, "reasoning", value),
+                        "Model reasoning overrides contain invalid values.",
+                      );
+                    }}
+                  >
+                    <Plus className="mr-2 h-4 w-4" />
+                    Add override
+                  </Button>
+                </div>
+                <div className="space-y-3 rounded-2xl border border-border/70 bg-background/70 p-3">
+                  {reasoningRows.length ? (
+                    reasoningRows.map((row, rowIndex) => (
+                      <div key={`model-reasoning-${index}-${rowIndex}`} className="grid gap-3 md:grid-cols-[minmax(0,1.4fr)_160px_minmax(0,1fr)_auto] md:items-start">
+                        <Input
+                          value={row.keyPath}
+                          placeholder="anthropic.budget_tokens"
+                          onChange={(event) =>
+                            updateStructuredObjectRows(
+                              model.reasoning,
+                              updateStructuredRow(reasoningRows, rowIndex, { keyPath: event.target.value }),
+                              (value) => updateModelItem(index, "reasoning", value),
+                              "Model reasoning overrides contain invalid values.",
+                            )
+                          }
+                        />
+                        <Select
+                          value={row.valueType}
+                          onValueChange={(value) =>
+                            updateStructuredObjectRows(
+                              model.reasoning,
+                              updateStructuredRow(reasoningRows, rowIndex, { valueType: value as StructuredValueType }),
+                              (nextValue) => updateModelItem(index, "reasoning", nextValue),
+                              "Model reasoning overrides contain invalid values.",
+                            )
+                          }
+                        >
+                          <SelectTrigger>
+                            <SelectValue placeholder="Type" />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="string">String</SelectItem>
+                            <SelectItem value="number">Number</SelectItem>
+                            <SelectItem value="boolean">Boolean</SelectItem>
+                            <SelectItem value="json">JSON</SelectItem>
+                          </SelectContent>
+                        </Select>
+                        {row.valueType === "boolean" ? (
+                          <Select
+                            value={row.value === "true" ? "true" : "false"}
+                            onValueChange={(value) =>
+                              updateStructuredObjectRows(
+                                model.reasoning,
+                                updateStructuredRow(reasoningRows, rowIndex, { value }),
+                                (nextValue) => updateModelItem(index, "reasoning", nextValue),
+                                "Model reasoning overrides contain invalid values.",
+                              )
+                            }
+                          >
+                            <SelectTrigger>
+                              <SelectValue placeholder="Boolean" />
+                            </SelectTrigger>
+                            <SelectContent>
+                              <SelectItem value="true">true</SelectItem>
+                              <SelectItem value="false">false</SelectItem>
+                            </SelectContent>
+                          </Select>
+                        ) : row.valueType === "json" ? (
+                          <Textarea
+                            className="min-h-[88px] font-mono text-xs"
+                            value={row.value}
+                            onChange={(event) =>
+                              updateStructuredObjectRows(
+                                model.reasoning,
+                                updateStructuredRow(reasoningRows, rowIndex, { value: event.target.value }),
+                                (nextValue) => updateModelItem(index, "reasoning", nextValue),
+                                "Model reasoning overrides contain invalid JSON.",
+                              )
+                            }
+                          />
+                        ) : (
+                          <Input
+                            type={row.valueType === "number" ? "number" : "text"}
+                            value={row.value}
+                            onChange={(event) =>
+                              updateStructuredObjectRows(
+                                model.reasoning,
+                                updateStructuredRow(reasoningRows, rowIndex, { value: event.target.value }),
+                                (nextValue) => updateModelItem(index, "reasoning", nextValue),
+                                "Model reasoning overrides contain invalid values.",
+                              )
+                            }
+                          />
+                        )}
+                        <Button
+                          size="icon"
+                          variant="outline"
+                          onClick={() =>
+                            updateStructuredObjectRows(
+                              model.reasoning,
+                              reasoningRows.filter((_, currentIndex) => currentIndex !== rowIndex),
+                              (value) => updateModelItem(index, "reasoning", value),
+                              "Model reasoning overrides contain invalid values.",
+                            )
+                          }
+                        >
+                          <Trash2 className="h-4 w-4" />
+                        </Button>
+                      </div>
+                    ))
+                  ) : (
+                    <div className="rounded-xl border border-dashed border-border bg-muted/30 px-3 py-4 text-sm text-mutedForeground">
+                      No per-model reasoning overrides configured.
+                    </div>
+                  )}
+                </div>
+              </div>
+            </div>
+          </div>
+        )})
+      ) : (
+        <div className="rounded-2xl border border-dashed border-border bg-muted/40 px-4 py-6 text-sm text-mutedForeground">
+          No models configured.
+        </div>
+      ),
+    })
+  );
+
+  const renderMcpServersEditor = () => (
+    renderStructuredEditorShell({
+      title: "MCP Servers",
+      description: "Configured MCP servers with transport, discovery text, and runtime settings.",
+      count: settingsMcpCount,
+      icon: Cable,
+      onAdd: addMcpServerItem,
+      addLabel: "Add MCP server",
+      children: configMcpServers.length ? (
+        configMcpServers.map((server, index) => {
+          const headerRows = Object.entries(server.headers ?? {}).map(([key, value]) => ({
+            keyPath: key,
+            valueType: "string" as const,
+            value: String(value ?? ""),
+          }));
+          const envRows = Object.entries(server.env ?? {}).map(([key, value]) => ({
+            keyPath: key,
+            valueType: "string" as const,
+            value: String(value ?? ""),
+          }));
+          return (
+          <div key={`mcp-${index}`} className="rounded-2xl border border-border/70 bg-muted/20 p-4">
+            <div className="mb-4 flex items-center justify-between gap-3">
+              <div>
+                <p className="text-sm font-semibold">{server.name || `MCP Server ${index + 1}`}</p>
+                <p className="text-xs text-mutedForeground">Discovery, transport, and launch settings</p>
+              </div>
+              <div className="flex items-center gap-3">
+                <Switch
+                  checked={Boolean(server.enabled)}
+                  onCheckedChange={(value) => updateMcpServerItem(index, "enabled", value)}
+                />
+                <Button size="sm" variant="outline" onClick={() => removeMcpServerItem(index)}>
+                  <Trash2 className="mr-2 h-4 w-4" />
+                  Remove
+                </Button>
+              </div>
+            </div>
+            <div className="grid gap-4 md:grid-cols-2">
+              <div className="space-y-2">
+                <label className="text-xs font-semibold uppercase tracking-[0.2em] text-mutedForeground">Name</label>
+                <Input
+                  value={server.name ?? ""}
+                  onChange={(event) => updateMcpServerItem(index, "name", event.target.value)}
+                />
+              </div>
+              <div className="space-y-2">
+                <label className="text-xs font-semibold uppercase tracking-[0.2em] text-mutedForeground">Transport</label>
+                <Select
+                  value={server.transport || "stdio"}
+                  onValueChange={(value) => updateMcpServerItem(index, "transport", value)}
+                >
+                  <SelectTrigger>
+                    <SelectValue placeholder="Select transport" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="stdio">stdio</SelectItem>
+                    <SelectItem value="http">http</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="space-y-2 md:col-span-2">
+                <label className="text-xs font-semibold uppercase tracking-[0.2em] text-mutedForeground">Description</label>
+                <Textarea
+                  rows={3}
+                  value={server.description ?? ""}
+                  onChange={(event) => updateMcpServerItem(index, "description", event.target.value)}
+                />
+              </div>
+              <div className="space-y-2">
+                <label className="text-xs font-semibold uppercase tracking-[0.2em] text-mutedForeground">Command</label>
+                <Input
+                  value={server.command ?? ""}
+                  onChange={(event) => updateMcpServerItem(index, "command", event.target.value)}
+                  disabled={(server.transport || "stdio") !== "stdio"}
+                />
+              </div>
+              <div className="space-y-2">
+                <label className="text-xs font-semibold uppercase tracking-[0.2em] text-mutedForeground">Args</label>
+                <Input
+                  value={(server.args ?? []).join(", ")}
+                  onChange={(event) =>
+                    updateMcpServerItem(
+                      index,
+                      "args",
+                      event.target.value
+                        .split(",")
+                        .map((item) => item.trim())
+                        .filter(Boolean)
+                    )
+                  }
+                  disabled={(server.transport || "stdio") !== "stdio"}
+                />
+              </div>
+              <div className="space-y-2 md:col-span-2">
+                <label className="text-xs font-semibold uppercase tracking-[0.2em] text-mutedForeground">URL</label>
+                <Input
+                  value={server.url ?? ""}
+                  onChange={(event) => updateMcpServerItem(index, "url", event.target.value)}
+                  disabled={(server.transport || "stdio") !== "http"}
+                />
+              </div>
+              <div className="space-y-2">
+                <label className="text-xs font-semibold uppercase tracking-[0.2em] text-mutedForeground">Working Directory</label>
+                <Input
+                  value={server.cwd ?? ""}
+                  onChange={(event) => updateMcpServerItem(index, "cwd", event.target.value)}
+                />
+              </div>
+              <div className="space-y-2">
+                <label className="text-xs font-semibold uppercase tracking-[0.2em] text-mutedForeground">Startup Timeout</label>
+                <Input
+                  type="number"
+                  step="1"
+                  value={String(server.startup_timeout_seconds ?? 15)}
+                  onChange={(event) => updateMcpServerItem(index, "startup_timeout_seconds", Number(event.target.value))}
+                />
+              </div>
+              <div className="space-y-2">
+                <label className="text-xs font-semibold uppercase tracking-[0.2em] text-mutedForeground">Request Timeout</label>
+                <Input
+                  type="number"
+                  step="1"
+                  value={String(server.request_timeout_seconds ?? 120)}
+                  onChange={(event) => updateMcpServerItem(index, "request_timeout_seconds", Number(event.target.value))}
+                />
+              </div>
+              <div className="space-y-2 md:col-span-2">
+                <div className="flex items-center justify-between gap-3">
+                  <label className="text-xs font-semibold uppercase tracking-[0.2em] text-mutedForeground">Headers</label>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={() =>
+                      updateMcpServerItem(index, "headers", {
+                        ...(server.headers ?? {}),
+                        [uniqueStructuredKey(Object.keys(server.headers ?? {}), "HEADER_NAME")]: "",
+                      })
+                    }
+                  >
+                    <Plus className="mr-2 h-4 w-4" />
+                    Add header
+                  </Button>
+                </div>
+                <div className="space-y-3 rounded-2xl border border-border/70 bg-background/70 p-3">
+                  {headerRows.length ? (
+                    headerRows.map((row, rowIndex) => (
+                      <div key={`mcp-header-${index}-${rowIndex}`} className="grid gap-3 md:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto] md:items-center">
+                        <Input
+                          value={row.keyPath}
+                          placeholder="Authorization"
+                          onChange={(event) => {
+                            const nextRows = headerRows.map((entry, currentIndex) => (
+                              currentIndex === rowIndex ? { ...entry, keyPath: event.target.value } : entry
+                            ));
+                            updateStructuredObjectRows(
+                              server.headers,
+                              nextRows,
+                              (value) => updateMcpServerItem(index, "headers", value as Record<string, string>),
+                              "MCP headers contain invalid values.",
+                            );
+                          }}
+                        />
+                        <Input
+                          value={row.value}
+                          placeholder="Bearer ..."
+                          onChange={(event) => {
+                            const nextRows = headerRows.map((entry, currentIndex) => (
+                              currentIndex === rowIndex ? { ...entry, value: event.target.value } : entry
+                            ));
+                            updateStructuredObjectRows(
+                              server.headers,
+                              nextRows,
+                              (value) => updateMcpServerItem(index, "headers", value as Record<string, string>),
+                              "MCP headers contain invalid values.",
+                            );
+                          }}
+                        />
+                        <Button
+                          size="icon"
+                          variant="outline"
+                          onClick={() =>
+                            updateStructuredObjectRows(
+                              server.headers,
+                              headerRows.filter((_, currentIndex) => currentIndex !== rowIndex),
+                              (value) => updateMcpServerItem(index, "headers", value as Record<string, string>),
+                              "MCP headers contain invalid values.",
+                            )
+                          }
+                        >
+                          <Trash2 className="h-4 w-4" />
+                        </Button>
+                      </div>
+                    ))
+                  ) : (
+                    <div className="rounded-xl border border-dashed border-border bg-muted/30 px-3 py-4 text-sm text-mutedForeground">
+                      No request headers configured.
+                    </div>
+                  )}
+                </div>
+              </div>
+              <div className="space-y-2 md:col-span-2">
+                <div className="flex items-center justify-between gap-3">
+                  <label className="text-xs font-semibold uppercase tracking-[0.2em] text-mutedForeground">Environment</label>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={() =>
+                      updateMcpServerItem(index, "env", {
+                        ...(server.env ?? {}),
+                        [uniqueStructuredKey(Object.keys(server.env ?? {}), "ENV_VAR")]: "",
+                      })
+                    }
+                  >
+                    <Plus className="mr-2 h-4 w-4" />
+                    Add env var
+                  </Button>
+                </div>
+                <div className="space-y-3 rounded-2xl border border-border/70 bg-background/70 p-3">
+                  {envRows.length ? (
+                    envRows.map((row, rowIndex) => (
+                      <div key={`mcp-env-${index}-${rowIndex}`} className="grid gap-3 md:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto] md:items-center">
+                        <Input
+                          value={row.keyPath}
+                          placeholder="API_TOKEN"
+                          onChange={(event) => {
+                            const nextRows = envRows.map((entry, currentIndex) => (
+                              currentIndex === rowIndex ? { ...entry, keyPath: event.target.value } : entry
+                            ));
+                            updateStructuredObjectRows(
+                              server.env,
+                              nextRows,
+                              (value) => updateMcpServerItem(index, "env", value as Record<string, string>),
+                              "MCP environment contains invalid values.",
+                            );
+                          }}
+                        />
+                        <Input
+                          value={row.value}
+                          onChange={(event) => {
+                            const nextRows = envRows.map((entry, currentIndex) => (
+                              currentIndex === rowIndex ? { ...entry, value: event.target.value } : entry
+                            ));
+                            updateStructuredObjectRows(
+                              server.env,
+                              nextRows,
+                              (value) => updateMcpServerItem(index, "env", value as Record<string, string>),
+                              "MCP environment contains invalid values.",
+                            );
+                          }}
+                        />
+                        <Button
+                          size="icon"
+                          variant="outline"
+                          onClick={() =>
+                            updateStructuredObjectRows(
+                              server.env,
+                              envRows.filter((_, currentIndex) => currentIndex !== rowIndex),
+                              (value) => updateMcpServerItem(index, "env", value as Record<string, string>),
+                              "MCP environment contains invalid values.",
+                            )
+                          }
+                        >
+                          <Trash2 className="h-4 w-4" />
+                        </Button>
+                      </div>
+                    ))
+                  ) : (
+                    <div className="rounded-xl border border-dashed border-border bg-muted/30 px-3 py-4 text-sm text-mutedForeground">
+                      No environment overrides configured.
+                    </div>
+                  )}
+                </div>
+              </div>
+            </div>
+          </div>
+        )})
+      ) : (
+        <div className="rounded-2xl border border-dashed border-border bg-muted/40 px-4 py-6 text-sm text-mutedForeground">
+          No MCP servers configured.
+        </div>
+      ),
+    })
+  );
 
   return (
     <div className="app-shell">
@@ -3056,7 +4095,7 @@ export default function App() {
               <CardHeader>
                 <SectionHeader
                   title="Configuration"
-                  subtitle="Manage live settings from the YAML config."
+                  subtitle="Review, filter, and edit the live YAML configuration."
                   actionLabel={configSaving ? "Saving..." : "Save changes"}
                   onAction={configSaving ? undefined : saveConfig}
                 />
@@ -3071,62 +4110,111 @@ export default function App() {
                     {configError}
                   </div>
                 ) : (
-                  <div className="grid gap-6">
-                    {configData?.categories.map((category) => (
-                      <Card key={category.id}>
-                        <CardHeader>
-                          <CardTitle className="text-lg">{category.label}</CardTitle>
-                        </CardHeader>
-                        <CardContent className="grid gap-4 md:grid-cols-2">
-                          {category.fields.map((field) => (
-                            <div key={field.key} className="flex flex-col gap-2">
-                              <div className="flex items-center justify-between">
-                                <label className="text-xs font-semibold uppercase tracking-[0.2em] text-mutedForeground">
-                                  {field.label}
-                                </label>
-                                {field.type === "boolean" ? (
-                                  <Switch
-                                    checked={Boolean(configDraft[field.key])}
-                                    onCheckedChange={(value) => updateConfigValue(field.key, value)}
-                                  />
-                                ) : null}
-                              </div>
-                              {field.type === "string" ? (
-                                <Input
-                                  type={field.secret ? "password" : "text"}
-                                  placeholder={field.secret ? "••••••••" : undefined}
-                                  value={String(configDraft[field.key] ?? "")}
-                                  onChange={(event) => updateConfigValue(field.key, event.target.value)}
-                                />
-                              ) : null}
-                              {field.type === "number" ? (
-                                <Input
-                                  type="number"
-                                  min={field.minimum ?? undefined}
-                                  max={field.maximum ?? undefined}
-                                  step={field.step ?? 1}
-                                  value={String(configDraft[field.key] ?? "")}
-                                  onChange={(event) => updateConfigValue(field.key, Number(event.target.value))}
-                                />
-                              ) : null}
-                              {field.type === "list" ? (
-                                <Textarea
-                                  rows={3}
-                                  placeholder="item1, item2"
-                                  value={Array.isArray(configDraft[field.key])
-                                    ? (configDraft[field.key] as string[]).join(", ")
-                                    : String(configDraft[field.key] ?? "")}
-                                  onChange={(event) => updateConfigValue(field.key, event.target.value)}
-                                />
-                              ) : null}
-                              {field.description ? (
-                                <p className="text-xs text-mutedForeground">{field.description}</p>
-                              ) : null}
+                  <div className="space-y-6">
+                    <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+                      <div className="rounded-3xl border border-border/80 bg-card px-5 py-4 shadow-sm">
+                        <div className="flex items-center gap-3">
+                          <div className="rounded-2xl border border-border/70 bg-muted/30 p-2 text-mutedForeground">
+                            <Database className="h-4 w-4" />
+                          </div>
+                          <div>
+                            <p className="text-xs uppercase tracking-[0.2em] text-mutedForeground">Categories</p>
+                            <p className="mt-1 text-2xl font-semibold">{configData?.categories.length ?? 0}</p>
+                          </div>
+                        </div>
+                      </div>
+                      <div className="rounded-3xl border border-border/80 bg-card px-5 py-4 shadow-sm">
+                        <div className="flex items-center gap-3">
+                          <div className="rounded-2xl border border-border/70 bg-muted/30 p-2 text-mutedForeground">
+                            <Bot className="h-4 w-4" />
+                          </div>
+                          <div>
+                            <p className="text-xs uppercase tracking-[0.2em] text-mutedForeground">Models</p>
+                            <p className="mt-1 text-2xl font-semibold">{settingsModelCount}</p>
+                          </div>
+                        </div>
+                      </div>
+                      <div className="rounded-3xl border border-border/80 bg-card px-5 py-4 shadow-sm">
+                        <div className="flex items-center gap-3">
+                          <div className="rounded-2xl border border-border/70 bg-muted/30 p-2 text-mutedForeground">
+                            <Globe className="h-4 w-4" />
+                          </div>
+                          <div>
+                            <p className="text-xs uppercase tracking-[0.2em] text-mutedForeground">Providers</p>
+                            <p className="mt-1 text-2xl font-semibold">{settingsProviderCount}</p>
+                          </div>
+                        </div>
+                      </div>
+                      <div className="rounded-3xl border border-border/80 bg-card px-5 py-4 shadow-sm">
+                        <div className="flex items-center gap-3">
+                          <div className="rounded-2xl border border-border/70 bg-muted/30 p-2 text-mutedForeground">
+                            <Cable className="h-4 w-4" />
+                          </div>
+                          <div>
+                            <p className="text-xs uppercase tracking-[0.2em] text-mutedForeground">MCP Servers</p>
+                            <p className="mt-1 text-2xl font-semibold">{settingsMcpCount}</p>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
+                      <div className="relative w-full lg:max-w-md">
+                        <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-mutedForeground" />
+                        <Input
+                          className="pl-9"
+                          placeholder="Filter settings, descriptions, or keys"
+                          value={settingsQuery}
+                          onChange={(event) => setSettingsQuery(event.target.value)}
+                        />
+                      </div>
+                      <p className="text-xs text-mutedForeground">
+                        Secret fields stay masked unless you enter a new value.
+                      </p>
+                    </div>
+
+                    <Tabs value={settingsTab} onValueChange={(value) => setSettingsTab(value as SettingsTabId)}>
+                      <TabsList className="grid h-auto w-full grid-cols-2 gap-2 rounded-3xl bg-muted/40 p-2 lg:grid-cols-6">
+                        {Object.entries(SETTINGS_TAB_META).map(([tabId, meta]) => {
+                          const Icon = meta.icon;
+                          return (
+                            <TabsTrigger
+                              key={tabId}
+                              value={tabId}
+                              className="flex items-center gap-2 rounded-2xl px-3 py-2 text-xs"
+                            >
+                              <Icon className="h-4 w-4" />
+                              {meta.label}
+                            </TabsTrigger>
+                          );
+                        })}
+                      </TabsList>
+
+                      {(Object.keys(SETTINGS_TAB_META) as SettingsTabId[]).map((tabId) => (
+                        <TabsContent key={tabId} value={tabId} className="mt-6 space-y-6">
+                          {tabId === "models" ? (
+                            <div className="grid gap-6 xl:grid-cols-2">
+                              {renderProvidersEditor()}
+                              {renderModelsEditor()}
                             </div>
-                          ))}
-                        </CardContent>
-                      </Card>
-                    ))}
+                          ) : null}
+                          {tabId === "integrations" ? (
+                            <div className="grid gap-6">
+                              {renderMcpServersEditor()}
+                            </div>
+                          ) : null}
+                          <div className="grid gap-6">
+                            {settingsCategoriesByTab[tabId].length ? (
+                              settingsCategoriesByTab[tabId].map((category) => renderConfigCategoryCard(category))
+                            ) : (
+                              <div className="rounded-2xl border border-dashed border-border bg-muted/40 px-4 py-6 text-sm text-mutedForeground">
+                                No settings match this tab{settingsQueryNormalized ? " and the current filter" : ""}.
+                              </div>
+                            )}
+                          </div>
+                        </TabsContent>
+                      ))}
+                    </Tabs>
                   </div>
                 )}
               </CardContent>
