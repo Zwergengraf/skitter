@@ -1334,34 +1334,67 @@ class AgentRuntime:
         messages = self._history.get(session_id, [])
         if not messages:
             return "No messages to summarize."
-        transcript_lines = []
-        for msg in messages[-50:]:
-            role = msg.type if hasattr(msg, "type") else msg.__class__.__name__
-            raw_content = msg.content if hasattr(msg, "content") else str(msg)
-            content = self._message_content_to_text(raw_content)
-            transcript_lines.append(f"{role}: {content}")
-        transcript = "\n".join(transcript_lines)
+        previous_summary = ""
+        previous_checkpoint: datetime | None = None
+        chat_messages: list[BaseMessage] = []
+
+        for msg in messages:
+            if isinstance(msg, SystemMessage) and msg.additional_kwargs.get("conversation_summary"):
+                previous_summary = self._message_content_to_text(msg.content).strip()
+                previous_checkpoint = self._summary_checkpoint(msg)
+                continue
+            if self._is_chat_message(msg):
+                chat_messages.append(msg)
+
+        new_messages: list[BaseMessage] = []
+        for msg in chat_messages:
+            dt = self._message_datetime(msg)
+            if previous_checkpoint is not None and dt is not None and dt <= previous_checkpoint:
+                continue
+            new_messages.append(msg)
+
+        if not new_messages and previous_summary:
+            return previous_summary
+        if not new_messages:
+            return "No messages to summarize."
 
         if not list_models():
-            return transcript
+            transcript_lines = []
+            for msg in new_messages:
+                role = "user" if isinstance(msg, HumanMessage) else "assistant"
+                content = self._message_content_to_text(getattr(msg, "content", ""))
+                if content:
+                    transcript_lines.append(f"{role}: {content}")
+            transcript = "\n".join(transcript_lines).strip()
+            merged = f"{previous_summary}\n{transcript}".strip()
+            return merged or "No messages to summarize."
 
         llm = build_llm(model_name=model_name, purpose="main")
+        transcript_lines = []
+        for msg in new_messages:
+            role = "user" if isinstance(msg, HumanMessage) else "assistant"
+            content = self._message_content_to_text(getattr(msg, "content", ""))
+            if content:
+                transcript_lines.append(f"{role}: {content}")
+        transcript = "\n".join(transcript_lines).strip()
         prompt = [
             SystemMessage(
                 content=("""
 Create long-term memory notes for semantic retrieval.
 Keep only information likely useful in future sessions.
-                    
+
 Include only:
 - Stable user preferences and working style
 - Important project decisions and rationale
 - Lasting technical setup facts
 - Open commitments / follow-ups
-                    
+
 Exclude:
 - IDs, hashes, timestamps, URLs, raw logs, transient debugging details
 - Step-by-step chronology of the session
 - Tool call noise unless it defines a durable rule
+
+If an existing summary is provided, merge it with the new transcript and return a single updated summary.
 
 Output concise Markdown bullets under these headings (not all headings are necessary, include only relevant ones):
 ## Preferences
@@ -1370,12 +1403,20 @@ Output concise Markdown bullets under these headings (not all headings are neces
 Each bullet must be self-contained, explicit, and searchable.
                 """.strip())
             ),
-            HumanMessage(content=transcript),
+            HumanMessage(
+                content=(
+                    f"Existing summary:\n{previous_summary or '(none)'}\n\n"
+                    f"Session messages to summarize:\n{transcript}\n\n"
+                    "Return the merged summary only."
+                )
+            ),
         ]
         result = await llm.ainvoke(prompt)
         if hasattr(result, "content"):
-            return self._message_content_to_text(result.content)
-        return str(result)
+            text = self._message_content_to_text(result.content).strip()
+            return text or previous_summary or "No messages to summarize."
+        text = str(result).strip()
+        return text or previous_summary or "No messages to summarize."
 
     async def _ensure_history(self, session_id: str) -> None:
         if session_id in self._history:

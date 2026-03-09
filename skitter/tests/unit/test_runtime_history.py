@@ -1,6 +1,9 @@
 from __future__ import annotations
 
-from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
+from datetime import UTC, datetime
+
+import pytest
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 
 from skitter.core.config import settings
 from skitter.core.events import EventBus
@@ -162,3 +165,72 @@ def test_extract_http_status_code_from_retry_wrapper() -> None:
     wrapped = _RetryWrapper(_ApiStatusError(500))
     assert runtime._extract_http_status_code(wrapped) == 500
     assert runtime._is_retryable_model_http_error(wrapped) is True
+
+
+class _SummaryLLM:
+    def __init__(self) -> None:
+        self.prompts = []
+
+    async def ainvoke(self, prompt):
+        self.prompts.append(prompt)
+        return AIMessage(content="## Decisions\n- Durable merged summary")
+
+
+@pytest.mark.asyncio
+async def test_summarize_session_uses_previous_summary_and_skips_tool_chatter(
+    monkeypatch,
+) -> None:
+    runtime = _runtime()
+    llm = _SummaryLLM()
+    monkeypatch.setattr("skitter.core.runtime.list_models", lambda: [object()])
+    monkeypatch.setattr("skitter.core.runtime.build_llm", lambda model_name, purpose="main": llm)
+
+    runtime._history["session-1"] = [
+        SystemMessage(
+            content="Older durable summary",
+            additional_kwargs={
+                "conversation_summary": True,
+                "summary_checkpoint": datetime(2026, 3, 1, 10, 0, tzinfo=UTC).isoformat(),
+            },
+        ),
+        HumanMessage(
+            content="Old message already summarized",
+            additional_kwargs={"_db_created_at": datetime(2026, 3, 1, 9, 0, tzinfo=UTC).isoformat()},
+        ),
+        HumanMessage(
+            content="We decided to use MCP for Trello sync.",
+            additional_kwargs={"_db_created_at": datetime(2026, 3, 2, 9, 0, tzinfo=UTC).isoformat()},
+        ),
+        AIMessage(
+            content="I will inspect the MCP tools now.",
+            additional_kwargs={"_db_created_at": datetime(2026, 3, 2, 9, 1, tzinfo=UTC).isoformat()},
+        ),
+        AIMessage(
+            content="",
+            tool_calls=[{"id": "call-1", "name": "mcp_list_tools", "args": {"server_name": "trello"}}],
+            additional_kwargs={"_db_created_at": datetime(2026, 3, 2, 9, 2, tzinfo=UTC).isoformat()},
+        ),
+        ToolMessage(
+            content='{"tools":["boards.list"]}',
+            tool_call_id="call-1",
+            additional_kwargs={"_db_created_at": datetime(2026, 3, 2, 9, 2, tzinfo=UTC).isoformat()},
+        ),
+        AIMessage(
+            content="Final short reply",
+            additional_kwargs={"_db_created_at": datetime(2026, 3, 2, 9, 3, tzinfo=UTC).isoformat()},
+        ),
+    ]
+
+    result = await runtime.summarize_session("session-1", model_name="provider/main")
+
+    assert result == "## Decisions\n- Durable merged summary"
+    assert len(llm.prompts) == 1
+    prompt = llm.prompts[0]
+    final_human = prompt[1].content
+    assert "Existing summary:\nOlder durable summary" in final_human
+    assert "We decided to use MCP for Trello sync." in final_human
+    assert "I will inspect the MCP tools now." in final_human
+    assert "Final short reply" in final_human
+    assert "mcp_list_tools" not in final_human
+    assert "boards.list" not in final_human
+    assert "Old message already summarized" not in final_human
