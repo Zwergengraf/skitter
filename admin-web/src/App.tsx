@@ -6,6 +6,9 @@ import {
   Clock3,
   Database,
   Globe,
+  ChevronDown,
+  ChevronRight,
+  GripVertical,
   Plus,
   Search,
   Shield,
@@ -375,6 +378,10 @@ export default function App() {
   const [configLoading, setConfigLoading] = useState<boolean>(false);
   const [configSaving, setConfigSaving] = useState<boolean>(false);
   const [configError, setConfigError] = useState<string | null>(null);
+  const [draggingModelChain, setDraggingModelChain] = useState<{ fieldKey: string; index: number } | null>(null);
+  const [openProviderItems, setOpenProviderItems] = useState<Record<number, boolean>>({});
+  const [openModelItems, setOpenModelItems] = useState<Record<number, boolean>>({});
+  const [openMcpItems, setOpenMcpItems] = useState<Record<number, boolean>>({});
   const [settingsTab, setSettingsTab] = useState<SettingsTabId>("core");
   const [settingsQuery, setSettingsQuery] = useState<string>("");
   const [channelsData, setChannelsData] = useState<ChannelListItem[]>([]);
@@ -446,6 +453,13 @@ export default function App() {
   const configProviders = (Array.isArray(configDraft.providers) ? configDraft.providers : []) as ConfigProviderItem[];
   const configModels = (Array.isArray(configDraft.models) ? configDraft.models : []) as ConfigModelItem[];
   const configMcpServers = (Array.isArray(configDraft.mcp_servers) ? configDraft.mcp_servers : []) as ConfigMcpServerItem[];
+  const availableModelSelectors = useMemo(
+    () =>
+      configModels
+        .filter((model) => model.provider?.trim() && model.name?.trim())
+        .map((model) => `${model.provider.trim()}/${model.name.trim()}`),
+    [configModels],
+  );
   const settingsQueryNormalized = settingsQuery.trim().toLowerCase();
   const filteredConfigCategories = useMemo(() => {
     if (!configData) {
@@ -792,6 +806,22 @@ export default function App() {
   ): StructuredValueRow[] => rows.map((row, currentIndex) => (
     currentIndex === index ? { ...row, ...patch } : row
   ));
+
+  const reorderListValues = (values: string[], fromIndex: number, toIndex: number): string[] => {
+    if (
+      fromIndex === toIndex ||
+      fromIndex < 0 ||
+      toIndex < 0 ||
+      fromIndex >= values.length ||
+      toIndex >= values.length
+    ) {
+      return values;
+    }
+    const next = [...values];
+    const [item] = next.splice(fromIndex, 1);
+    next.splice(toIndex, 0, item);
+    return next;
+  };
 
   const saveConfig = async () => {
     if (!configData) {
@@ -1675,6 +1705,101 @@ export default function App() {
   };
 
   const renderConfigInput = (field: ConfigResponse["categories"][number]["fields"][number]) => {
+    if (field.key === "main_model" || field.key === "heartbeat_model") {
+      const chain = Array.isArray(configDraft[field.key])
+        ? (configDraft[field.key] as string[])
+        : typeof configDraft[field.key] === "string" && configDraft[field.key]
+          ? String(configDraft[field.key])
+              .split(",")
+              .map((item) => item.trim())
+              .filter(Boolean)
+          : [];
+      const remainingOptions = availableModelSelectors.filter((item) => !chain.includes(item));
+
+      return (
+        <div className="space-y-3">
+          <div className="space-y-2 rounded-2xl border border-border/70 bg-background/70 p-3">
+            {chain.length ? (
+              chain.map((item, index) => (
+                <div
+                  key={`${field.key}-${item}-${index}`}
+                  draggable
+                  onDragStart={() => setDraggingModelChain({ fieldKey: field.key, index })}
+                  onDragEnd={() => setDraggingModelChain(null)}
+                  onDragOver={(event) => {
+                    if (draggingModelChain?.fieldKey === field.key) {
+                      event.preventDefault();
+                    }
+                  }}
+                  onDrop={(event) => {
+                    event.preventDefault();
+                    if (!draggingModelChain || draggingModelChain.fieldKey !== field.key) {
+                      return;
+                    }
+                    updateConfigValue(field.key, reorderListValues(chain, draggingModelChain.index, index));
+                    setDraggingModelChain(null);
+                  }}
+                  className="flex items-center gap-3 rounded-xl border border-border/60 bg-card/90 px-3 py-2"
+                >
+                  <button
+                    type="button"
+                    className="cursor-grab text-mutedForeground transition hover:text-foreground active:cursor-grabbing"
+                    aria-label="Drag to reorder"
+                  >
+                    <GripVertical className="h-4 w-4" />
+                  </button>
+                  <div className="min-w-0 flex-1">
+                    <p className="truncate text-sm font-medium">{item}</p>
+                    <p className="text-xs text-mutedForeground">Priority {index + 1}</p>
+                  </div>
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="outline"
+                    onClick={() => updateConfigValue(field.key, chain.filter((_, currentIndex) => currentIndex !== index))}
+                  >
+                    Remove
+                  </Button>
+                </div>
+              ))
+            ) : (
+              <div className="rounded-xl border border-dashed border-border bg-muted/30 px-3 py-4 text-sm text-mutedForeground">
+                No models in this chain.
+              </div>
+            )}
+          </div>
+          <div className="flex flex-col gap-3 md:flex-row md:items-center">
+            <Select
+              value={undefined}
+              onValueChange={(value) => {
+                if (!value) {
+                  return;
+                }
+                updateConfigValue(field.key, [...chain, value]);
+              }}
+            >
+              <SelectTrigger className="md:max-w-md">
+                <SelectValue placeholder={remainingOptions.length ? "Add model to chain" : "No unused models available"} />
+              </SelectTrigger>
+              <SelectContent>
+                {remainingOptions.length ? (
+                  remainingOptions.map((option) => (
+                    <SelectItem key={`${field.key}-option-${option}`} value={option}>
+                      {option}
+                    </SelectItem>
+                  ))
+                ) : (
+                  <SelectItem value="__none" disabled>
+                    No unused models available
+                  </SelectItem>
+                )}
+              </SelectContent>
+            </Select>
+            <p className="text-xs text-mutedForeground">Drag entries to reorder the fallback chain.</p>
+          </div>
+        </div>
+      );
+    }
     if (field.type === "boolean") {
       return (
         <Switch
@@ -1772,6 +1897,7 @@ export default function App() {
   };
 
   const addProviderItem = () => {
+    setOpenProviderItems((prev) => ({ ...prev, [configProviders.length]: true }));
     updateConfigValue("providers", [
       ...configProviders,
       { name: "", api_type: "openai", api_base: "", api_key: "" },
@@ -1779,6 +1905,15 @@ export default function App() {
   };
 
   const removeProviderItem = (index: number) => {
+    setOpenProviderItems((prev) => {
+      const next: Record<number, boolean> = {};
+      for (const [key, value] of Object.entries(prev)) {
+        const numericKey = Number(key);
+        if (numericKey < index) next[numericKey] = value;
+        if (numericKey > index) next[numericKey - 1] = value;
+      }
+      return next;
+    });
     updateConfigValue(
       "providers",
       configProviders.filter((_, currentIndex) => currentIndex !== index)
@@ -1797,6 +1932,7 @@ export default function App() {
   };
 
   const addModelItem = () => {
+    setOpenModelItems((prev) => ({ ...prev, [configModels.length]: true }));
     updateConfigValue("models", [
       ...configModels,
       {
@@ -1811,6 +1947,15 @@ export default function App() {
   };
 
   const removeModelItem = (index: number) => {
+    setOpenModelItems((prev) => {
+      const next: Record<number, boolean> = {};
+      for (const [key, value] of Object.entries(prev)) {
+        const numericKey = Number(key);
+        if (numericKey < index) next[numericKey] = value;
+        if (numericKey > index) next[numericKey - 1] = value;
+      }
+      return next;
+    });
     updateConfigValue(
       "models",
       configModels.filter((_, currentIndex) => currentIndex !== index)
@@ -1829,6 +1974,7 @@ export default function App() {
   };
 
   const addMcpServerItem = () => {
+    setOpenMcpItems((prev) => ({ ...prev, [configMcpServers.length]: true }));
     updateConfigValue("mcp_servers", [
       ...configMcpServers,
       {
@@ -1849,6 +1995,15 @@ export default function App() {
   };
 
   const removeMcpServerItem = (index: number) => {
+    setOpenMcpItems((prev) => {
+      const next: Record<number, boolean> = {};
+      for (const [key, value] of Object.entries(prev)) {
+        const numericKey = Number(key);
+        if (numericKey < index) next[numericKey] = value;
+        if (numericKey > index) next[numericKey - 1] = value;
+      }
+      return next;
+    });
     updateConfigValue(
       "mcp_servers",
       configMcpServers.filter((_, currentIndex) => currentIndex !== index)
@@ -1908,19 +2063,29 @@ export default function App() {
       onAdd: addProviderItem,
       addLabel: "Add provider",
       children: configProviders.length ? (
-        configProviders.map((provider, index) => (
+        configProviders.map((provider, index) => {
+          const isOpen = openProviderItems[index] === true;
+          return (
           <div key={`provider-${index}`} className="rounded-2xl border border-border/70 bg-muted/20 p-4">
-            <div className="mb-4 flex items-center justify-between gap-3">
-              <div>
-                <p className="text-sm font-semibold">{provider.name || `Provider ${index + 1}`}</p>
-                <p className="text-xs text-mutedForeground">API endpoint and authentication</p>
-              </div>
+            <div className="flex items-center justify-between gap-3">
+              <button
+                type="button"
+                className="flex min-w-0 flex-1 items-center gap-3 text-left"
+                onClick={() => setOpenProviderItems((prev) => ({ ...prev, [index]: !isOpen }))}
+              >
+                {isOpen ? <ChevronDown className="h-4 w-4 text-mutedForeground" /> : <ChevronRight className="h-4 w-4 text-mutedForeground" />}
+                <div className="min-w-0">
+                  <p className="truncate text-sm font-semibold">{provider.name || `Provider ${index + 1}`}</p>
+                  <p className="truncate text-xs text-mutedForeground">{provider.api_base || "API endpoint and authentication"}</p>
+                </div>
+              </button>
               <Button size="sm" variant="outline" onClick={() => removeProviderItem(index)}>
                 <Trash2 className="mr-2 h-4 w-4" />
                 Remove
               </Button>
             </div>
-            <div className="grid gap-4 md:grid-cols-2">
+            {isOpen ? (
+            <div className="mt-4 grid gap-4 md:grid-cols-2">
               <div className="space-y-2">
                 <label className="text-xs font-semibold uppercase tracking-[0.2em] text-mutedForeground">Name</label>
                 <Input
@@ -1960,8 +2125,9 @@ export default function App() {
                 />
               </div>
             </div>
+            ) : null}
           </div>
-        ))
+        )})
       ) : (
         <div className="rounded-2xl border border-dashed border-border bg-muted/40 px-4 py-6 text-sm text-mutedForeground">
           No providers configured.
@@ -1981,19 +2147,28 @@ export default function App() {
       children: configModels.length ? (
         configModels.map((model, index) => {
           const reasoningRows = flattenStructuredObject(model.reasoning ?? {});
+          const isOpen = openModelItems[index] === true;
           return (
           <div key={`model-${index}`} className="rounded-2xl border border-border/70 bg-muted/20 p-4">
-            <div className="mb-4 flex items-center justify-between gap-3">
-              <div>
-                <p className="text-sm font-semibold">{model.name || `Model ${index + 1}`}</p>
-                <p className="text-xs text-mutedForeground">Model selector, provider, pricing</p>
-              </div>
+            <div className="flex items-center justify-between gap-3">
+              <button
+                type="button"
+                className="flex min-w-0 flex-1 items-center gap-3 text-left"
+                onClick={() => setOpenModelItems((prev) => ({ ...prev, [index]: !isOpen }))}
+              >
+                {isOpen ? <ChevronDown className="h-4 w-4 text-mutedForeground" /> : <ChevronRight className="h-4 w-4 text-mutedForeground" />}
+                <div className="min-w-0">
+                  <p className="truncate text-sm font-semibold">{model.name || `Model ${index + 1}`}</p>
+                  <p className="truncate text-xs text-mutedForeground">{model.provider ? `${model.provider}/${model.name || `model-${index + 1}`}` : "Model selector, provider, pricing"}</p>
+                </div>
+              </button>
               <Button size="sm" variant="outline" onClick={() => removeModelItem(index)}>
                 <Trash2 className="mr-2 h-4 w-4" />
                 Remove
               </Button>
             </div>
-            <div className="grid gap-4 md:grid-cols-2">
+            {isOpen ? (
+            <div className="mt-4 grid gap-4 md:grid-cols-2">
               <div className="space-y-2">
                 <label className="text-xs font-semibold uppercase tracking-[0.2em] text-mutedForeground">Name</label>
                 <Input
@@ -2188,6 +2363,7 @@ export default function App() {
                 </div>
               </div>
             </div>
+            ) : null}
           </div>
         )})
       ) : (
@@ -2218,13 +2394,21 @@ export default function App() {
             valueType: "string" as const,
             value: String(value ?? ""),
           }));
+          const isOpen = openMcpItems[index] === true;
           return (
           <div key={`mcp-${index}`} className="rounded-2xl border border-border/70 bg-muted/20 p-4">
-            <div className="mb-4 flex items-center justify-between gap-3">
-              <div>
-                <p className="text-sm font-semibold">{server.name || `MCP Server ${index + 1}`}</p>
-                <p className="text-xs text-mutedForeground">Discovery, transport, and launch settings</p>
-              </div>
+            <div className="flex items-center justify-between gap-3">
+              <button
+                type="button"
+                className="flex min-w-0 flex-1 items-center gap-3 text-left"
+                onClick={() => setOpenMcpItems((prev) => ({ ...prev, [index]: !isOpen }))}
+              >
+                {isOpen ? <ChevronDown className="h-4 w-4 text-mutedForeground" /> : <ChevronRight className="h-4 w-4 text-mutedForeground" />}
+                <div className="min-w-0">
+                  <p className="truncate text-sm font-semibold">{server.name || `MCP Server ${index + 1}`}</p>
+                  <p className="truncate text-xs text-mutedForeground">{server.transport === "http" ? (server.url || "HTTP transport") : (server.command || "stdio transport")}</p>
+                </div>
+              </button>
               <div className="flex items-center gap-3">
                 <Switch
                   checked={Boolean(server.enabled)}
@@ -2236,7 +2420,8 @@ export default function App() {
                 </Button>
               </div>
             </div>
-            <div className="grid gap-4 md:grid-cols-2">
+            {isOpen ? (
+            <div className="mt-4 grid gap-4 md:grid-cols-2">
               <div className="space-y-2">
                 <label className="text-xs font-semibold uppercase tracking-[0.2em] text-mutedForeground">Name</label>
                 <Input
@@ -2473,6 +2658,7 @@ export default function App() {
                 </div>
               </div>
             </div>
+            ) : null}
           </div>
         )})
       ) : (
