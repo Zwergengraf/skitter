@@ -265,7 +265,8 @@ export default function App() {
   const overviewCost = overview?.cost_trajectory ?? [];
   const sandboxContainers = sandboxStatus?.containers ?? [];
   const sandboxWorkspaces = sandboxStatus?.workspaces ?? [];
-  const onlineExecutors = executorsData.filter((executor) => executor.online && !executor.disabled).length;
+  const visibleExecutors = executorsData.filter((executor) => executor.kind !== "docker");
+  const onlineExecutors = visibleExecutors.filter((executor) => executor.online && !executor.disabled).length;
   const approvedUsers = usersData.filter((user) => user.approved);
   const sessionsByLastActive = useMemo(() => {
     const toTs = (value: string | null | undefined) => {
@@ -2882,7 +2883,7 @@ export default function App() {
                         <p className="text-xs uppercase tracking-[0.2em] text-mutedForeground">
                           Executors
                         </p>
-                        <p className="mt-2 text-2xl font-semibold">{executorsData.length}</p>
+                        <p className="mt-2 text-2xl font-semibold">{visibleExecutors.length}</p>
                         <p className="text-xs text-mutedForeground">{onlineExecutors} online</p>
                       </div>
                     </div>
@@ -2978,10 +2979,10 @@ export default function App() {
                     <div className="rounded-2xl border border-border bg-card p-4">
                       <div className="flex items-center justify-between">
                         <p className="text-sm font-semibold">Executors</p>
-                        <Badge variant="secondary">{executorsData.length}</Badge>
+                        <Badge variant="secondary">{visibleExecutors.length}</Badge>
                       </div>
                       <div className="mt-3">
-                        {executorsData.length ? (
+                        {visibleExecutors.length ? (
                           <Table>
                             <TableHeader>
                               <TableRow>
@@ -2995,7 +2996,7 @@ export default function App() {
                               </TableRow>
                             </TableHeader>
                             <TableBody>
-                              {executorsData.map((executor) => (
+                              {visibleExecutors.map((executor) => (
                                 <TableRow key={executor.id}>
                                   <TableCell className="text-xs">
                                     <div className="font-semibold">{executor.name}</div>
@@ -3037,7 +3038,7 @@ export default function App() {
                           </Table>
                         ) : (
                           <div className="rounded-2xl border border-dashed border-border bg-muted/40 px-4 py-4 text-sm text-mutedForeground">
-                            No executors found.
+                            No non-docker executors found.
                           </div>
                         )}
                       </div>
