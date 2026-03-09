@@ -629,7 +629,7 @@ def build_graph(
         file_path: Optional[str] = None,
         target_machine: Optional[str] = None,
     ) -> str:
-        """Read a file. Relative paths are resolved from workspace root (/workspace). Absolute paths are treated as literal sandbox paths."""
+        """Read a file. Use this on image files for multi-modal content (e.g. if the user asks you to look at an image / file / screenshot). Relative paths are resolved from workspace root (/workspace). Absolute paths are treated as literal sandbox paths."""
         target = _coalesce_path(path, file_path)
         if not target:
             return await _fail_untracked_call("read", {"path": path, "file_path": file_path}, "read error: path is required")
@@ -1053,7 +1053,7 @@ def build_graph(
         wait_until: str = "networkidle",
         target_machine: Optional[str] = None,
     ) -> str:
-        """Open a page in a headless browser (if enabled in the sandbox)."""
+        """Open a page in a headless browser."""
         payload = {
             "url": url,
             "max_chars": max_chars,
