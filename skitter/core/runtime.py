@@ -1407,7 +1407,7 @@ Each bullet must be self-contained, explicit, and searchable.
                 content=(
                     f"Existing summary:\n{previous_summary or '(none)'}\n\n"
                     f"Session messages to summarize:\n{transcript}\n\n"
-                    "Return the merged summary only."
+                    "Return the merged summary only, using the format specified (Markdown bullets under the defined headings)."
                 )
             ),
         ]
