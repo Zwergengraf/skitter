@@ -1,0 +1,21 @@
+.DS_Store
+
+# Xcode user state
+*.xcuserstate
+*.xcworkspace/xcuserdata/
+*.xcodeproj/xcuserdata/
+
+# Local build output
+.build/
+DerivedData/
+build/
+
+# Test and profiling output
+*.xcresult
+*.xccovreport
+*.xccovarchive
+
+# Archives and exported artifacts
+*.ipa
+*.dSYM
+*.dSYM.zip
