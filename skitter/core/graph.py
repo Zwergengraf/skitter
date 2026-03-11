@@ -382,7 +382,6 @@ def build_graph(
             key = "SECRET"
         if key[0].isdigit():
             key = f"_{key}"
-        #return f"SKITTER_SECRET_{key}" # Disabled so Skills get the ENVs they expect without needing to know about the SKITTER_ prefix
         return f"{key}"
 
     def _denied_message(tool_name: str) -> str:
@@ -629,7 +628,7 @@ def build_graph(
         file_path: Optional[str] = None,
         target_machine: Optional[str] = None,
     ) -> str:
-        """Read a file. Use this on image files for multi-modal content (e.g. if the user asks you to look at an image / file / screenshot). Relative paths are resolved from workspace root (/workspace). Absolute paths are treated as literal sandbox paths."""
+        """Read a file. Returns the file content for text files, and allows you to see images for image files. Relative paths are resolved from workspace root (/workspace). Absolute paths are treated as literal sandbox paths."""
         target = _coalesce_path(path, file_path)
         if not target:
             return await _fail_untracked_call("read", {"path": path, "file_path": file_path}, "read error: path is required")

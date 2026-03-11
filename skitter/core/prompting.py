@@ -77,7 +77,7 @@ def build_skills_index(user_id: str) -> str | None:
 - If exactly one skill clearly applies: read its SKILL.md at <location> with `read`, then follow it.
 - If multiple could apply: choose the most specific one, then read/follow it.
 - If none clearly apply: do not read any SKILL.md.
-Constraints: never read more than one skill up front; only read after selecting.
+Constraints: never read more than one skill up front; only read after selecting. Do not read the scripts / code / implementation of a skill before deciding to use it. Always read the SKILL.md description and instructions before using a skill, but only after deciding it's relevant.
 The following skills provide specialized instructions for specific tasks.
 Use the read tool to load a skill's file when the task matches its description.
 When a skill file references a relative path, resolve it against the skill directory (parent of SKILL.md / dirname of the path) and use that absolute path in tool commands.
