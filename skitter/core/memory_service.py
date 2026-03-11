@@ -204,7 +204,7 @@ class MemoryService:
         memory_root.mkdir(parents=True, exist_ok=True)
         current_files = {
             p.name: p
-            for p in memory_root.iterdir()
+            for p in memory_root.rglob("*") # recursive search to support files in subdirectories
             if p.is_file() and self._is_indexable_file(p)
         }
 
