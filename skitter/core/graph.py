@@ -1376,20 +1376,27 @@ def build_graph(
 
     @tool("model_list")
     async def model_list() -> str:
-        """List available model selectors for explicit model choices. Use this before schedule_create or schedule_update only if the user specifically wants a particular model; otherwise omit model so the main model chain is used."""
+        """List available model selectors for explicit model choices, including the currently active model for this session. Use this before schedule_create or schedule_update only if the user specifically wants a particular model; otherwise omit model so the main model chain is used."""
         payload: dict[str, Any] = {}
         budget_message = await _enforce_tool_budget("model_list", payload)
         if budget_message:
             return budget_message
         tool_run_id = await _create_auto_tool_run("model_list", payload)
+        current_model = None
+        async with SessionLocal() as session:
+            repo = Repository(session)
+            record = await repo.get_session(_session_id())
+            if record and getattr(record, "model", None):
+                current_model = resolve_model_name(record.model, purpose="main")
+            else:
+                current_model = resolve_model_name(None, purpose="main")
         models = list_models()
         output = {
+            "current_model": current_model,
             "models": [
                 {
                     "selector": model.name,
-                    "provider": model.provider,
-                    "model_id": model.model,
-                    "api_type": model.provider_api_type,
+                    "is_current": bool(current_model and model.name.lower() == current_model.lower()),
                 }
                 for model in models
             ],
