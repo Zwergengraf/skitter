@@ -7,7 +7,7 @@ from ..deps import get_repo
 from ..schemas import ScheduledJobCreate, ScheduledJobOut, ScheduledJobUpdate
 from ...data.db import SessionLocal
 from ...data.repositories import Repository
-from ...data.models import ScheduledJob
+from ...data.models import ScheduledJob, SCHEDULED_JOB_MODEL_MAIN
 
 router = APIRouter(prefix="/v1/schedules", tags=["schedules"])
 
@@ -23,6 +23,7 @@ def _to_scheduled_job_out(job: ScheduledJob) -> ScheduledJobOut:
         target_destination_id=job.target_destination_id,
         name=job.name,
         prompt=job.prompt,
+        model=job.model or SCHEDULED_JOB_MODEL_MAIN,
         schedule_type=job.schedule_type,
         schedule_expr=job.schedule_expr,
         timezone=job.timezone,
@@ -65,6 +66,7 @@ async def create_schedule(
         channel_id=payload.channel_id,
         name=payload.name,
         prompt=payload.prompt,
+        model=payload.model,
         cron=schedule_expr,
         target_scope_type="private",
         target_scope_id=f"private:{payload.user_id}",

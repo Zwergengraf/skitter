@@ -365,7 +365,10 @@ async def main() -> None:
             return True
         if envelope.command == "schedule_list":
             jobs = await scheduler.list_jobs(internal_user_id)
-            lines = [f"{j['id']} | {j['name']} | {j['cron']} | {'on' if j['enabled'] else 'off'}" for j in jobs]
+            lines = [
+                f"{j['id']} | {j['name']} | {j['cron']} | model={j.get('model') or '__main_chain__'} | {'on' if j['enabled'] else 'off'}"
+                for j in jobs
+            ]
             await transport.send_message(envelope.channel_id, "Scheduled jobs:\n" + "\n".join(lines))
             return True
         if envelope.command == "tools":

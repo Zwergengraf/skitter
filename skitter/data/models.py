@@ -196,6 +196,9 @@ class Channel(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
+SCHEDULED_JOB_MODEL_MAIN = "__main_chain__"
+
+
 class ScheduledJob(Base):
     __tablename__ = "scheduled_jobs"
 
@@ -208,6 +211,7 @@ class ScheduledJob(Base):
     target_destination_id: Mapped[str | None] = mapped_column(String, nullable=True)
     name: Mapped[str] = mapped_column(String)
     prompt: Mapped[str] = mapped_column(Text)
+    model: Mapped[str] = mapped_column(String, default=SCHEDULED_JOB_MODEL_MAIN)
     schedule_type: Mapped[str] = mapped_column(String, default="cron")
     schedule_expr: Mapped[str] = mapped_column(String)
     timezone: Mapped[str] = mapped_column(String, default="UTC")

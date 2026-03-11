@@ -29,6 +29,7 @@ from ..tools.middleware import ToolApprovalPolicy
 from ..tools.executors import executor_router, node_executor_hub
 from ..tools.sandbox_client import ToolRunnerClient
 from ..data.db import SessionLocal
+from ..data.models import SCHEDULED_JOB_MODEL_MAIN
 from ..data.repositories import Repository
 from .embeddings import EmbeddingsClient
 from .memory_service import MemoryService
@@ -1512,14 +1513,16 @@ def build_graph(
         cron: Optional[str] = None,
         run_at: Optional[str] = None,
         channel_id: Optional[str] = None,
+        model: Optional[str] = SCHEDULED_JOB_MODEL_MAIN,
     ) -> str:
-        """Create a scheduled job using a cron expression or run_at timestamp (ISO-8601)."""
+        """Create a scheduled job using a cron expression or run_at timestamp (ISO-8601). Use model='__main_chain__' to follow the current main model chain at execution time."""
         payload: dict[str, Any] = {
             "name": name,
             "prompt": prompt,
             "cron": cron,
             "run_at": run_at,
             "channel_id": channel_id,
+            "model": model,
         }
         budget_message = await _enforce_tool_budget("schedule_create", payload)
         if budget_message:
@@ -1554,6 +1557,7 @@ def build_graph(
             name or "Scheduled job",
             prompt,
             cron,
+            model=model or SCHEDULED_JOB_MODEL_MAIN,
             target_scope_type=target_scope_type,
             target_scope_id=target_scope_id,
             target_origin=_origin(),
@@ -1569,14 +1573,16 @@ def build_graph(
         run_at: Optional[str] = None,
         prompt: Optional[str] = None,
         enabled: Optional[bool] = None,
+        model: Optional[str] = None,
     ) -> str:
-        """Update a scheduled job."""
+        """Update a scheduled job. Set model='__main_chain__' to reset it to the dynamic main model chain."""
         payload: dict[str, Any] = {
             "job_id": job_id,
             "cron": cron,
             "run_at": run_at,
             "prompt": prompt,
             "enabled": enabled,
+            "model": model,
         }
         budget_message = await _enforce_tool_budget("schedule_update", payload)
         if budget_message:
@@ -1596,6 +1602,8 @@ def build_graph(
             fields["prompt"] = prompt
         if enabled is not None:
             fields["enabled"] = enabled
+        if model is not None:
+            fields["model"] = model
         result = await scheduler_service.update_job(job_id, **fields)
         await _complete_tool_run(tool_run_id, "failed" if isinstance(result, dict) and result.get("error") else "completed", result if isinstance(result, dict) else {"result": result})
         return json.dumps(result)

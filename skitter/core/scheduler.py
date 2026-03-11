@@ -11,6 +11,7 @@ from apscheduler.triggers.date import DateTrigger
 
 from ..data.db import SessionLocal
 from ..data.repositories import Repository
+from ..data.models import SCHEDULED_JOB_MODEL_MAIN
 from .config import settings
 from .llm import resolve_model_name
 from .models import MessageEnvelope
@@ -88,11 +89,19 @@ class SchedulerService:
         return {
             "id": job.id,
             "name": job.name,
+            "model": getattr(job, "model", None) or SCHEDULED_JOB_MODEL_MAIN,
             "cron": job.schedule_expr,
             "enabled": job.enabled,
             "next_run_at": next_run_local.isoformat() if next_run_local else None,
             "timezone": job.timezone,
         }
+
+    @staticmethod
+    def _normalize_job_model(model: str | None) -> str:
+        candidate = str(model or "").strip()
+        if not candidate or candidate == SCHEDULED_JOB_MODEL_MAIN:
+            return SCHEDULED_JOB_MODEL_MAIN
+        return resolve_model_name(candidate, purpose="main")
 
     async def _load_jobs(self) -> None:
         async with SessionLocal() as session:
@@ -128,6 +137,7 @@ class SchedulerService:
         name: str,
         prompt: str,
         cron: str,
+        model: str = SCHEDULED_JOB_MODEL_MAIN,
         target_scope_type: str = "private",
         target_scope_id: str | None = None,
         target_origin: str | None = None,
@@ -138,6 +148,10 @@ class SchedulerService:
             self._validate_schedule(schedule_type, expr, settings.scheduler_timezone)
         except Exception as exc:
             return {"error": f"invalid schedule: {exc}"}
+        try:
+            job_model = self._normalize_job_model(model)
+        except Exception as exc:
+            return {"error": f"invalid model: {exc}"}
         async with SessionLocal() as session:
             repo = Repository(session)
             job = await repo.create_scheduled_job(
@@ -147,6 +161,7 @@ class SchedulerService:
                 prompt=prompt,
                 cron=expr,
                 timezone=settings.scheduler_timezone,
+                model=job_model,
                 enabled=True,
                 schedule_type=schedule_type,
                 target_scope_type=target_scope_type,
@@ -171,6 +186,11 @@ class SchedulerService:
                 self._validate_schedule(schedule_type, fields["schedule_expr"], settings.scheduler_timezone)
             except Exception as exc:
                 return {"error": f"invalid schedule: {exc}"}
+        if "model" in fields:
+            try:
+                fields["model"] = self._normalize_job_model(fields.get("model"))
+            except Exception as exc:
+                return {"error": f"invalid model: {exc}"}
         async with SessionLocal() as session:
             repo = Repository(session)
             job = await repo.update_scheduled_job(job_id, **fields)
@@ -213,6 +233,7 @@ class SchedulerService:
                     "id": base["id"],
                     "name": base["name"],
                     "prompt": job.prompt,
+                    "model": getattr(job, "model", None) or SCHEDULED_JOB_MODEL_MAIN,
                     "cron": base["cron"],
                     "enabled": base["enabled"],
                     "next_run_at": base["next_run_at"],
@@ -244,7 +265,11 @@ class SchedulerService:
         try:
             async with SessionLocal() as session:
                 repo = Repository(session)
-                model_name = resolve_model_name(None, purpose="main")
+                model_name = (
+                    resolve_model_name(None, purpose="main")
+                    if not getattr(job, "model", None) or job.model == SCHEDULED_JOB_MODEL_MAIN
+                    else resolve_model_name(job.model, purpose="main")
+                )
                 target_scope_type = job.target_scope_type or "private"
                 target_scope_id = job.target_scope_id or f"private:{job.user_id}"
                 target_session = await repo.get_active_session_by_scope(target_scope_type, target_scope_id)

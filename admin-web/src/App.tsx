@@ -90,6 +90,7 @@ type StructuredValueRow = {
 
 const SESSIONS_PAGE_SIZE = 25;
 const TOOL_RUNS_PAGE_SIZE = 15;
+const SCHEDULED_JOB_MODEL_MAIN = "__main_chain__";
 
 const rangeStart = (range: TableRange): number | null => {
   const now = new Date();
@@ -396,6 +397,7 @@ export default function App() {
     channel_label: "",
     name: "",
     prompt: "",
+    model: SCHEDULED_JOB_MODEL_MAIN,
     schedule_type: "cron",
     schedule_expr: "",
     schedule_date: "",
@@ -1283,6 +1285,9 @@ export default function App() {
       return;
     }
     refreshJobs();
+    if (!configData) {
+      refreshConfig();
+    }
   }, [active]);
 
   useEffect(() => {
@@ -1637,6 +1642,7 @@ export default function App() {
       channel_label: "",
       name: "",
       prompt: "",
+      model: SCHEDULED_JOB_MODEL_MAIN,
       schedule_type: "cron",
       schedule_expr: "",
       schedule_date: "",
@@ -1657,6 +1663,7 @@ export default function App() {
       channel_label: channelLabelFor(job.channel_id),
       name: job.name,
       prompt: job.prompt,
+      model: job.model || SCHEDULED_JOB_MODEL_MAIN,
       schedule_type: job.schedule_type,
       schedule_expr: job.schedule_expr,
       schedule_date: scheduleDate,
@@ -1679,6 +1686,7 @@ export default function App() {
         await api.updateSchedule(editingJob.id, {
           name: jobForm.name,
           prompt: jobForm.prompt,
+          model: jobForm.model,
           schedule_type: jobForm.schedule_type,
           schedule_expr: scheduleExpr,
           enabled: jobForm.enabled,
@@ -1690,6 +1698,7 @@ export default function App() {
           channel_id: resolvedChannelId,
           name: jobForm.name,
           prompt: jobForm.prompt,
+          model: jobForm.model,
           schedule_type: jobForm.schedule_type,
           schedule_expr: scheduleExpr,
           enabled: jobForm.enabled,
@@ -3459,13 +3468,13 @@ export default function App() {
                   <TableBody>
                     {jobsLoading ? (
                       <TableRow>
-                        <TableCell colSpan={6} className="text-center text-sm text-mutedForeground">
+                        <TableCell colSpan={7} className="text-center text-sm text-mutedForeground">
                           Loading jobs...
                         </TableCell>
                       </TableRow>
                     ) : jobsError ? (
                       <TableRow>
-                        <TableCell colSpan={6} className="text-center text-sm text-mutedForeground">
+                        <TableCell colSpan={7} className="text-center text-sm text-mutedForeground">
                           {jobsError}
                         </TableCell>
                       </TableRow>
@@ -3475,7 +3484,10 @@ export default function App() {
                           <TableCell className="font-semibold">{job.name}</TableCell>
                           <TableCell>{renderUser(job.user_id)}</TableCell>
                           <TableCell className="font-mono text-xs">
-                            {job.schedule_type === "date" ? "DATE" : "CRON"} · {job.schedule_expr}
+                            <div>{job.schedule_type === "date" ? "DATE" : "CRON"} · {job.schedule_expr}</div>
+                            <div className="mt-1 text-[11px] text-mutedForeground">
+                              Model: {job.model === SCHEDULED_JOB_MODEL_MAIN ? "Main model chain" : job.model}
+                            </div>
                           </TableCell>
                           <TableCell>
                             {channelsData.find((channel) => channel.id === job.channel_id)?.label ??
@@ -3515,7 +3527,7 @@ export default function App() {
                       ))
                     ) : (
                       <TableRow>
-                        <TableCell colSpan={6} className="text-center text-sm text-mutedForeground">
+                        <TableCell colSpan={7} className="text-center text-sm text-mutedForeground">
                           No scheduled jobs yet.
                         </TableCell>
                       </TableRow>
@@ -3557,6 +3569,30 @@ export default function App() {
                       onChange={(event) => setJobForm((prev) => ({ ...prev, prompt: event.target.value }))}
                       placeholder="Summarize the latest AI news and send it to me."
                     />
+                  </div>
+                  <div className="grid gap-2">
+                    <label className="text-xs font-semibold uppercase tracking-[0.2em] text-mutedForeground">
+                      Model
+                    </label>
+                    <Select
+                      value={jobForm.model}
+                      onValueChange={(value) => setJobForm((prev) => ({ ...prev, model: value }))}
+                    >
+                      <SelectTrigger>
+                        <SelectValue placeholder="Select model" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value={SCHEDULED_JOB_MODEL_MAIN}>Main model chain (dynamic)</SelectItem>
+                        {availableModelSelectors.map((selector) => (
+                          <SelectItem key={`scheduled-job-model-${selector}`} value={selector}>
+                            {selector}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                    <p className="text-xs text-mutedForeground">
+                      Main model chain is resolved when the job runs, so future config changes apply automatically.
+                    </p>
                   </div>
                   <div className="grid gap-2 md:grid-cols-2">
                     <div className="grid gap-2">

@@ -389,6 +389,7 @@ CREATE TABLE IF NOT EXISTS scheduled_jobs (
     target_destination_id TEXT,
     name TEXT NOT NULL,
     prompt TEXT NOT NULL,
+    model TEXT NOT NULL DEFAULT '__main_chain__',
     schedule_type TEXT NOT NULL DEFAULT 'cron',
     schedule_expr TEXT NOT NULL,
     timezone TEXT NOT NULL DEFAULT 'UTC',
@@ -411,6 +412,9 @@ ALTER TABLE scheduled_jobs
 ALTER TABLE scheduled_jobs
     ADD COLUMN IF NOT EXISTS target_destination_id TEXT;
 
+ALTER TABLE scheduled_jobs
+    ADD COLUMN IF NOT EXISTS model TEXT;
+
 UPDATE scheduled_jobs
 SET target_scope_type = 'private'
 WHERE target_scope_type IS NULL OR target_scope_type = '';
@@ -427,11 +431,18 @@ UPDATE scheduled_jobs
 SET target_destination_id = COALESCE(target_destination_id, channel_id)
 WHERE target_destination_id IS NULL OR target_destination_id = '';
 
+UPDATE scheduled_jobs
+SET model = '__main_chain__'
+WHERE model IS NULL OR model = '';
+
 ALTER TABLE scheduled_jobs
     ALTER COLUMN target_scope_type SET DEFAULT 'private';
 
 ALTER TABLE scheduled_jobs
     ALTER COLUMN target_scope_id SET DEFAULT '';
+
+ALTER TABLE scheduled_jobs
+    ALTER COLUMN model SET DEFAULT '__main_chain__';
 
 CREATE INDEX IF NOT EXISTS scheduled_jobs_target_scope_idx
     ON scheduled_jobs (target_scope_type, target_scope_id);

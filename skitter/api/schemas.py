@@ -298,6 +298,7 @@ class ScheduledJobCreate(BaseModel):
     channel_id: str
     name: str
     prompt: str
+    model: str = "__main_chain__"
     schedule_type: str = "cron"
     schedule_expr: str
     enabled: bool = True
@@ -306,6 +307,7 @@ class ScheduledJobCreate(BaseModel):
 class ScheduledJobUpdate(BaseModel):
     name: str | None = None
     prompt: str | None = None
+    model: str | None = None
     schedule_type: str | None = None
     schedule_expr: str | None = None
     enabled: bool | None = None
@@ -322,6 +324,7 @@ class ScheduledJobOut(BaseModel):
     target_destination_id: str | None = None
     name: str
     prompt: str
+    model: str = "__main_chain__"
     schedule_type: str
     schedule_expr: str
     timezone: str

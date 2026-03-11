@@ -103,6 +103,7 @@ export const api = {
     channel_id: string;
     name: string;
     prompt: string;
+    model: string;
     schedule_type: string;
     schedule_expr: string;
     enabled: boolean;
@@ -113,6 +114,7 @@ export const api = {
     payload: Partial<{
       name: string;
       prompt: string;
+      model: string;
       schedule_type: string;
       schedule_expr: string;
       enabled: boolean;

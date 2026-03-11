@@ -151,6 +151,7 @@ export interface ScheduledJobItem {
   id: string;
   user_id: string;
   channel_id: string;
+  model: string;
   name: string;
   prompt: string;
   schedule_type: string;
