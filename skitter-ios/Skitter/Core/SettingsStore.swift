@@ -33,6 +33,12 @@ final class SettingsStore: ObservableObject {
         }
     }
 
+    @Published var speechSynthesisVoiceIdentifier: String {
+        didSet {
+            defaults.set(speechSynthesisVoiceIdentifier, forKey: Keys.speechSynthesisVoiceIdentifier)
+        }
+    }
+
     @Published var speaksReplies: Bool {
         didSet {
             defaults.set(speaksReplies, forKey: Keys.speaksReplies)
@@ -52,6 +58,7 @@ final class SettingsStore: ObservableObject {
         static let conversationSilenceSeconds = "ios.conversation_silence_seconds"
         static let preferredVoiceModel = "ios.preferred_voice_model"
         static let speechRecognitionLocaleIdentifier = "ios.speech_recognition_locale_identifier"
+        static let speechSynthesisVoiceIdentifier = "ios.speech_synthesis_voice_identifier"
         static let speaksReplies = "ios.speaks_replies"
         static let hasPromptedForNotifications = "ios.has_prompted_for_notifications"
     }
@@ -69,6 +76,7 @@ final class SettingsStore: ObservableObject {
         self.conversationSilenceSeconds = savedSilence > 0 ? savedSilence : 1.2
         self.preferredVoiceModel = defaults.string(forKey: Keys.preferredVoiceModel) ?? ""
         self.speechRecognitionLocaleIdentifier = defaults.string(forKey: Keys.speechRecognitionLocaleIdentifier) ?? ""
+        self.speechSynthesisVoiceIdentifier = defaults.string(forKey: Keys.speechSynthesisVoiceIdentifier) ?? ""
         self.speaksReplies = defaults.object(forKey: Keys.speaksReplies) as? Bool ?? true
         self.hasPromptedForNotifications = defaults.bool(forKey: Keys.hasPromptedForNotifications)
     }
@@ -80,6 +88,18 @@ final class SettingsStore: ObservableObject {
     var effectiveSpeechRecognitionLocaleIdentifier: String {
         let cleaned = speechRecognitionLocaleIdentifier.trimmingCharacters(in: .whitespacesAndNewlines)
         return cleaned.isEmpty ? Locale.current.identifier : cleaned
+    }
+
+    var defaultSpeechSynthesisLanguageIdentifier: String {
+        SpeechVoiceCatalog.defaultLanguageIdentifier()
+    }
+
+    var effectiveSpeechSynthesisVoiceIdentifier: String? {
+        let cleaned = speechSynthesisVoiceIdentifier.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !cleaned.isEmpty {
+            return cleaned
+        }
+        return SpeechVoiceCatalog.bestAvailableVoiceIdentifier(for: defaultSpeechSynthesisLanguageIdentifier)
     }
 
     func eraseAuth() {

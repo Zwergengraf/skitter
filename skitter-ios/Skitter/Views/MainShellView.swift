@@ -248,6 +248,7 @@ private struct ChatScreen: View {
                                 MessageBubble(
                                     message: message,
                                     model: model,
+                                    settings: settings,
                                     speaker: speaker,
                                     openURL: openURL
                                 )
@@ -635,8 +636,10 @@ private struct ThinkingIndicatorCard: View {
 private struct MessageBubble: View {
     let message: ChatMessage
     let model: AppModel
+    let settings: SettingsStore
     @ObservedObject var speaker: VoicePlaybackController
     let openURL: OpenURLAction
+    @Environment(\.colorScheme) private var colorScheme
 
     private var isUser: Bool {
         message.role == .user
@@ -646,7 +649,28 @@ private struct MessageBubble: View {
         if isUser {
             return Color(uiColor: .secondarySystemBackground)
         }
+        if colorScheme == .dark {
+            return Color(red: 0.16, green: 0.23, blue: 0.32)
+        }
         return Color(red: 0.89, green: 0.95, blue: 1.0)
+    }
+
+    private var bubbleStrokeColor: Color {
+        if isUser {
+            return Color.primary.opacity(colorScheme == .dark ? 0.12 : 0.06)
+        }
+        return Color.accentColor.opacity(colorScheme == .dark ? 0.28 : 0.14)
+    }
+
+    private var messageTextColor: Color {
+        colorScheme == .dark ? .white : .primary
+    }
+
+    private var metadataTextColor: Color {
+        if colorScheme == .dark {
+            return .white.opacity(0.68)
+        }
+        return .secondary
     }
 
     var body: some View {
@@ -659,14 +683,15 @@ private struct MessageBubble: View {
                 HStack {
                     Text(message.role.title)
                         .font(.caption.weight(.semibold))
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(metadataTextColor)
                     Spacer()
                     Text(message.createdAt.formatted(date: .omitted, time: .shortened))
                         .font(.caption2)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(metadataTextColor)
                 }
 
                 MarkdownText(message.content.isEmpty ? "(empty)" : message.content)
+                    .foregroundStyle(messageTextColor)
 
                 if !message.attachments.isEmpty {
                     VStack(alignment: .leading, spacing: 8) {
@@ -678,7 +703,14 @@ private struct MessageBubble: View {
             }
             .padding(14)
             .frame(maxWidth: 560, alignment: .leading)
-            .background(bubbleColor, in: RoundedRectangle(cornerRadius: 22, style: .continuous))
+            .background(
+                RoundedRectangle(cornerRadius: 22, style: .continuous)
+                    .fill(bubbleColor)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 22, style: .continuous)
+                            .stroke(bubbleStrokeColor, lineWidth: 1)
+                    )
+            )
 
             if !isUser {
                 Spacer(minLength: 40)
@@ -691,7 +723,11 @@ private struct MessageBubble: View {
             }
             if message.role != .user {
                 Button("Speak Message") {
-                    speaker.speak(message.shareText)
+                    speaker.speak(
+                        message.shareText,
+                        preferredVoiceIdentifier: settings.effectiveSpeechSynthesisVoiceIdentifier,
+                        preferredLanguageIdentifier: settings.defaultSpeechSynthesisLanguageIdentifier
+                    )
                 }
             }
         }
@@ -702,18 +738,35 @@ private struct AttachmentRow: View {
     let attachment: MessageAttachment
     let resolvedURL: URL?
     let openURL: OpenURLAction
+    @Environment(\.colorScheme) private var colorScheme
+
+    private var attachmentBackground: Color {
+        if colorScheme == .dark {
+            return Color.black.opacity(0.18)
+        }
+        return Color.white.opacity(0.45)
+    }
+
+    private var primaryTextColor: Color {
+        colorScheme == .dark ? .white : .primary
+    }
+
+    private var secondaryTextColor: Color {
+        colorScheme == .dark ? .white.opacity(0.68) : .secondary
+    }
 
     var body: some View {
         HStack(spacing: 10) {
             Image(systemName: "paperclip")
-                .foregroundStyle(.secondary)
+                .foregroundStyle(secondaryTextColor)
             VStack(alignment: .leading, spacing: 2) {
                 Text(attachment.filename)
                     .font(.caption.weight(.medium))
                     .lineLimit(1)
+                    .foregroundStyle(primaryTextColor)
                 Text(attachment.contentType)
                     .font(.caption2)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(secondaryTextColor)
             }
             Spacer()
             if let resolvedURL {
@@ -729,7 +782,7 @@ private struct AttachmentRow: View {
             }
         }
         .padding(10)
-        .background(Color.white.opacity(0.45), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .background(attachmentBackground, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
     }
 }
 
@@ -901,6 +954,7 @@ private struct VoiceScreen: View {
     @State private var knownReplyID: String?
     @State private var didPrimeReplyID = false
     @State private var isSendingUtterance = false
+    @State private var showsSpeechVoicePicker = false
 
     private var selectedVoiceModelLabel: String {
         let cleaned = settings.preferredVoiceModel.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -909,6 +963,13 @@ private struct VoiceScreen: View {
 
     private var selectedRecognitionLanguageLabel: String {
         RecognitionLanguageOption.title(for: settings.speechRecognitionLocaleIdentifier)
+    }
+
+    private var selectedSpeechVoiceLabel: String {
+        SpeechVoiceCatalog.title(
+            for: settings.speechSynthesisVoiceIdentifier,
+            preferredLanguageIdentifier: settings.defaultSpeechSynthesisLanguageIdentifier
+        )
     }
 
     private var latestReplyText: String {
@@ -1002,6 +1063,9 @@ private struct VoiceScreen: View {
         }
         .onChange(of: settings.speechRecognitionLocaleIdentifier) { _, _ in
             speechController.setRecognitionLocaleIdentifier(settings.effectiveSpeechRecognitionLocaleIdentifier)
+        }
+        .sheet(isPresented: $showsSpeechVoicePicker) {
+            SpeechVoicePickerSheet(settings: settings)
         }
     }
 
@@ -1111,7 +1175,11 @@ private struct VoiceScreen: View {
                         speaker.stop()
                     } else if let text = model.latestAssistantMessage?.shareText,
                               !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                        speaker.speak(text)
+                        speaker.speak(
+                            text,
+                            preferredVoiceIdentifier: settings.effectiveSpeechSynthesisVoiceIdentifier,
+                            preferredLanguageIdentifier: settings.defaultSpeechSynthesisLanguageIdentifier
+                        )
                     }
                 }
                 .buttonStyle(.borderedProminent)
@@ -1149,6 +1217,33 @@ private struct VoiceScreen: View {
             ) {
                 Text("Silence threshold: \(settings.conversationSilenceSeconds, specifier: "%.1f")s")
                     .foregroundStyle(.white.opacity(0.84))
+            }
+
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Reply voice")
+                    .font(.subheadline.weight(.medium))
+                    .foregroundStyle(.white)
+
+                Button {
+                    showsSpeechVoicePicker = true
+                } label: {
+                    HStack {
+                        Text(selectedSpeechVoiceLabel)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                        Spacer()
+                        Image(systemName: "chevron.up.chevron.down")
+                            .font(.caption.weight(.semibold))
+                    }
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 10)
+                    .background(Color.white.opacity(0.12), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+                }
+                .buttonStyle(.plain)
+
+                Text("Siri voices are not exposed to third-party text-to-speech on iOS. Automatic prefers the best installed system voice for your device language.")
+                    .font(.footnote)
+                    .foregroundStyle(.white.opacity(0.68))
             }
 
             VStack(alignment: .leading, spacing: 8) {
@@ -1315,7 +1410,11 @@ private struct VoiceScreen: View {
               !reply.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             return
         }
-        speaker.speak(reply)
+        speaker.speak(
+            reply,
+            preferredVoiceIdentifier: settings.effectiveSpeechSynthesisVoiceIdentifier,
+            preferredLanguageIdentifier: settings.defaultSpeechSynthesisLanguageIdentifier
+        )
     }
 }
 
@@ -1438,6 +1537,7 @@ private struct SettingsScreen: View {
     @ObservedObject var model: AppModel
     @ObservedObject var settings: SettingsStore
     @ObservedObject var notifications: NotificationManager
+    @State private var showsSpeechVoicePicker = false
 
     private var selectedVoiceModelLabel: String {
         let cleaned = settings.preferredVoiceModel.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -1446,6 +1546,13 @@ private struct SettingsScreen: View {
 
     private var selectedRecognitionLanguageLabel: String {
         RecognitionLanguageOption.title(for: settings.speechRecognitionLocaleIdentifier)
+    }
+
+    private var selectedSpeechVoiceLabel: String {
+        SpeechVoiceCatalog.title(
+            for: settings.speechSynthesisVoiceIdentifier,
+            preferredLanguageIdentifier: settings.defaultSpeechSynthesisLanguageIdentifier
+        )
     }
 
     var body: some View {
@@ -1512,6 +1619,13 @@ private struct SettingsScreen: View {
                     Text("Silence threshold: \(settings.conversationSilenceSeconds, specifier: "%.1f")s")
                 }
 
+                Button {
+                    showsSpeechVoicePicker = true
+                } label: {
+                    LabeledContent("Reply voice", value: selectedSpeechVoiceLabel)
+                }
+                .buttonStyle(.plain)
+
                 Menu {
                     Button {
                         settings.preferredVoiceModel = ""
@@ -1569,6 +1683,10 @@ private struct SettingsScreen: View {
                 } label: {
                     LabeledContent("Recognition language", value: selectedRecognitionLanguageLabel)
                 }
+
+                Text("Siri voices are not available to third-party text-to-speech on iOS. Automatic uses the best installed system voice for your device language.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
 
             Section("About") {
@@ -1579,6 +1697,80 @@ private struct SettingsScreen: View {
             }
         }
         .navigationTitle("Settings")
+        .sheet(isPresented: $showsSpeechVoicePicker) {
+            SpeechVoicePickerSheet(settings: settings)
+        }
+    }
+}
+
+private struct SpeechVoicePickerSheet: View {
+    @ObservedObject var settings: SettingsStore
+    @Environment(\.dismiss) private var dismiss
+
+    private var automaticTitle: String {
+        SpeechVoiceCatalog.automaticTitle(for: settings.defaultSpeechSynthesisLanguageIdentifier)
+    }
+
+    private var speechVoiceOptions: [SpeechVoiceOption] {
+        SpeechVoiceCatalog.availableOptions(for: settings.defaultSpeechSynthesisLanguageIdentifier)
+    }
+
+    var body: some View {
+        NavigationStack {
+            List {
+                Section("Automatic") {
+                    Button {
+                        settings.speechSynthesisVoiceIdentifier = ""
+                        dismiss()
+                    } label: {
+                        HStack(spacing: 12) {
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text("Automatic")
+                                    .foregroundStyle(.primary)
+                                Text(automaticTitle.replacingOccurrences(of: "Automatic ", with: ""))
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                            Spacer()
+                            if settings.speechSynthesisVoiceIdentifier.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                                Image(systemName: "checkmark")
+                                    .foregroundStyle(Color.accentColor)
+                            }
+                        }
+                    }
+                    .buttonStyle(.plain)
+                }
+
+                Section("Installed Voices") {
+                    ForEach(speechVoiceOptions) { option in
+                        Button {
+                            settings.speechSynthesisVoiceIdentifier = option.id
+                            dismiss()
+                        } label: {
+                            HStack(spacing: 12) {
+                                Text(option.title)
+                                    .foregroundStyle(.primary)
+                                Spacer()
+                                if option.id == settings.speechSynthesisVoiceIdentifier {
+                                    Image(systemName: "checkmark")
+                                        .foregroundStyle(Color.accentColor)
+                                }
+                            }
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+            }
+            .navigationTitle("Reply Voice")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("Done") {
+                        dismiss()
+                    }
+                }
+            }
+        }
     }
 }
 

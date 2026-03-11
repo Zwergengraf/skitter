@@ -3,6 +3,25 @@ import SwiftUI
 struct RootView: View {
     @ObservedObject var model: AppModel
     @ObservedObject var settings: SettingsStore
+    @Environment(\.colorScheme) private var colorScheme
+
+    private var loadingGradient: [Color] {
+        if colorScheme == .dark {
+            return [
+                Color(red: 0.08, green: 0.11, blue: 0.16),
+                Color(red: 0.10, green: 0.18, blue: 0.27),
+                Color(red: 0.14, green: 0.11, blue: 0.20),
+            ]
+        }
+        return [
+            Color(red: 0.93, green: 0.95, blue: 0.98),
+            Color(red: 0.86, green: 0.91, blue: 0.97),
+        ]
+    }
+
+    private var loadingTextColor: Color {
+        colorScheme == .dark ? .white : .primary
+    }
 
     var body: some View {
         Group {
@@ -10,10 +29,7 @@ struct RootView: View {
             case .loading:
                 ZStack {
                     LinearGradient(
-                        colors: [
-                            Color(red: 0.93, green: 0.95, blue: 0.98),
-                            Color(red: 0.86, green: 0.91, blue: 0.97),
-                        ],
+                        colors: loadingGradient,
                         startPoint: .topLeading,
                         endPoint: .bottomTrailing
                     )
@@ -25,6 +41,7 @@ struct RootView: View {
                             .controlSize(.large)
                         Text("Connecting to Skitter")
                             .font(.headline)
+                            .foregroundStyle(loadingTextColor)
                     }
                 }
             case .signedOut:

@@ -72,4 +72,23 @@ final class SkitterCoreTests: XCTestCase {
 
         XCTAssertEqual(toolRun.secretRefs, ["prod/skitter", "staging/skitter"])
     }
+
+    @MainActor
+    func testSettingsStorePersistsSpeechSynthesisVoicePreference() {
+        let suiteName = "io.skitter.tests.\(UUID().uuidString)"
+        guard let defaults = UserDefaults(suiteName: suiteName) else {
+            XCTFail("Expected isolated defaults suite")
+            return
+        }
+        defer {
+            defaults.removePersistentDomain(forName: suiteName)
+        }
+
+        let store = SettingsStore(defaults: defaults)
+        store.speechSynthesisVoiceIdentifier = "com.apple.voice.compact.de-DE.Anna"
+
+        let reloaded = SettingsStore(defaults: defaults)
+        XCTAssertEqual(reloaded.speechSynthesisVoiceIdentifier, "com.apple.voice.compact.de-DE.Anna")
+        XCTAssertEqual(reloaded.effectiveSpeechSynthesisVoiceIdentifier, "com.apple.voice.compact.de-DE.Anna")
+    }
 }

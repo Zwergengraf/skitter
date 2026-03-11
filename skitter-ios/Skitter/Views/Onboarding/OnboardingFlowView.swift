@@ -33,6 +33,7 @@ private enum OnboardingAuthMode: String, CaseIterable, Identifiable {
 struct OnboardingFlowView: View {
     @ObservedObject var model: AppModel
     @ObservedObject var settings: SettingsStore
+    @Environment(\.colorScheme) private var colorScheme
 
     @State private var authMode: OnboardingAuthMode = .setup
     @State private var displayName: String = ""
@@ -41,14 +42,25 @@ struct OnboardingFlowView: View {
     @State private var manualToken: String = ""
     @State private var isTestingConnection = false
 
+    private var backgroundGradient: [Color] {
+        if colorScheme == .dark {
+            return [
+                Color(red: 0.07, green: 0.10, blue: 0.15),
+                Color(red: 0.09, green: 0.17, blue: 0.24),
+                Color(red: 0.15, green: 0.11, blue: 0.18),
+            ]
+        }
+        return [
+            Color(red: 0.95, green: 0.97, blue: 0.99),
+            Color(red: 0.88, green: 0.92, blue: 0.97),
+            Color(red: 0.97, green: 0.94, blue: 0.90),
+        ]
+    }
+
     var body: some View {
         ZStack {
             LinearGradient(
-                colors: [
-                    Color(red: 0.95, green: 0.97, blue: 0.99),
-                    Color(red: 0.88, green: 0.92, blue: 0.97),
-                    Color(red: 0.97, green: 0.94, blue: 0.90),
-                ],
+                colors: backgroundGradient,
                 startPoint: .topLeading,
                 endPoint: .bottomTrailing
             )
@@ -226,9 +238,9 @@ struct OnboardingFlowView: View {
             .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 28, style: .continuous))
             .overlay(
                 RoundedRectangle(cornerRadius: 28, style: .continuous)
-                    .stroke(Color.white.opacity(0.35), lineWidth: 1)
+                    .stroke(colorScheme == .dark ? Color.white.opacity(0.12) : Color.white.opacity(0.35), lineWidth: 1)
             )
-            .shadow(color: Color.black.opacity(0.06), radius: 20, x: 0, y: 12)
+            .shadow(color: Color.black.opacity(colorScheme == .dark ? 0.28 : 0.06), radius: 20, x: 0, y: 12)
     }
 
     private var statusImage: String {

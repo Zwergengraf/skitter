@@ -46,6 +46,9 @@ final class SpeechCaptureController: NSObject, ObservableObject {
     private var autoSubmitOnSilence = false
     private var currentRecognitionSessionID = UUID()
     private var ignoredRecognitionSessionIDs: Set<UUID> = []
+    private var lastAudioLevelUpdateUptime: TimeInterval = 0
+
+    private let minimumAudioLevelUpdateInterval: TimeInterval = 1.0 / 15.0
 
     init(locale: Locale = .current) {
         self.recognitionLocaleIdentifier = locale.identifier
@@ -132,6 +135,7 @@ final class SpeechCaptureController: NSObject, ObservableObject {
         isListening = false
         isPreparing = false
         audioLevel = 0
+        lastAudioLevelUpdateUptime = 0
         if clearTranscript {
             transcript = ""
             onTranscript?("")
@@ -211,7 +215,10 @@ final class SpeechCaptureController: NSObject, ObservableObject {
         inputNode.installTap(onBus: 0, bufferSize: 1024, format: recordingFormat) { [weak self] buffer, _ in
             guard let self else { return }
             self.recognitionRequest?.append(buffer)
-            self.updateAudioLevel(from: buffer)
+            let normalizedLevel = Self.normalizedAudioLevel(from: buffer)
+            Task { @MainActor [weak self] in
+                self?.applyAudioLevel(normalizedLevel)
+            }
         }
 
         audioEngine.prepare()
@@ -273,6 +280,7 @@ final class SpeechCaptureController: NSObject, ObservableObject {
         recognitionTask = nil
         recognitionRequest = nil
         audioLevel = 0
+        lastAudioLevelUpdateUptime = 0
         audioEngine.reset()
         audioEngine = AVAudioEngine()
     }
@@ -294,24 +302,35 @@ final class SpeechCaptureController: NSObject, ObservableObject {
         }
     }
 
-    private func updateAudioLevel(from buffer: AVAudioPCMBuffer) {
+    private static func normalizedAudioLevel(from buffer: AVAudioPCMBuffer) -> Double {
         guard let channelData = buffer.floatChannelData?.pointee else {
-            audioLevel = max(0, audioLevel * 0.75)
-            return
+            return 0
         }
 
         let frameCount = Int(buffer.frameLength)
         guard frameCount > 0 else {
-            audioLevel = max(0, audioLevel * 0.75)
-            return
+            return 0
         }
 
         var peak: Float = 0
         for index in 0..<frameCount {
             peak = max(peak, abs(channelData[index]))
         }
-        let normalized = min(1.0, Double(peak) * 7.0)
-        audioLevel = max(normalized, audioLevel * 0.68)
+        return min(1.0, Double(peak) * 7.0)
+    }
+
+    private func applyAudioLevel(_ normalizedLevel: Double) {
+        let uptime = ProcessInfo.processInfo.systemUptime
+        let nextLevel = max(normalizedLevel, audioLevel * 0.68)
+        let levelDelta = abs(nextLevel - audioLevel)
+        let shouldBypassThrottle = normalizedLevel > audioLevel + 0.18 || levelDelta > 0.22
+
+        guard shouldBypassThrottle || uptime - lastAudioLevelUpdateUptime >= minimumAudioLevelUpdateInterval else {
+            return
+        }
+
+        lastAudioLevelUpdateUptime = uptime
+        audioLevel = nextLevel
     }
 
     private func requestSpeechAuthorization() async -> SFSpeechRecognizerAuthorizationStatus {
