@@ -19,7 +19,7 @@ from langchain.tools import tool
 
 from .config import SECRETS_APPROVAL_BYPASS_MAGIC, settings
 from .llm import build_llm
-from .llm import resolve_model_name
+from .llm import list_models, resolve_model_name
 from .prompting import build_system_prompt
 from .subagents import SubAgentResult, SubAgentService, SubAgentTaskSpec
 from .run_limits import RunCancelledError, get_current_run_limits
@@ -1374,6 +1374,30 @@ def build_graph(
         await _complete_tool_run(tool_run_id, "completed", output)
         return json.dumps(output)
 
+    @tool("model_list")
+    async def model_list() -> str:
+        """List available model selectors for explicit model choices. Use this before schedule_create or schedule_update only if the user specifically wants a particular model; otherwise omit model so the main model chain is used."""
+        payload: dict[str, Any] = {}
+        budget_message = await _enforce_tool_budget("model_list", payload)
+        if budget_message:
+            return budget_message
+        tool_run_id = await _create_auto_tool_run("model_list", payload)
+        models = list_models()
+        output = {
+            "models": [
+                {
+                    "selector": model.name,
+                    "provider": model.provider,
+                    "model_id": model.model,
+                    "api_type": model.provider_api_type,
+                }
+                for model in models
+            ],
+            "count": len(models),
+        }
+        await _complete_tool_run(tool_run_id, "completed", output)
+        return json.dumps(output)
+
     @tool("mcp_list_tools")
     async def mcp_list_tools(server_name: str | None = None) -> str:
         """List tools from configured and enabled MCP servers."""
@@ -1515,7 +1539,7 @@ def build_graph(
         channel_id: Optional[str] = None,
         model: Optional[str] = SCHEDULED_JOB_MODEL_MAIN,
     ) -> str:
-        """Create a scheduled job using a cron expression or run_at timestamp (ISO-8601). Use model='__main_chain__' to follow the current main model chain at execution time."""
+        """Create a scheduled job using a cron expression or run_at timestamp (ISO-8601). Usually omit model so the dynamic main model chain is used. If the user explicitly requests a specific model, use model_list first and pass either a valid selector or '__main_chain__'."""
         payload: dict[str, Any] = {
             "name": name,
             "prompt": prompt,
@@ -1575,7 +1599,7 @@ def build_graph(
         enabled: Optional[bool] = None,
         model: Optional[str] = None,
     ) -> str:
-        """Update a scheduled job. Set model='__main_chain__' to reset it to the dynamic main model chain."""
+        """Update a scheduled job. Usually leave model unchanged unless the user explicitly asks. Use model_list if you need valid selectors. Set model='__main_chain__' to reset to the dynamic main model chain."""
         payload: dict[str, Any] = {
             "job_id": job_id,
             "cron": cron,
@@ -1944,6 +1968,7 @@ def build_graph(
         machine_status,
         create_secret,
         list_secrets,
+        model_list,
         mcp_list_tools,
         mcp_call,
         memory_search,

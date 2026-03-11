@@ -330,6 +330,14 @@ def default_registry() -> ToolRegistry:
     )
     registry.register(
         ToolSpec(
+            name="model_list",
+            description="List available model selectors for explicit model choices. Use only when a specific model is requested; otherwise rely on defaults.",
+            input_schema={"type": "object", "properties": {}},
+            requires_approval=False,
+        )
+    )
+    registry.register(
+        ToolSpec(
             name="memory_search",
             description="Search stored memory embeddings",
             input_schema={
@@ -371,7 +379,7 @@ def default_registry() -> ToolRegistry:
     registry.register(
         ToolSpec(
             name="schedule_create",
-            description="Create a scheduled job",
+            description="Create a scheduled job. Normally omit model so the dynamic main model chain is used. If the user explicitly requests a specific model, use model_list first and pass a valid selector.",
             input_schema={
                 "type": "object",
                 "properties": {
@@ -389,7 +397,7 @@ def default_registry() -> ToolRegistry:
     registry.register(
         ToolSpec(
             name="schedule_update",
-            description="Update a scheduled job",
+            description="Update a scheduled job. Only set model when the user explicitly asks for one; use model_list first if needed.",
             input_schema={
                 "type": "object",
                 "properties": {
