@@ -113,17 +113,8 @@ struct MainShellView: View {
             .tabItem {
                 Label("Chat", systemImage: "bubble.left.and.bubble.right")
             }
-            .badge(model.unreadCount)
+            .badge(model.unreadCount + model.pendingApprovals.count)
             .tag(AppSection.chat)
-
-            NavigationStack {
-                detailView(for: .approvals)
-            }
-            .tabItem {
-                Label("Approvals", systemImage: "checkmark.shield")
-            }
-            .badge(model.pendingApprovals.count)
-            .tag(AppSection.approvals)
 
             NavigationStack {
                 detailView(for: .voice)
@@ -148,8 +139,6 @@ struct MainShellView: View {
         switch section {
         case .chat:
             ChatScreen(model: model, settings: settings, notifications: notifications)
-        case .approvals:
-            ApprovalsScreen(model: model)
         case .voice:
             VoiceScreen(model: model, settings: settings, notifications: notifications)
         case .settings:
@@ -160,9 +149,8 @@ struct MainShellView: View {
     private func badgeValue(for section: AppSection) -> Int? {
         switch section {
         case .chat:
-            return model.unreadCount == 0 ? nil : model.unreadCount
-        case .approvals:
-            return model.pendingApprovals.isEmpty ? nil : model.pendingApprovals.count
+            let count = model.unreadCount + model.pendingApprovals.count
+            return count == 0 ? nil : count
         case .voice, .settings:
             return nil
         }
@@ -197,6 +185,7 @@ private struct ChatScreen: View {
     @StateObject private var speechController = SpeechCaptureController()
     @StateObject private var speaker = VoicePlaybackController()
     @State private var showsDetails = false
+    @FocusState private var composerIsFocused: Bool
 
     private let bottomAnchorID = "chat-bottom-anchor"
 
@@ -237,11 +226,7 @@ private struct ChatScreen: View {
             ScrollViewReader { proxy in
                 ScrollView {
                     LazyVStack(spacing: 12) {
-                        if !model.pendingApprovals.isEmpty {
-                            InlineApprovalSection(model: model)
-                        }
-
-                        if model.messages.isEmpty && !model.isSending {
+                        if model.messages.isEmpty && model.pendingApprovals.isEmpty && !model.isSending {
                             EmptyChatState()
                         } else {
                             ForEach(model.messages) { message in
@@ -253,6 +238,11 @@ private struct ChatScreen: View {
                                     openURL: openURL
                                 )
                                 .id(message.id)
+                            }
+
+                            ForEach(model.pendingApprovals) { toolRun in
+                                ApprovalMessageBubble(toolRun: toolRun, model: model)
+                                    .id("approval-\(toolRun.id)")
                             }
                         }
 
@@ -267,6 +257,7 @@ private struct ChatScreen: View {
                     .padding(.horizontal, 16)
                     .padding(.vertical, 18)
                 }
+                .scrollDismissesKeyboard(.interactively)
                 .background(Color(uiColor: .systemGroupedBackground))
                 .onChange(of: model.messages.count) { _, _ in
                     scrollToBottom(proxy)
@@ -294,6 +285,18 @@ private struct ChatScreen: View {
                     composer
 
                     VStack(spacing: 10) {
+                        if composerIsFocused {
+                            Button {
+                                composerIsFocused = false
+                            } label: {
+                                Image(systemName: "keyboard.chevron.compact.down")
+                                    .font(.system(size: 22, weight: .medium))
+                                    .foregroundStyle(.secondary)
+                            }
+                            .buttonStyle(.plain)
+                            .accessibilityLabel("Hide keyboard")
+                        }
+
                         Button {
                             Task {
                                 await toggleQuickVoice()
@@ -324,18 +327,22 @@ private struct ChatScreen: View {
                 }
                 .padding(.horizontal, 16)
 
-                HStack(spacing: 8) {
-                    StatusChip(label: model.health.label, tint: healthTint)
-                    StatusChip(label: model.activity.label, tint: activityTint)
-                    Spacer()
-                    Label(model.modelName, systemImage: "cpu")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                if !composerIsFocused {
+                    HStack(spacing: 8) {
+                        StatusChip(label: model.health.label, tint: healthTint)
+                        StatusChip(label: model.activity.label, tint: activityTint)
+                        Spacer()
+                        Label(model.modelName, systemImage: "cpu")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    .transition(.opacity)
+                    .padding(.horizontal, 16)
+                    .padding(.bottom, 14)
                 }
-                .padding(.horizontal, 16)
-                .padding(.bottom, 14)
             }
             .background(.thinMaterial)
+            .animation(.easeInOut(duration: 0.18), value: composerIsFocused)
         }
         .navigationTitle("Skitter")
         .navigationBarTitleDisplayMode(.inline)
@@ -412,6 +419,7 @@ private struct ChatScreen: View {
             TextEditor(text: $model.draft)
                 .frame(minHeight: 54, maxHeight: 120)
                 .padding(8)
+                .focused($composerIsFocused)
                 .scrollContentBackground(.hidden)
                 .background(Color.clear)
                 .disabled(speechController.isPreparing)
@@ -577,36 +585,6 @@ private struct EmptyChatState: View {
     }
 }
 
-private struct InlineApprovalSection: View {
-    @ObservedObject var model: AppModel
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack {
-                Label("Approval required", systemImage: "hand.raised.fill")
-                    .font(.headline)
-                Spacer()
-                Text("\(model.pendingApprovals.count)")
-                    .font(.caption.weight(.semibold))
-                    .padding(.horizontal, 10)
-                    .padding(.vertical, 6)
-                    .background(Color.orange.opacity(0.14), in: Capsule())
-                    .foregroundStyle(.orange)
-            }
-
-            Text("Skitter is waiting on these tool decisions before it can keep moving.")
-                .font(.subheadline)
-                .foregroundStyle(.secondary)
-
-            ForEach(model.pendingApprovals) { toolRun in
-                ApprovalCard(toolRun: toolRun, model: model)
-            }
-        }
-        .padding(18)
-        .background(Color.orange.opacity(0.08), in: RoundedRectangle(cornerRadius: 26, style: .continuous))
-    }
-}
-
 private struct ThinkingIndicatorCard: View {
     var body: some View {
         HStack(spacing: 12) {
@@ -696,7 +674,7 @@ private struct MessageBubble: View {
                 if !message.attachments.isEmpty {
                     VStack(alignment: .leading, spacing: 8) {
                         ForEach(message.attachments) { attachment in
-                            AttachmentRow(attachment: attachment, resolvedURL: model.resolvedAttachmentURL(attachment), openURL: openURL)
+                            AttachmentRow(attachment: attachment, model: model)
                         }
                     }
                 }
@@ -736,9 +714,14 @@ private struct MessageBubble: View {
 
 private struct AttachmentRow: View {
     let attachment: MessageAttachment
-    let resolvedURL: URL?
-    let openURL: OpenURLAction
+    let model: AppModel
     @Environment(\.colorScheme) private var colorScheme
+    @StateObject private var imageLoader = AttachmentImageLoader()
+    @State private var showsImageViewer = false
+    @State private var downloadURL: URL?
+    @State private var showsShareSheet = false
+    @State private var isPreparingDownload = false
+    @State private var errorText: String?
 
     private var attachmentBackground: Color {
         if colorScheme == .dark {
@@ -756,33 +739,212 @@ private struct AttachmentRow: View {
     }
 
     var body: some View {
-        HStack(spacing: 10) {
-            Image(systemName: "paperclip")
-                .foregroundStyle(secondaryTextColor)
-            VStack(alignment: .leading, spacing: 2) {
-                Text(attachment.filename)
-                    .font(.caption.weight(.medium))
-                    .lineLimit(1)
-                    .foregroundStyle(primaryTextColor)
-                Text(attachment.contentType)
-                    .font(.caption2)
-                    .foregroundStyle(secondaryTextColor)
+        VStack(alignment: .leading, spacing: 10) {
+            if attachment.isImage {
+                imagePreview
             }
-            Spacer()
-            if let resolvedURL {
-                Button("Open") {
-                    openURL(resolvedURL)
+
+            HStack(spacing: 10) {
+                Image(systemName: attachment.isImage ? "photo" : "paperclip")
+                    .foregroundStyle(secondaryTextColor)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(attachment.filename)
+                        .font(.caption.weight(.medium))
+                        .lineLimit(1)
+                        .foregroundStyle(primaryTextColor)
+                    Text(attachment.contentType)
+                        .font(.caption2)
+                        .foregroundStyle(secondaryTextColor)
+                }
+                Spacer()
+                Button(attachment.isImage ? "Download" : "Export") {
+                    Task {
+                        await prepareDownloadAndShare()
+                    }
                 }
                 .buttonStyle(.bordered)
+                .disabled(isPreparingDownload)
+            }
 
-                ShareLink(item: resolvedURL) {
-                    Label("Share", systemImage: "square.and.arrow.up")
-                }
-                .labelStyle(.iconOnly)
+            if let errorText, !errorText.isEmpty {
+                Text(errorText)
+                    .font(.caption2)
+                    .foregroundStyle(.orange)
             }
         }
         .padding(10)
         .background(attachmentBackground, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .task(id: attachment.id) {
+            guard attachment.isImage else { return }
+            await imageLoader.load(attachment: attachment, model: model)
+        }
+        .sheet(isPresented: $showsImageViewer) {
+            if let image = imageLoader.image {
+                ImageAttachmentViewer(
+                    attachment: attachment,
+                    image: image,
+                    onDownload: {
+                        showsImageViewer = false
+                        await Task.yield()
+                        await prepareDownloadAndShare()
+                    }
+                )
+            }
+        }
+        .sheet(isPresented: $showsShareSheet, onDismiss: {
+            downloadURL = nil
+        }) {
+            if let downloadURL {
+                ActivityView(activityItems: [downloadURL])
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var imagePreview: some View {
+        ZStack {
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .fill(Color.black.opacity(colorScheme == .dark ? 0.22 : 0.08))
+
+            if let image = imageLoader.image {
+                Image(uiImage: image)
+                    .resizable()
+                    .scaledToFill()
+            } else if imageLoader.isLoading {
+                ProgressView()
+                    .tint(.secondary)
+            } else {
+                VStack(spacing: 6) {
+                    Image(systemName: "photo")
+                        .font(.title3)
+                    Text(imageLoader.errorText ?? "Image unavailable")
+                        .font(.caption)
+                }
+                .foregroundStyle(secondaryTextColor)
+                .multilineTextAlignment(.center)
+                .padding(12)
+            }
+        }
+        .frame(maxWidth: min(UIScreen.main.bounds.width * 0.68, 320))
+        .frame(height: 180)
+        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .contentShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .onTapGesture {
+            if imageLoader.image != nil {
+                showsImageViewer = true
+            }
+        }
+    }
+
+    private func prepareDownloadAndShare() async {
+        errorText = nil
+        isPreparingDownload = true
+        defer {
+            isPreparingDownload = false
+        }
+
+        do {
+            let fileURL = try await model.downloadAttachmentFile(attachment)
+            downloadURL = fileURL
+            showsShareSheet = true
+        } catch {
+            errorText = error.localizedDescription
+        }
+    }
+}
+
+@MainActor
+private final class AttachmentImageLoader: ObservableObject {
+    @Published private(set) var image: UIImage?
+    @Published private(set) var isLoading = false
+    @Published private(set) var errorText: String?
+
+    private static let cache = NSCache<NSString, UIImage>()
+    private var loadedAttachmentID: String?
+
+    func load(attachment: MessageAttachment, model: AppModel) async {
+        guard attachment.isImage else { return }
+        guard loadedAttachmentID != attachment.id else { return }
+
+        if let cached = Self.cache.object(forKey: attachment.id as NSString) {
+            image = cached
+            errorText = nil
+            loadedAttachmentID = attachment.id
+            return
+        }
+
+        isLoading = true
+        errorText = nil
+
+        do {
+            let data = try await model.fetchAttachmentData(attachment)
+            guard let image = UIImage(data: data) else {
+                throw APIClient.APIError.decoding("Image data could not be rendered.")
+            }
+            Self.cache.setObject(image, forKey: attachment.id as NSString)
+            self.image = image
+            loadedAttachmentID = attachment.id
+        } catch {
+            errorText = error.localizedDescription
+        }
+
+        isLoading = false
+    }
+}
+
+private struct ImageAttachmentViewer: View {
+    let attachment: MessageAttachment
+    let image: UIImage
+    let onDownload: () async -> Void
+    @Environment(\.dismiss) private var dismiss
+    @State private var isPreparingDownload = false
+
+    var body: some View {
+        NavigationStack {
+            ZStack {
+                Color.black.ignoresSafeArea()
+
+                Image(uiImage: image)
+                    .resizable()
+                    .scaledToFit()
+                    .padding(20)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
+            .navigationTitle(attachment.filename)
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarLeading) {
+                    Button("Done") {
+                        dismiss()
+                    }
+                    .foregroundStyle(.white)
+                }
+
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button(isPreparingDownload ? "Preparing..." : "Download") {
+                        Task {
+                            isPreparingDownload = true
+                            await onDownload()
+                            isPreparingDownload = false
+                        }
+                    }
+                    .disabled(isPreparingDownload)
+                    .foregroundStyle(.white)
+                }
+            }
+            .toolbarBackground(.hidden, for: .navigationBar)
+        }
+    }
+}
+
+private struct ActivityView: UIViewControllerRepresentable {
+    let activityItems: [Any]
+
+    func makeUIViewController(context: Context) -> UIActivityViewController {
+        UIActivityViewController(activityItems: activityItems, applicationActivities: nil)
+    }
+
+    func updateUIViewController(_ uiViewController: UIActivityViewController, context: Context) {
     }
 }
 
@@ -834,103 +996,89 @@ private struct SessionDetailsSheet: View {
     }
 }
 
-private struct ApprovalsScreen: View {
-    @ObservedObject var model: AppModel
-
-    var body: some View {
-        List {
-            if model.pendingApprovals.isEmpty {
-                VStack(spacing: 12) {
-                    Image(systemName: "checkmark.shield")
-                        .font(.system(size: 36))
-                        .foregroundStyle(.green)
-                    Text("No pending approvals")
-                        .font(.headline)
-                    Text("Tool approval requests will appear here when an agent needs confirmation.")
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
-                        .multilineTextAlignment(.center)
-                }
-                .frame(maxWidth: .infinity)
-                .padding(.vertical, 48)
-            } else {
-                ForEach(model.pendingApprovals) { toolRun in
-                    ApprovalCard(toolRun: toolRun, model: model)
-                        .listRowInsets(EdgeInsets(top: 12, leading: 16, bottom: 12, trailing: 16))
-                        .listRowSeparator(.hidden)
-                }
-            }
-        }
-        .listStyle(.plain)
-        .navigationTitle("Approvals")
-    }
-}
-
-private struct ApprovalCard: View {
+private struct ApprovalMessageBubble: View {
     let toolRun: ToolRunStatus
     @ObservedObject var model: AppModel
     @State private var showsParameters = false
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            HStack(alignment: .top) {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text(toolRun.tool)
-                        .font(.headline)
-                    Text(approvalDetailLine)
-                        .font(.caption)
+        HStack {
+            VStack(alignment: .leading, spacing: 14) {
+                HStack(alignment: .top) {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Label("Approval required", systemImage: "hand.raised.fill")
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(.orange)
+
+                        Text(toolRun.tool)
+                            .font(.headline)
+
+                        Text(approvalDetailLine)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    StatusChip(label: toolRun.status.capitalized, tint: .orange)
+                }
+
+                if let requestedBy = toolRun.requestedBy, !requestedBy.isEmpty {
+                    Label(requestedBy, systemImage: "person.crop.circle.badge.checkmark")
+                        .font(.subheadline)
                         .foregroundStyle(.secondary)
                 }
-                Spacer()
-                StatusChip(label: toolRun.status.capitalized, tint: .orange)
-            }
 
-            if let requestedBy = toolRun.requestedBy, !requestedBy.isEmpty {
-                Label(requestedBy, systemImage: "person.crop.circle.badge.checkmark")
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
-            }
+                if !toolRun.reasoning.isEmpty {
+                    Text(toolRun.reasoning.joined(separator: "\n"))
+                        .font(.subheadline)
+                }
 
-            if !toolRun.reasoning.isEmpty {
-                Text(toolRun.reasoning.joined(separator: "\n"))
-                    .font(.subheadline)
-            }
-
-            if !toolRun.secretRefs.isEmpty {
-                Text("Secrets: \(toolRun.secretRefs.joined(separator: ", "))")
-                    .font(.caption.monospaced())
-                    .foregroundStyle(.secondary)
-            }
-
-            DisclosureGroup("Parameters", isExpanded: $showsParameters) {
-                ScrollView(.horizontal, showsIndicators: false) {
-                    Text(toolRun.inputPrettyJSON())
+                if !toolRun.secretRefs.isEmpty {
+                    Text("Secrets: \(toolRun.secretRefs.joined(separator: ", "))")
                         .font(.caption.monospaced())
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(12)
+                        .foregroundStyle(.secondary)
                 }
-                .background(Color(uiColor: .secondarySystemBackground), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
-            }
-            .font(.subheadline.weight(.medium))
 
-            HStack(spacing: 12) {
-                Button("Approve") {
-                    Task {
-                        await model.approve(toolRun)
+                DisclosureGroup("Parameters", isExpanded: $showsParameters) {
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        Text(toolRun.inputPrettyJSON())
+                            .font(.caption.monospaced())
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(12)
                     }
+                    .background(Color(uiColor: .secondarySystemBackground), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
                 }
-                .buttonStyle(.borderedProminent)
+                .font(.subheadline.weight(.medium))
 
-                Button("Deny", role: .destructive) {
-                    Task {
-                        await model.deny(toolRun)
+                HStack(spacing: 12) {
+                    Button("Approve") {
+                        Task {
+                            await model.approve(toolRun)
+                        }
                     }
+                    .buttonStyle(.borderedProminent)
+
+                    Button("Deny", role: .destructive) {
+                        Task {
+                            await model.deny(toolRun)
+                        }
+                    }
+                    .buttonStyle(.bordered)
                 }
-                .buttonStyle(.bordered)
             }
+            .padding(16)
+            .frame(maxWidth: 560, alignment: .leading)
+            .background(
+                RoundedRectangle(cornerRadius: 22, style: .continuous)
+                    .fill(Color.orange.opacity(0.12))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 22, style: .continuous)
+                            .stroke(Color.orange.opacity(0.28), lineWidth: 1)
+                    )
+            )
+
+            Spacer(minLength: 40)
         }
-        .padding(18)
-        .background(Color(uiColor: .secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 24, style: .continuous))
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     private var approvalDetailLine: String {

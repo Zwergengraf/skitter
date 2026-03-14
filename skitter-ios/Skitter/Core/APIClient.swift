@@ -311,6 +311,31 @@ struct APIClient {
         return url
     }
 
+    func attachmentData(config: APIConfiguration, rawURL: String) async throws -> Data {
+        let request = try buildRequest(baseURL: config.baseURL, path: rawURL, method: "GET", token: config.token)
+        let (data, response) = try await session.data(for: request)
+        try ensureSuccess(response: response, data: data)
+        return data
+    }
+
+    func downloadAttachmentFile(
+        config: APIConfiguration,
+        rawURL: String,
+        suggestedFilename: String
+    ) async throws -> URL {
+        let data = try await attachmentData(config: config, rawURL: rawURL)
+        let rootDirectory = FileManager.default.temporaryDirectory.appendingPathComponent("SkitterAttachments", isDirectory: true)
+        try FileManager.default.createDirectory(at: rootDirectory, withIntermediateDirectories: true)
+
+        let sanitizedFilename = sanitizeFilename(suggestedFilename)
+        let exportDirectory = rootDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: exportDirectory, withIntermediateDirectories: true)
+
+        let destinationURL = exportDirectory.appendingPathComponent(sanitizedFilename)
+        try data.write(to: destinationURL, options: [.atomic])
+        return destinationURL
+    }
+
     private func requestJSON<T: Decodable, B: Encodable>(
         baseURL: String,
         token: String?,
@@ -425,6 +450,15 @@ struct APIClient {
             return date
         }
         return Date()
+    }
+
+    private func sanitizeFilename(_ filename: String) -> String {
+        let trimmed = filename.trimmingCharacters(in: .whitespacesAndNewlines)
+        let fallback = trimmed.isEmpty ? "attachment" : trimmed
+        let invalidCharacters = CharacterSet(charactersIn: "/:\\?%*|\"<>")
+        let components = fallback.components(separatedBy: invalidCharacters)
+        let sanitized = components.joined(separator: "-")
+        return sanitized.isEmpty ? "attachment" : sanitized
     }
 }
 

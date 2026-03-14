@@ -2,6 +2,11 @@ import XCTest
 @testable import Skitter
 
 final class SkitterCoreTests: XCTestCase {
+    override func tearDown() {
+        URLProtocolStub.handler = nil
+        super.tearDown()
+    }
+
     func testCommandMatcherReturnsAllCommandsForBareSlash() {
         let matches = CommandMatcher.filter("/")
         XCTAssertEqual(matches.map(\.id), LocalCommand.all.map(\.id))
@@ -73,6 +78,37 @@ final class SkitterCoreTests: XCTestCase {
         XCTAssertEqual(toolRun.secretRefs, ["prod/skitter", "staging/skitter"])
     }
 
+    func testDownloadAttachmentFileKeepsCleanFilename() async throws {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [URLProtocolStub.self]
+        let session = URLSession(configuration: configuration)
+        let client = APIClient(session: session)
+        let payload = Data("archive".utf8)
+
+        URLProtocolStub.handler = { request in
+            XCTAssertEqual(request.value(forHTTPHeaderField: "Authorization"), "Bearer token")
+            let response = HTTPURLResponse(
+                url: try XCTUnwrap(request.url),
+                statusCode: 200,
+                httpVersion: nil,
+                headerFields: ["Content-Type": "application/zip"]
+            )!
+            return (response, payload)
+        }
+
+        let fileURL = try await client.downloadAttachmentFile(
+            config: APIConfiguration(baseURL: "https://example.com", token: "token"),
+            rawURL: "/files/skitter-export.zip",
+            suggestedFilename: "skitter-export.zip"
+        )
+        defer {
+            try? FileManager.default.removeItem(at: fileURL.deletingLastPathComponent())
+        }
+
+        XCTAssertEqual(fileURL.lastPathComponent, "skitter-export.zip")
+        XCTAssertEqual(try Data(contentsOf: fileURL), payload)
+    }
+
     @MainActor
     func testSettingsStorePersistsSpeechSynthesisVoicePreference() {
         let suiteName = "io.skitter.tests.\(UUID().uuidString)"
@@ -90,5 +126,36 @@ final class SkitterCoreTests: XCTestCase {
         let reloaded = SettingsStore(defaults: defaults)
         XCTAssertEqual(reloaded.speechSynthesisVoiceIdentifier, "com.apple.voice.compact.de-DE.Anna")
         XCTAssertEqual(reloaded.effectiveSpeechSynthesisVoiceIdentifier, "com.apple.voice.compact.de-DE.Anna")
+    }
+}
+
+private final class URLProtocolStub: URLProtocol {
+    static var handler: ((URLRequest) throws -> (HTTPURLResponse, Data))?
+
+    override class func canInit(with request: URLRequest) -> Bool {
+        true
+    }
+
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest {
+        request
+    }
+
+    override func startLoading() {
+        guard let handler = Self.handler else {
+            client?.urlProtocol(self, didFailWithError: URLError(.badServerResponse))
+            return
+        }
+
+        do {
+            let (response, data) = try handler(request)
+            client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+            client?.urlProtocol(self, didLoad: data)
+            client?.urlProtocolDidFinishLoading(self)
+        } catch {
+            client?.urlProtocol(self, didFailWithError: error)
+        }
+    }
+
+    override func stopLoading() {
     }
 }

@@ -88,7 +88,7 @@ Use these existing files as the main behavioral references while building the iO
 
 - [x] Build a welcome flow with a short explanation of what Skitter is and what users need to connect.
 - [x] Add server setup screen with API URL entry, validation, and "Test Connection".
-- [ ] Add authentication mode chooser:
+- [x] Add authentication mode chooser:
   - Setup Code
   - Pair Code
   - Existing Access Token
@@ -106,7 +106,7 @@ Use these existing files as the main behavioral references while building the iO
 - [x] Support markdown rendering for assistant messages.
 - [x] Add multiline composer with strong keyboard behavior and fast send interaction.
 - [x] Add slash-command suggestions while typing `/`.
-- [ ] Support the menubar command set:
+- [x] Support the menubar command set:
   - `/help`
   - `/new`
   - `/memory_reindex`
@@ -128,7 +128,7 @@ Use these existing files as the main behavioral references while building the iO
 - [x] Display message attachments clearly inside the conversation thread.
 - [x] Add preview/open behavior for common file types.
 - [x] Add download/share/export behavior using iOS-native share sheets.
-- [x] Add message actions such as copy text, copy markdown, and share response.
+- [x] Add message actions such as copy text and speak response via message long-press, while keeping attachment sharing native.
 
 ### 5. Status, Session Details, And Model Controls
 
@@ -163,8 +163,8 @@ Use these existing files as the main behavioral references while building the iO
 - [x] Add adjustable silence-to-send behavior.
 - [x] Add TTS playback for assistant replies with interrupt/stop control.
 - [x] Support a conversation-only model override, matching the existing menubar capability.
-- [ ] Decide transcription strategy:
-  - MVP: use Apple speech APIs or the lightest reliable native option for low-friction mobile use
+- [x] Decide transcription strategy:
+  - MVP: use Apple Speech APIs for low-friction mobile voice input
   - Later/privacy mode: evaluate on-device WhisperKit if performance, storage, and battery costs are acceptable
 
 ### 8. Settings And Personalization
@@ -173,7 +173,8 @@ Use these existing files as the main behavioral references while building the iO
 - [x] Add controls for silence threshold, TTS voice selection, and model defaults where appropriate.
 - [x] Add an account/device section that can later support pair-code generation.
 - [x] Add notification settings, permission status, device token visibility, and badge behavior controls.
-- [x] Add support/debug info such as app version, server URL, current user, and last successful sync.
+- [x] Add support/debug info such as app version, server URL, current user, and session refresh controls.
+- [ ] Surface last successful sync / last refresh timestamp in the app UI.
 - [ ] Respect Dynamic Type, VoiceOver, reduced motion, and haptic preferences.
 
 ### 9. Notifications

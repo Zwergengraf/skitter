@@ -62,7 +62,6 @@ enum ChatRole: String {
 
 enum AppSection: String, CaseIterable, Identifiable {
     case chat
-    case approvals
     case voice
     case settings
 
@@ -72,8 +71,6 @@ enum AppSection: String, CaseIterable, Identifiable {
         switch self {
         case .chat:
             return "Chat"
-        case .approvals:
-            return "Approvals"
         case .voice:
             return "Voice"
         case .settings:
@@ -85,8 +82,6 @@ enum AppSection: String, CaseIterable, Identifiable {
         switch self {
         case .chat:
             return "bubble.left.and.bubble.right"
-        case .approvals:
-            return "checkmark.shield"
         case .voice:
             return "waveform"
         case .settings:

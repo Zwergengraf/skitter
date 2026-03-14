@@ -361,6 +361,30 @@ final class AppModel: ObservableObject {
         return nil
     }
 
+    func fetchAttachmentData(_ attachment: MessageAttachment) async throws -> Data {
+        guard let config = apiConfiguration else {
+            throw APIClient.APIError.missingAuthToken
+        }
+        guard let rawURL = attachment.preferredURLString else {
+            throw APIClient.APIError.invalidBaseURL
+        }
+        return try await apiClient.attachmentData(config: config, rawURL: rawURL)
+    }
+
+    func downloadAttachmentFile(_ attachment: MessageAttachment) async throws -> URL {
+        guard let config = apiConfiguration else {
+            throw APIClient.APIError.missingAuthToken
+        }
+        guard let rawURL = attachment.preferredURLString else {
+            throw APIClient.APIError.invalidBaseURL
+        }
+        return try await apiClient.downloadAttachmentFile(
+            config: config,
+            rawURL: rawURL,
+            suggestedFilename: attachment.filename
+        )
+    }
+
     private func finishAuthentication(token: String, user: AuthUser) async {
         settings.apiKey = token
         currentUser = user
