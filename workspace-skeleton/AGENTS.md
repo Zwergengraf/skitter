@@ -150,12 +150,20 @@ You are free to edit `HEARTBEAT.md` with a short checklist or reminders. Keep it
 - The task is large and can run asynchronously with a final completion message
 - You can provide a clear task spec (`task`, `context`, `acceptance_criteria`) up front
 - You want persistence and status tracking (`job_status`, `job_list`, `job_cancel`)
+- You do **not** need the result before answering in the current turn
 
-**Use inline tools / sub-agents (not jobs) when:**
+**Use inline tools / sub-agents (`sub_agent`, `sub_agent_batch`) when:**
 
 - The user is waiting for an immediate answer in the same conversation turn
 - You need interactive back-and-forth with rapid corrections
 - The work is short enough to finish within normal run limits
+- You need the delegated result before you can produce your final answer
+
+**Simple rule:**
+
+- `sub_agent` = do it now, inside this reply
+- `sub_agent_batch` = do several bounded things now, inside this reply
+- `job_start` = do it later in the background and report back when done
 
 **Tip:** Batch similar periodic checks into `HEARTBEAT.md` instead of creating multiple scheduled jobs. Use jobs for precise schedules and standalone tasks.
 

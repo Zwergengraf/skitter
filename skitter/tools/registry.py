@@ -248,7 +248,7 @@ def default_registry() -> ToolRegistry:
     registry.register(
         ToolSpec(
             name="sub_agent",
-            description="Spawn a sub-agent",
+            description="Run one synchronous delegated task and wait for the result in the current reply. Use job_start instead for long-running background work.",
             input_schema={
                 "type": "object",
                 "properties": {
@@ -264,7 +264,7 @@ def default_registry() -> ToolRegistry:
     registry.register(
         ToolSpec(
             name="sub_agent_batch",
-            description="Run multiple sub-agent tasks concurrently",
+            description="Run multiple synchronous delegated tasks concurrently and wait for all results in the current reply. Use job_start instead for long-running background work.",
             input_schema={
                 "type": "object",
                 "properties": {
@@ -420,6 +420,50 @@ def default_registry() -> ToolRegistry:
                 "type": "object",
                 "properties": {"job_id": {"type": "string"}},
             },
+            requires_approval=False,
+        )
+    )
+    registry.register(
+        ToolSpec(
+            name="job_start",
+            description="Start a background job for longer-running work and return a job ID immediately. Use this when the user does not need the result in the current reply.",
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "task": {"type": "string"},
+                    "name": {"type": "string"},
+                    "context": {"type": "string"},
+                    "acceptance_criteria": {"type": "string"},
+                    "model_name": {"type": "string"},
+                },
+            },
+            requires_approval=True,
+        )
+    )
+    registry.register(
+        ToolSpec(
+            name="job_status",
+            description="Get current status and result details for a background job.",
+            input_schema={"type": "object", "properties": {"job_id": {"type": "string"}}},
+            requires_approval=False,
+        )
+    )
+    registry.register(
+        ToolSpec(
+            name="job_list",
+            description="List recent background jobs for the current user.",
+            input_schema={
+                "type": "object",
+                "properties": {"status": {"type": "string"}, "limit": {"type": "integer"}},
+            },
+            requires_approval=False,
+        )
+    )
+    registry.register(
+        ToolSpec(
+            name="job_cancel",
+            description="Cancel a queued background job or request cancellation for a running one.",
+            input_schema={"type": "object", "properties": {"job_id": {"type": "string"}}},
             requires_approval=False,
         )
     )

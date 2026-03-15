@@ -1712,7 +1712,13 @@ def build_graph(
         acceptance_criteria: Optional[str] = None,
         model_name: Optional[str] = None,
     ) -> str:
-        """Start a background sub-agent job for long-running work and return a job ID immediately."""
+        """Start a background job for longer work and return a job ID immediately.
+
+        Use this when the work should continue asynchronously and the user does not need the result in this turn.
+        Prefer this over sub_agent for long-running, tool-heavy, or overnight work.
+        Provide a complete task spec up front because the background job runs independently.
+        Use job_status, job_list, and job_cancel to monitor it later.
+        """
         payload: dict[str, Any] = {
             "task": task,
             "name": name,
@@ -1825,7 +1831,11 @@ def build_graph(
         context: Optional[str] = None,
         acceptance_criteria: Optional[str] = None,
     ) -> str:
-        """Delegate a focused task to a single sub-agent worker."""
+        """Delegate a focused task to a single synchronous sub-agent worker.
+
+        Use this when you need the delegated result before you can finish your current reply.
+        Prefer job_start instead for long-running background work.
+        """
         payload: dict[str, Any] = {
             "task": task,
             "name": name,
@@ -1871,7 +1881,11 @@ def build_graph(
 
     @tool("sub_agent_batch")
     async def sub_agent_batch(tasks: list[dict[str, Any]]) -> str:
-        """Delegate multiple focused tasks to sub-agents and run them concurrently."""
+        """Delegate multiple focused synchronous tasks to sub-agents and run them concurrently.
+
+        Use this when you need several bounded results back in the current reply.
+        Prefer job_start instead for long-running background work.
+        """
         payload: dict[str, Any] = {"tasks": tasks}
         budget_message = await _enforce_tool_budget("sub_agent_batch", payload)
         if budget_message:
@@ -2037,14 +2051,14 @@ def build_graph(
             ModelRetryMiddleware(
                 max_retries=3,
                 backoff_factor=2.0,
-                initial_delay=3.0,
+                initial_delay=1.0,
                 # Bubble model failures to runtime so provider/model failover can run.
                 on_failure="error",
             ),
             ToolRetryMiddleware(
                 max_retries=3,
                 backoff_factor=2.0,
-                initial_delay=3.0,
+                initial_delay=1.0,
                 retry_on=_should_retry_tool_exception,
                 on_failure=_tool_retry_on_failure,
             )

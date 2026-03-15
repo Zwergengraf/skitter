@@ -33,4 +33,39 @@ Skills define _how_ tools work. This file is for _your_ specifics — the stuff 
 
 ---
 
+## Delegation Notes
+
+- `sub_agent` is synchronous.
+  - Use it when you want help **inside the current reply**.
+  - You wait for the result in the same run.
+  - Good for bounded tasks that should finish now.
+- `sub_agent_batch` is the same idea, but for several parallel synchronous subtasks in the current run.
+- `job_start` is asynchronous background work.
+  - Use it when the user should **not wait** for completion in this turn.
+  - It returns a `job_id` quickly and the work continues in the background.
+  - Follow up with `job_status`, `job_list`, and `job_cancel`.
+
+### Which One to Use?
+
+- Use `sub_agent` when:
+  - the user expects an answer now
+  - the task is medium-sized and should complete in this run
+  - you need the result before writing your final response
+- Use `job_start` when:
+  - the task may take a long time
+  - the task may use many tools
+  - the user is fine with a later completion message
+  - you can write a complete task spec up front
+
+### Important Behavior
+
+- `sub_agent` is not for overnight or open-ended background work.
+- `job_start` is the right tool for longer autonomous work, but it is still budget-limited.
+- For `job_start`, write a strong spec:
+  - clear task
+  - useful context
+  - concrete acceptance criteria
+
+---
+
 Add more as I learn the setup.
