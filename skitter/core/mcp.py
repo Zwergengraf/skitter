@@ -397,7 +397,6 @@ class _MCPServerSession:
 
     def _http_headers(self) -> dict[str, str]:
         headers: dict[str, str] = {
-            "accept": "application/json",
             "content-type": "application/json",
         }
         for key, value in self.config.headers.items():
@@ -405,9 +404,43 @@ class _MCPServerSession:
             if not clean_key:
                 continue
             headers[clean_key] = str(value)
+        existing_accept = ""
+        for key, value in headers.items():
+            if key.lower() == "accept":
+                existing_accept = str(value)
+                break
+        accept_values = {
+            item.strip().lower()
+            for item in existing_accept.split(",")
+            if item.strip()
+        }
+        accept_values.update({"application/json", "text/event-stream"})
+        headers["accept"] = ", ".join(sorted(accept_values))
         if self._http_session_id:
             headers["mcp-session-id"] = self._http_session_id
         return headers
+
+    @staticmethod
+    def _parse_sse_response(text: str) -> dict[str, Any] | list[Any]:
+        data_chunks: list[str] = []
+        for raw_line in text.splitlines():
+            line = raw_line.strip()
+            if not line or line.startswith(":"):
+                continue
+            if line.startswith("data:"):
+                data_chunks.append(line[5:].lstrip())
+        if not data_chunks:
+            raise MCPError("MCP server returned SSE without any data payload")
+        payload_text = "\n".join(data_chunks).strip()
+        try:
+            parsed = json.loads(payload_text)
+        except Exception as exc:
+            raise MCPError(
+                f"MCP server returned SSE with non-JSON data: {payload_text[:200]}"
+            ) from exc
+        if isinstance(parsed, (dict, list)):
+            return parsed
+        raise MCPError("MCP server returned SSE with invalid JSON payload type")
 
     async def _request_http(self, *, method: str, params: dict[str, Any], timeout: float) -> dict[str, Any]:
         client = self._client
@@ -448,12 +481,16 @@ class _MCPServerSession:
             self.last_error = None
             return {}
 
+        content_type = response.headers.get("content-type", "").lower()
         try:
-            payload_json = response.json()
+            if "text/event-stream" in content_type:
+                payload_json = self._parse_sse_response(response.text)
+            else:
+                payload_json = response.json()
         except Exception as exc:
             text = response.text.strip()
             raise MCPError(
-                f"MCP server `{self.config.name}` returned non-JSON response for `{method}`: {text[:200]}"
+                f"MCP server `{self.config.name}` returned unsupported response for `{method}`: {text[:200]}"
             ) from exc
 
         if isinstance(payload_json, list):
