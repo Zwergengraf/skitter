@@ -13,6 +13,7 @@
   <img src="https://img.shields.io/badge/React-Admin%20UI-61DAFB?style=for-the-badge&logo=react&logoColor=111111" alt="React Admin UI" />
   <img src="https://img.shields.io/badge/Textual-TUI-20232A?style=for-the-badge" alt="Textual TUI" />
   <img src="https://img.shields.io/badge/macOS-Swift%20MenuBar-FAFAFA?style=for-the-badge&logo=apple&logoColor=111111" alt="Swift MenuBar App" />
+  <img src="https://img.shields.io/badge/iPhone%20%2B%20iPad-SwiftUI%20Client-0A84FF?style=for-the-badge&logo=apple&logoColor=white" alt="iOS SwiftUI App" />
 </p>
 
 ## What This Is
@@ -20,10 +21,14 @@
 Skitter is a personal agent system with:
 
 - A Python server (`FastAPI` + `LangGraph`) that runs the assistant.
-- Distributed executors for filesystem, shell, browser, and web tools (Docker sandboxes and external node runners).
+- Distributed executors: Docker sandboxes for isolation with support for external node runners.
+- Built-in tools such as filesystem access, shell, browser, web tools.
+- Support for [Agent skills](https://agentskills.io/) (per-user) and MCP servers.
+- Scheduled jobs / cronjobs.
 - Memory indexing and retrieval (PostgreSQL + pgvector).
 - Human-in-the-loop approvals for sensitive tools.
-- Multiple client apps over one API: Discord bot, admin web UI, standalone TUI, and a native macOS menubar app.
+- Encrypted secret storage with human approvals for secret usage (API keys, passwords, ...).
+- Multiple client apps over one API: Discord bot, admin web UI, standalone TUI, a native macOS menubar app, and a native iPhone/iPad app.
 
 ## Applications
 
@@ -33,6 +38,7 @@ Skitter is a personal agent system with:
 | Admin Web UI | `/admin-web` | Operational dashboard (sessions, tool runs, jobs, memory, sandbox, settings) |
 | Standalone TUI | `/skitter-tui` | Remote terminal chat client over API |
 | macOS Menubar App | `/skitter-menubar` | Native companion app with quick chat + status |
+| Native iOS App | `/skitter-ios` | Universal iPhone/iPad client with chat, inline approvals, voice mode, and notification support |
 | Executor Node | `/skitter/node` | External host runner (macOS/Linux) that connects to API via WebSocket |
 
 ## Architecture (High Level)
@@ -49,7 +55,7 @@ Skitter is a personal agent system with:
 
 - Docker + Docker Compose
 - LLM provider access (API base + key) for `config.yaml`
-- macOS 14+ with Swift toolchain (menubar app only)
+- macOS 14+ with Xcode 15.4+ / Swift toolchain (menubar and iOS apps)
 - Python `3.11+` and Node.js `18+` (only needed for non-Docker/local development)
 
 ## Setup (Docker, Recommended)
@@ -57,8 +63,6 @@ Skitter is a personal agent system with:
 ### 1) Clone the repo and prepare config files
 
 ```bash
-git clone <your-repo-url>
-cd <repo-dir>
 cp config.example.yaml config.yaml
 cp .env.example .env
 ```
@@ -68,24 +72,23 @@ cp .env.example .env
 Generate a valid Fernet key for `SKITTER_SECRETS_MASTER_KEY`:
 
 ```bash
-python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+python -c "import base64, secrets; print(base64.urlsafe_b64encode(secrets.token_bytes(32)).decode())"
+```
+
+Generate random values for `SKITTER_API_KEY` and `SKITTER_BOOTSTRAP_CODE` with:
+
+```bash
+openssl rand -hex 24
 ```
 
 Set these values in `.env`:
 
 ```bash
 SKITTER_CONFIG_PATH=config.yaml
-SKITTER_API_KEY=long-random-admin-key
-SKITTER_BOOTSTRAP_CODE=one-time-setup-code
-SKITTER_POSTGRES_PASSWORD=secure-postgres-password
-SKITTER_SECRETS_MASTER_KEY=fernet-key
+SKITTER_API_KEY=
+SKITTER_BOOTSTRAP_CODE=
+SKITTER_SECRETS_MASTER_KEY=
 ADMIN_WEB_API_BASE_URL=http://localhost:8000
-```
-
-You can generate random values with:
-
-```bash
-openssl rand -hex 24
 ```
 
 ### 3) Configure models/providers in `config.yaml`
@@ -97,6 +100,8 @@ At minimum, set:
 - `main_model` (ordered fallback list of `provider/model`)
 - `heartbeat_model` (ordered fallback list of `provider/model`)
 - `discord.token` (if Discord transport is enabled)
+
+Other options (can be edited in the admin web UI):
 
 Web search config:
 
@@ -114,12 +119,6 @@ MCP config (bring-your-own MCP servers):
   - for `stdio`: `command`, `args`, optional `env`, `cwd`
   - for `http`: `url`, optional `headers`
   - optional for both: `startup_timeout_seconds`, `request_timeout_seconds`
-- Agent tools:
-  - `mcp_list_tools` to discover available MCP tools
-  - `mcp_call` to invoke a specific MCP tool by `server_name` + `tool_name`
-- Runtime toggling:
-  - `GET /v1/mcp/servers`
-  - `PUT /v1/mcp/servers/{name}` with `{ \"enabled\": true|false }`
 
 ### 4) Build images
 
@@ -142,9 +141,8 @@ Endpoints:
 
 Notes:
 
-- The `api` service auto-runs DB initialization on startup (`python -m skitter.data.init_db`).
 - The `sandbox` image is built but not started as a long-running service. The API spawns per-user sandbox containers on demand via Docker socket access.
-- The admin web build embeds `VITE_API_KEY` in client assets. Do not expose the UI publicly without additional auth controls.
+- The admin web asks for the admin API key on first use, stores it client-side in the browser, and sends it on subsequent API requests. Treat the UI as a privileged admin surface and avoid using it on shared or untrusted machines.
 
 ### 6) Optional profiles
 
@@ -218,6 +216,7 @@ capabilities:
 - Discord: `/machine` (list), `/machine <name_or_id>` (set default).
 - TUI: `/machine` / `/machine <name_or_id>`.
 - Menubar: `/machine` / `/machine <name_or_id>`.
+- iOS: use chat commands `/machine` / `/machine <name_or_id>`.
 
 The agent can inspect machines (`machine_list`, `machine_status`) but cannot change defaults directly.
 
@@ -240,6 +239,8 @@ npm run dev
 ```
 
 By default Vite runs on `http://localhost:5173`.
+
+On first load, the admin UI will ask for the Skitter admin API key and store it in the browser. You can change it later from the Settings section inside the app.
 
 ### Standalone TUI
 
@@ -271,6 +272,33 @@ Open app settings and provide:
 - Access token, or use:
   - Register & Connect (bootstrap code + display name), or
   - Pair Existing Account (pair code)
+
+### Native iOS App
+
+Open `skitter-ios/Skitter.xcodeproj` in Xcode, select the `Skitter` scheme, then run on an iPhone, iPad, or simulator.
+
+CLI build:
+
+```bash
+xcodebuild -project skitter-ios/Skitter.xcodeproj -scheme Skitter -destination 'generic/platform=iOS' CODE_SIGNING_ALLOWED=NO build
+```
+
+Current app capabilities:
+
+- Bootstrap, pair-code, and access-token sign in
+- Active-session chat with markdown rendering
+- Inline tool approval cards inside chat
+- File and image attachments with in-app preview/download
+- Slash commands such as `/new`, `/model`, `/machine`, and `/info`
+- Dedicated voice mode, chat dictation, and reply TTS
+- iPhone and iPad layouts from the same app target
+- Local notification prompts, badge updates, and app-side APNs token capture
+
+Notes:
+
+- The iOS client targets iOS 17+.
+- Push notification plumbing exists on the app side; server-driven remote push registration is still a follow-up.
+- For simulator or local unsigned builds, use the `xcodebuild` command above. For device install, open the project in Xcode and use your normal signing setup.
 
 ## Non-Docker Server Setup (Local/Advanced)
 
@@ -339,10 +367,10 @@ Useful auth endpoints:
 
 ## First-Time Account Flows
 
-### A) No Discord (menubar/TUI only)
+### A) No Discord (menubar/TUI/iOS)
 
 1. Set `SKITTER_BOOTSTRAP_CODE` in server env.
-2. In menubar/TUI, run bootstrap with setup code + display name.
+2. In menubar/TUI/iOS, run bootstrap with setup code + display name.
 3. Client receives a user access token and connects.
 
 ### B) Start from Discord
@@ -350,7 +378,7 @@ Useful auth endpoints:
 1. DM the bot once (user is created as pending).
 2. Admin approves the user in Admin UI (`Users` page).
 3. In Discord, run `/pair` to get a short-lived pair code.
-4. Use that code in menubar/TUI pairing flow.
+4. Use that code in menubar/TUI/iOS pairing flow.
 
 ## Data and Workspaces
 

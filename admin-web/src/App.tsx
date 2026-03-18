@@ -42,7 +42,14 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { formatBytes, formatCurrency, formatJsonPreview, formatNumber, formatRelativeTime } from "@/lib/utils";
-import { api, API_BASE } from "@/lib/api";
+import {
+  api,
+  API_BASE,
+  clearStoredApiKey,
+  getStoredApiKey,
+  setApiAuthFailureHandler,
+  setStoredApiKey,
+} from "@/lib/api";
 import type { NavItemId } from "@/components/navigation";
 import type {
   AgentJobDetail,
@@ -404,6 +411,11 @@ export default function App() {
     schedule_time: "",
     enabled: true,
   });
+  const [adminApiKey, setAdminApiKey] = useState<string>(() => getStoredApiKey());
+  const [apiKeyDialogOpen, setApiKeyDialogOpen] = useState<boolean>(() => !getStoredApiKey().trim());
+  const [apiKeyDraft, setApiKeyDraft] = useState<string>(() => getStoredApiKey());
+  const [apiKeyDialogError, setApiKeyDialogError] = useState<string | null>(null);
+  const [apiKeySaving, setApiKeySaving] = useState<boolean>(false);
   const [isDark, setIsDark] = useState<boolean>(() => {
     const stored = localStorage.getItem("theme");
     return stored ? stored === "dark" : true;
@@ -411,6 +423,8 @@ export default function App() {
   const sessionMessagesEndRef = useRef<HTMLDivElement | null>(null);
 
   const activeLabel = views[active];
+  const apiReady = adminApiKey.trim().length > 0;
+  const maskedAdminApiKey = apiReady ? `••••${adminApiKey.slice(-4)}` : "Not configured";
 
   useEffect(() => {
     document.documentElement.classList.toggle("dark", isDark);
@@ -418,7 +432,20 @@ export default function App() {
   }, [isDark]);
 
   useEffect(() => {
-    if (active !== "overview") {
+    setApiAuthFailureHandler((error) => {
+      clearStoredApiKey();
+      setAdminApiKey("");
+      setApiKeyDraft("");
+      setApiKeyDialogError(error.message || "The admin API key was rejected.");
+      setApiKeyDialogOpen(true);
+    });
+    return () => {
+      setApiAuthFailureHandler(null);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!apiReady || active !== "overview") {
       return;
     }
     let isMounted = true;
@@ -441,7 +468,7 @@ export default function App() {
     return () => {
       isMounted = false;
     };
-  }, [active, overviewRange]);
+  }, [active, overviewRange, apiReady]);
 
   const overviewSessions = overview?.live_sessions ?? [];
   const overviewToolRuns = overview?.tool_approvals ?? [];
@@ -568,11 +595,11 @@ export default function App() {
   };
 
   useEffect(() => {
-    if (active !== "sessions") {
+    if (!apiReady || active !== "sessions") {
       return;
     }
     refreshSessions();
-  }, [active, filter]);
+  }, [active, filter, apiReady]);
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
@@ -583,7 +610,7 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    if (!selectedSessionId) {
+    if (!apiReady || !selectedSessionId) {
       setSessionDetail(null);
       setSessionDetailError(null);
       return;
@@ -601,7 +628,7 @@ export default function App() {
       .finally(() => {
         setSessionDetailLoading(false);
       });
-  }, [selectedSessionId]);
+  }, [selectedSessionId, apiReady]);
 
   useEffect(() => {
     if (!selectedSessionId || !sessionDetail) {
@@ -617,16 +644,16 @@ export default function App() {
   }, [selectedSessionId, sessionDetail]);
 
   useEffect(() => {
-    if (active !== "tools") {
+    if (!apiReady || active !== "tools") {
       setSelectedToolRun(null);
       setSelectedRunId(null);
       return;
     }
     refreshToolRuns();
-  }, [active]);
+  }, [active, apiReady]);
 
   useEffect(() => {
-    if (!selectedRunId) {
+    if (!apiReady || !selectedRunId) {
       setRunDetail(null);
       setRunDetailError(null);
       return;
@@ -644,10 +671,10 @@ export default function App() {
       .finally(() => {
         setRunDetailLoading(false);
       });
-  }, [selectedRunId]);
+  }, [selectedRunId, apiReady]);
 
   useEffect(() => {
-    if (!selectedAgentJobId) {
+    if (!apiReady || !selectedAgentJobId) {
       setSelectedAgentJob(null);
       setSelectedAgentJobError(null);
       return;
@@ -665,10 +692,10 @@ export default function App() {
       .finally(() => {
         setSelectedAgentJobLoading(false);
       });
-  }, [selectedAgentJobId]);
+  }, [selectedAgentJobId, apiReady]);
 
   useEffect(() => {
-    if (active !== "memory") {
+    if (!apiReady || active !== "memory") {
       return;
     }
     const userId =
@@ -685,10 +712,10 @@ export default function App() {
       setMemoryUserId(userId);
     }
     refreshMemory(userId);
-  }, [active, usersData]);
+  }, [active, usersData, apiReady]);
 
   useEffect(() => {
-    if (active !== "secrets") {
+    if (!apiReady || active !== "secrets") {
       return;
     }
     const userId = secretUserId || usersData[0]?.id;
@@ -703,10 +730,10 @@ export default function App() {
       setSecretUserLabel(userLabelFor(userId));
     }
     refreshSecrets(userId);
-  }, [active, usersData, secretUserId]);
+  }, [active, usersData, secretUserId, apiReady]);
 
   useEffect(() => {
-    if (!selectedMemory?.source) {
+    if (!apiReady || !selectedMemory?.source) {
       setMemoryDetailContent("");
       return;
     }
@@ -722,7 +749,7 @@ export default function App() {
       .finally(() => {
         setMemoryDetailLoading(false);
       });
-  }, [selectedMemory, memoryUserId]);
+  }, [selectedMemory, memoryUserId, apiReady]);
 
   const handleMemoryReindex = async () => {
     if (!memoryUserId) {
@@ -1269,40 +1296,43 @@ export default function App() {
   };
 
   useEffect(() => {
+    if (!apiReady) {
+      return;
+    }
     refreshDirectories();
-  }, []);
+  }, [apiReady]);
 
   useEffect(() => {
-    if (active !== "agent-jobs") {
+    if (!apiReady || active !== "agent-jobs") {
       setSelectedAgentJobId(null);
       return;
     }
     refreshAgentJobs();
-  }, [active]);
+  }, [active, apiReady]);
 
   useEffect(() => {
-    if (active !== "jobs") {
+    if (!apiReady || active !== "jobs") {
       return;
     }
     refreshJobs();
     if (!configData) {
       refreshConfig();
     }
-  }, [active]);
+  }, [active, apiReady]);
 
   useEffect(() => {
-    if (active !== "users") {
+    if (!apiReady || active !== "users") {
       return;
     }
     refreshUsers();
-  }, [active]);
+  }, [active, apiReady]);
 
   useEffect(() => {
-    if (active !== "sandbox") {
+    if (!apiReady || active !== "sandbox") {
       return;
     }
     refreshSandbox();
-  }, [active]);
+  }, [active, apiReady]);
 
   useEffect(() => {
     if (executorForm.user_id) {
@@ -1316,11 +1346,11 @@ export default function App() {
   }, [usersData, executorForm.user_id]);
 
   useEffect(() => {
-    if (active !== "settings") {
+    if (!apiReady || active !== "settings") {
       return;
     }
     refreshConfig();
-  }, [active]);
+  }, [active, apiReady]);
 
   useEffect(() => {
     setSessionsPage(1);
@@ -1452,6 +1482,54 @@ export default function App() {
       setToolRunsPage(toolRunsPageCount);
     }
   }, [toolRunsPage, toolRunsPageCount]);
+
+  const openApiKeyDialog = () => {
+    setApiKeyDraft(adminApiKey);
+    setApiKeyDialogError(null);
+    setApiKeyDialogOpen(true);
+  };
+
+  const closeApiKeyDialog = () => {
+    if (!apiReady) {
+      return;
+    }
+    setApiKeyDraft(adminApiKey);
+    setApiKeyDialogError(null);
+    setApiKeyDialogOpen(false);
+  };
+
+  const clearAdminApiKey = () => {
+    clearStoredApiKey();
+    setAdminApiKey("");
+    setApiKeyDraft("");
+    setApiKeyDialogError(null);
+    setApiKeyDialogOpen(true);
+  };
+
+  const saveAdminApiKey = async () => {
+    const cleaned = apiKeyDraft.trim();
+    if (!cleaned) {
+      setApiKeyDialogError("Admin API key is required.");
+      return;
+    }
+
+    setApiKeySaving(true);
+    setApiKeyDialogError(null);
+    try {
+      await api.validateAdminApiKey(cleaned);
+      setStoredApiKey(cleaned);
+      setAdminApiKey(cleaned);
+      setApiKeyDraft(cleaned);
+      setApiKeyDialogOpen(false);
+      refreshDirectories();
+      handleRefreshActive();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setApiKeyDialogError(message);
+    } finally {
+      setApiKeySaving(false);
+    }
+  };
 
   const agentJobUsers = useMemo(() => {
     return Array.from(
@@ -2689,12 +2767,26 @@ export default function App() {
               <div className="data-chip text-[10px] text-mutedForeground">{activeLabel}</div>
             </div>
             <div className="flex items-center gap-3">
-              <Button variant="outline" onClick={handleRefreshActive}>
+              <Button variant="outline" onClick={apiReady ? handleRefreshActive : openApiKeyDialog}>
                 <RefreshCcw className="mr-2 h-4 w-4" />
-                Refresh data
+                {apiReady ? "Refresh data" : "Set API key"}
               </Button>
             </div>
           </div>
+
+          {!apiReady ? (
+            <Card className="border-dashed">
+              <CardContent className="flex flex-col gap-4 p-6 md:flex-row md:items-center md:justify-between">
+                <div className="space-y-1">
+                  <p className="text-sm font-semibold">Admin API key required</p>
+                  <p className="text-sm text-mutedForeground">
+                    Enter the Skitter admin API key to unlock the dashboard. It is stored only in this browser.
+                  </p>
+                </div>
+                <Button onClick={openApiKeyDialog}>Enter API key</Button>
+              </CardContent>
+            </Card>
+          ) : null}
 
         {active === "overview" && (
           <div className="grid gap-8">
@@ -4316,6 +4408,38 @@ export default function App() {
             <Card>
               <CardHeader>
                 <SectionHeader
+                  title="Admin API Access"
+                  subtitle="The admin API key is stored client-side in this browser and used for API requests."
+                  actionLabel={apiReady ? "Edit key" : "Set key"}
+                  onAction={openApiKeyDialog}
+                />
+              </CardHeader>
+              <CardContent className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
+                <div className="space-y-2">
+                  <div className="flex flex-wrap items-center gap-3">
+                    <Badge variant={apiReady ? "success" : "warning"}>
+                      {apiReady ? "Configured" : "Required"}
+                    </Badge>
+                    <span className="font-mono text-sm">{maskedAdminApiKey}</span>
+                  </div>
+                  <p className="text-sm text-mutedForeground">API base: {API_BASE}</p>
+                </div>
+                <div className="flex flex-wrap gap-3">
+                  <Button variant="outline" onClick={openApiKeyDialog}>
+                    {apiReady ? "Edit key" : "Set key"}
+                  </Button>
+                  {apiReady ? (
+                    <Button variant="outline" onClick={clearAdminApiKey}>
+                      Clear key
+                    </Button>
+                  ) : null}
+                </div>
+              </CardContent>
+            </Card>
+
+            <Card>
+              <CardHeader>
+                <SectionHeader
                   title="Configuration"
                   subtitle="Review, filter, and edit the live YAML configuration."
                   actionLabel={configSaving ? "Saving..." : "Save changes"}
@@ -4455,6 +4579,76 @@ export default function App() {
             </CardContent>
           </Card>
         )}
+
+        <Dialog
+          open={apiKeyDialogOpen}
+          onOpenChange={(open) => {
+            if (!open) {
+              closeApiKeyDialog();
+              return;
+            }
+            openApiKeyDialog();
+          }}
+        >
+          <DialogContent
+            onEscapeKeyDown={(event) => {
+              if (!apiReady) {
+                event.preventDefault();
+              }
+            }}
+            onPointerDownOutside={(event) => {
+              if (!apiReady) {
+                event.preventDefault();
+              }
+            }}
+          >
+            <DialogHeader>
+              <DialogTitle>{apiReady ? "Edit admin API key" : "Unlock admin UI"}</DialogTitle>
+              <DialogDescription>
+                Enter the Skitter admin API key for this browser. We validate it before saving it locally.
+              </DialogDescription>
+            </DialogHeader>
+            <div className="grid gap-4">
+              <div className="grid gap-2">
+                <label className="text-xs font-semibold uppercase tracking-[0.2em] text-mutedForeground">
+                  API base
+                </label>
+                <Input value={API_BASE} readOnly />
+              </div>
+              <div className="grid gap-2">
+                <label className="text-xs font-semibold uppercase tracking-[0.2em] text-mutedForeground">
+                  Admin API key
+                </label>
+                <Input
+                  type="password"
+                  value={apiKeyDraft}
+                  onChange={(event) => setApiKeyDraft(event.target.value)}
+                  placeholder="skitter admin key"
+                  autoFocus
+                />
+              </div>
+              {apiKeyDialogError ? (
+                <div className="rounded-2xl border border-dashed border-border bg-muted/40 px-4 py-3 text-sm text-mutedForeground">
+                  {apiKeyDialogError}
+                </div>
+              ) : (
+                <p className="text-sm text-mutedForeground">
+                  Stored in this browser using local storage. Avoid using this on shared or untrusted machines.
+                </p>
+              )}
+              <div className="flex flex-wrap justify-end gap-3">
+                {apiReady ? (
+                  <Button variant="outline" onClick={closeApiKeyDialog}>
+                    Cancel
+                  </Button>
+                ) : null}
+                <Button onClick={saveAdminApiKey} disabled={apiKeySaving}>
+                  {apiKeySaving ? "Checking..." : apiReady ? "Save key" : "Unlock admin UI"}
+                </Button>
+              </div>
+            </div>
+          </DialogContent>
+        </Dialog>
 
         <Dialog
           open={executorOnboardingOpen}

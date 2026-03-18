@@ -19,31 +19,100 @@ import type {
 } from "@/lib/types";
 
 export const API_BASE = import.meta.env.VITE_API_BASE_URL ?? "http://localhost:8000";
-export const API_KEY = import.meta.env.VITE_API_KEY ?? "";
+export const ADMIN_API_KEY_STORAGE_KEY = "skitter.admin.apiKey";
+
+export class ApiError extends Error {
+  status: number;
+
+  constructor(status: number, message: string) {
+    super(message);
+    this.name = "ApiError";
+    this.status = status;
+  }
+}
+
+let runtimeApiKey = "";
+let authFailureHandler: ((error: ApiError) => void) | null = null;
+
+export const getStoredApiKey = (): string => {
+  if (runtimeApiKey) {
+    return runtimeApiKey;
+  }
+  if (typeof window === "undefined") {
+    return "";
+  }
+  try {
+    return localStorage.getItem(ADMIN_API_KEY_STORAGE_KEY)?.trim() ?? "";
+  } catch {
+    return "";
+  }
+};
+
+export const setStoredApiKey = (value: string): void => {
+  runtimeApiKey = value.trim();
+  if (typeof window === "undefined") {
+    return;
+  }
+  try {
+    if (runtimeApiKey) {
+      localStorage.setItem(ADMIN_API_KEY_STORAGE_KEY, runtimeApiKey);
+    } else {
+      localStorage.removeItem(ADMIN_API_KEY_STORAGE_KEY);
+    }
+  } catch {
+    // Ignore localStorage write failures and keep runtime-only state.
+  }
+};
+
+export const clearStoredApiKey = (): void => {
+  setStoredApiKey("");
+};
+
+export const setApiAuthFailureHandler = (
+  handler: ((error: ApiError) => void) | null
+): void => {
+  authFailureHandler = handler;
+};
 
 type ApiResponse<T> = T;
+type ApiRequestInit = RequestInit & {
+  apiKeyOverride?: string;
+  suppressAuthFailureHandler?: boolean;
+};
 
-async function request<T>(path: string, options?: RequestInit): Promise<ApiResponse<T>> {
+async function request<T>(path: string, options?: ApiRequestInit): Promise<ApiResponse<T>> {
+  const { apiKeyOverride, suppressAuthFailureHandler, ...requestOptions } = options ?? {};
   const headers: Record<string, string> = {
     "Content-Type": "application/json",
   };
-  if (API_KEY) {
-    headers["X-API-Key"] = API_KEY;
+  const apiKey = (apiKeyOverride ?? getStoredApiKey()).trim();
+  if (!apiKey) {
+    throw new ApiError(401, "Admin API key is required.");
   }
+  headers["X-API-Key"] = apiKey;
   const response = await fetch(`${API_BASE}${path}`, {
     headers,
-    ...options,
+    ...requestOptions,
   });
 
   if (!response.ok) {
     const text = await response.text();
-    throw new Error(text || response.statusText);
+    const error = new ApiError(response.status, text || response.statusText);
+    if (!suppressAuthFailureHandler && (response.status === 401 || response.status === 403)) {
+      authFailureHandler?.(error);
+    }
+    throw error;
   }
 
   return response.json() as Promise<T>;
 }
 
 export const api = {
+  validateAdminApiKey: (apiKey: string): Promise<OverviewResponse> =>
+    request("/v1/overview?range=today", {
+      apiKeyOverride: apiKey,
+      suppressAuthFailureHandler: true,
+    }),
   getOverview: (range?: "today" | "24h" | "week" | "month" | "year"): Promise<OverviewResponse> => {
     const params = new URLSearchParams();
     if (range) {
