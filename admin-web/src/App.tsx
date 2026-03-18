@@ -4410,8 +4410,6 @@ export default function App() {
                 <SectionHeader
                   title="Admin API Access"
                   subtitle="The admin API key is stored client-side in this browser and used for API requests."
-                  actionLabel={apiReady ? "Edit key" : "Set key"}
-                  onAction={openApiKeyDialog}
                 />
               </CardHeader>
               <CardContent className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
