@@ -11,13 +11,15 @@ from typing import Any
 
 from rich.markdown import Markdown
 from rich.panel import Panel
+from rich.syntax import Syntax
 from textual import events
 from textual.app import App, ComposeResult
-from textual.containers import Vertical
+from textual.containers import Horizontal, Vertical
 from textual.message import Message
-from textual.widgets import Footer, Header, Input, RichLog, Static
+from textual.screen import ModalScreen
+from textual.widgets import Button, Footer, Header, Input, RichLog, Static
 
-from .client import ApiError, AuthUser, SkitterApiClient, StreamEvent
+from .client import ApiError, AuthUser, SkitterApiClient, StreamEvent, ToolRun
 from .onboarding import OnboardingData, OnboardingWizard
 
 
@@ -37,6 +39,17 @@ class ChatEntry:
     text: str
     border_style: str
     timestamp: str
+    entry_id: str | None = None
+    optimistic: bool = False
+
+
+@dataclass(slots=True)
+class PendingApproval:
+    tool_run_id: str
+    tool_name: str
+    payload: dict[str, Any]
+    requested_by: str
+    created_at: str | None = None
 
 
 class SessionReady(Message):
@@ -71,6 +84,112 @@ class SystemLog(Message):
     def __init__(self, text: str) -> None:
         self.text = text
         super().__init__()
+
+
+class ToolApprovalDialog(ModalScreen[tuple[str, bool] | None]):
+    CSS = """
+    ToolApprovalDialog {
+        align: center middle;
+        background: $surface 50%;
+    }
+
+    #approval-card {
+        width: 90;
+        max-width: 96;
+        height: auto;
+        max-height: 30;
+        border: round $accent;
+        background: $panel;
+        padding: 0 1;
+        overflow-y: auto;
+    }
+
+    #approval-title {
+        text-style: bold;
+        margin-bottom: 0;
+    }
+
+    #approval-subtitle {
+        color: $text-muted;
+        margin-bottom: 1;
+    }
+
+    .approval-line {
+        margin-bottom: 0;
+    }
+
+    #approval-payload-label {
+        margin-top: 1;
+        color: $text-muted;
+    }
+
+    #approval-payload {
+        height: auto;
+        max-height: 14;
+        border: round $accent;
+        padding: 0 1;
+        overflow-y: auto;
+    }
+
+    #approval-actions {
+        height: auto;
+        margin-top: 1;
+    }
+
+    #approval-actions Button {
+        width: 1fr;
+        margin-right: 1;
+    }
+
+    #approval-actions Button:last-child {
+        margin-right: 0;
+    }
+    """
+
+    def __init__(self, approval: PendingApproval) -> None:
+        super().__init__()
+        self._approval = approval
+
+    def compose(self) -> ComposeResult:
+        payload_text = json.dumps(self._approval.payload or {}, indent=2, ensure_ascii=False, sort_keys=True)
+        created_text = self._format_created_at(self._approval.created_at)
+        with Vertical(id="approval-card"):
+            yield Static("Tool approval required", id="approval-title")
+            yield Static(
+                "The agent is waiting for your decision before this tool can run.",
+                id="approval-subtitle",
+            )
+            yield Static(f"Tool: {self._approval.tool_name}", classes="approval-line")
+            yield Static(f"Requested by: {self._approval.requested_by or 'agent'}", classes="approval-line")
+            yield Static(f"Requested at: {created_text}", classes="approval-line")
+            yield Static("Parameters", id="approval-payload-label")
+            yield Static(
+                Syntax(payload_text, "json", word_wrap=True, indent_guides=False),
+                id="approval-payload",
+            )
+            with Horizontal(id="approval-actions"):
+                yield Button("Deny", id="approval-deny", variant="error")
+                yield Button("Approve", id="approval-approve", variant="success")
+
+    @staticmethod
+    def _format_created_at(value: str | None) -> str:
+        raw = (value or "").strip()
+        if not raw:
+            return "just now"
+        iso = raw[:-1] + "+00:00" if raw.endswith("Z") else raw
+        try:
+            return datetime.fromisoformat(iso).astimezone().strftime("%Y-%m-%d %H:%M:%S")
+        except ValueError:
+            return raw
+
+    async def on_button_pressed(self, event: Button.Pressed) -> None:
+        button_id = event.button.id or ""
+        if button_id == "approval-deny":
+            self.dismiss((self._approval.tool_run_id, False))
+            return
+        if button_id == "approval-approve":
+            self.dismiss((self._approval.tool_run_id, True))
+            return
 
 
 class SkitterTuiApp(App[None]):
@@ -124,6 +243,11 @@ class SkitterTuiApp(App[None]):
         self._chat_entries: list[ChatEntry] = []
         self._state_path = self._resolve_state_path()
         self._persisted_state = self._load_state()
+        self._pending_approvals: dict[str, PendingApproval] = {}
+        self._approval_queue: list[str] = []
+        self._active_approval_id: str | None = None
+        self._thinking_timer = None
+        self._thinking_frame = 0
         saved_theme = self._persisted_state.get("theme")
         self._saved_theme = saved_theme if isinstance(saved_theme, str) and saved_theme.strip() else None
         saved_api_url = self._persisted_state.get("api_url")
@@ -266,6 +390,10 @@ class SkitterTuiApp(App[None]):
 
     async def on_session_ready(self, message: SessionReady) -> None:
         self._session_id = message.session_id
+        self._pending_approvals.clear()
+        self._approval_queue.clear()
+        self._active_approval_id = None
+        self._hide_thinking_indicator()
         chat = self.query_one("#chat", RichLog)
         chat.clear()
         self._chat_entries.clear()
@@ -301,6 +429,7 @@ class SkitterTuiApp(App[None]):
         backoff = 1
         while not stop_event.is_set():
             try:
+                await self._refresh_pending_approvals(session_id)
                 async for event in self.api.stream_events(session_id=session_id, stop_event=stop_event):
                     if stop_event.is_set():
                         return
@@ -360,6 +489,9 @@ class SkitterTuiApp(App[None]):
             return False
         timestamp = self._format_timestamp(item.get("created_at"))
         if role == "user":
+            if self._replace_optimistic_user(content, timestamp=timestamp):
+                self._seen_message_ids.add(message_id)
+                return True
             self._append_panel("You", content, border_style=self.PANEL_USER_STYLE, timestamp=timestamp)
         elif role == "assistant":
             if attachments:
@@ -384,8 +516,13 @@ class SkitterTuiApp(App[None]):
             self._update_status("Thinking", "model run started")
             return
         if event.event == "tool_approval_requested":
-            tool_name = str(payload.get("tool_name") or "tool")
-            self._update_status("Waiting approval", f"tool={tool_name}")
+            approval = PendingApproval(
+                tool_run_id=str(payload.get("tool_run_id") or "").strip(),
+                tool_name=str(payload.get("tool_name") or "tool"),
+                payload=payload.get("payload") if isinstance(payload.get("payload"), dict) else {},
+                requested_by=str(payload.get("requested_by") or "agent"),
+            )
+            self._queue_pending_approval(approval)
             return
         if event.event == "message_response":
             if self._busy:
@@ -404,6 +541,88 @@ class SkitterTuiApp(App[None]):
                 self._update_status("Session changed", "switched from another client")
                 self.post_message(SessionReady(new_session_id, created=False))
             return
+
+    def _queue_pending_approval(self, approval: PendingApproval) -> None:
+        if not approval.tool_run_id:
+            return
+        existing = self._pending_approvals.get(approval.tool_run_id)
+        if existing is not None:
+            if approval.created_at and not existing.created_at:
+                existing.created_at = approval.created_at
+            if approval.payload and not existing.payload:
+                existing.payload = approval.payload
+            return
+        self._pending_approvals[approval.tool_run_id] = approval
+        self._approval_queue.append(approval.tool_run_id)
+        self._update_status("Waiting approval", f"tool={approval.tool_name}")
+        self.call_after_refresh(self._present_next_approval_dialog)
+
+    def _present_next_approval_dialog(self) -> None:
+        if self._active_approval_id is not None:
+            return
+        while self._approval_queue:
+            tool_run_id = self._approval_queue.pop(0)
+            approval = self._pending_approvals.get(tool_run_id)
+            if approval is None:
+                continue
+            self._active_approval_id = tool_run_id
+            self.push_screen(ToolApprovalDialog(approval), self._on_tool_approval_closed)
+            return
+
+    def _on_tool_approval_closed(self, result: tuple[str, bool] | None) -> None:
+        if result is None:
+            self._active_approval_id = None
+            self.call_after_refresh(self._present_next_approval_dialog)
+            return
+        tool_run_id, approved = result
+        self.run_worker(
+            self._resolve_tool_approval(tool_run_id=tool_run_id, approved=approved),
+            name=f"approval:{tool_run_id}",
+            group="approvals",
+            exclusive=False,
+        )
+
+    async def _refresh_pending_approvals(self, session_id: str) -> None:
+        try:
+            pending_runs = await self.api.list_pending_tool_runs(session_id=session_id)
+        except Exception:
+            return
+        for item in pending_runs:
+            self._queue_pending_approval(self._approval_from_tool_run(item))
+
+    @staticmethod
+    def _approval_from_tool_run(item: ToolRun) -> PendingApproval:
+        return PendingApproval(
+            tool_run_id=item.id,
+            tool_name=item.tool,
+            payload=item.input,
+            requested_by=item.requested_by,
+            created_at=item.created_at,
+        )
+
+    async def _resolve_tool_approval(self, *, tool_run_id: str, approved: bool) -> None:
+        approval = self._pending_approvals.get(tool_run_id)
+        tool_name = approval.tool_name if approval else "tool"
+        decision_label = "approved" if approved else "denied"
+        decided_by = self._auth_user.id if self._auth_user is not None else "tui"
+        self._update_status("Submitting approval", f"{decision_label} {tool_name}")
+        try:
+            if approved:
+                await self.api.approve_tool_run(tool_run_id=tool_run_id, decided_by=decided_by)
+            else:
+                await self.api.deny_tool_run(tool_run_id=tool_run_id, decided_by=decided_by)
+        except Exception as exc:
+            self._append_error(f"Could not submit approval for `{tool_name}`: {exc}")
+            if approval is not None and tool_run_id not in self._approval_queue:
+                self._approval_queue.insert(0, tool_run_id)
+            self._update_status("Waiting approval", f"tool={tool_name}")
+        else:
+            self._pending_approvals.pop(tool_run_id, None)
+            self._update_status("Ready", "")
+        finally:
+            if self._active_approval_id == tool_run_id:
+                self._active_approval_id = None
+            self.call_after_refresh(self._present_next_approval_dialog)
 
     async def on_status_update(self, message: StatusUpdate) -> None:
         self._update_status(message.title, message.detail)
@@ -430,6 +649,8 @@ class SkitterTuiApp(App[None]):
             return
 
         self._busy = True
+        self._append_user(text, optimistic=True)
+        self._show_thinking_indicator()
         self._update_status("Thinking", "sending request")
         self.run_worker(self._send_message(text), name="send", group="send", exclusive=True)
 
@@ -708,6 +929,7 @@ class SkitterTuiApp(App[None]):
 
     async def on_assistant_reply(self, message: AssistantReply) -> None:
         self._busy = False
+        self._hide_thinking_indicator()
         if message.error:
             self._append_error(message.text)
             self._update_status("Error", "request failed")
@@ -743,8 +965,25 @@ class SkitterTuiApp(App[None]):
         self._chat_entries.clear()
         self._append_system("Chat view cleared.")
 
-    def _append_user(self, text: str) -> None:
-        self._append_panel("You", text, border_style=self.PANEL_USER_STYLE)
+    def _append_user(self, text: str, *, optimistic: bool = False) -> None:
+        self._append_panel(
+            "You",
+            text,
+            border_style=self.PANEL_USER_STYLE,
+            optimistic=optimistic,
+        )
+
+    def _replace_optimistic_user(self, text: str, *, timestamp: str) -> bool:
+        for entry in self._chat_entries:
+            if entry.title != "You" or not entry.optimistic:
+                continue
+            if entry.text != text:
+                continue
+            entry.timestamp = timestamp
+            entry.optimistic = False
+            self._replay_chat_entries()
+            return True
+        return False
 
     def _append_assistant(
         self,
@@ -769,15 +1008,69 @@ class SkitterTuiApp(App[None]):
     def _append_error(self, text: str) -> None:
         self._append_panel("Error", text, border_style=self.PANEL_ERROR_STYLE)
 
-    def _append_panel(self, title: str, text: str, border_style: str, timestamp: str | None = None) -> None:
+    def _append_panel(
+        self,
+        title: str,
+        text: str,
+        border_style: str,
+        timestamp: str | None = None,
+        *,
+        entry_id: str | None = None,
+        optimistic: bool = False,
+    ) -> None:
         entry = ChatEntry(
             title=title,
             text=text,
             border_style=border_style,
             timestamp=timestamp or datetime.now().strftime("%H:%M:%S"),
+            entry_id=entry_id,
+            optimistic=optimistic,
         )
         self._chat_entries.append(entry)
         self._render_chat_entry(entry)
+
+    def _show_thinking_indicator(self) -> None:
+        existing = self._find_entry("__thinking__")
+        if existing is None:
+            self._append_panel(
+                "Skitter",
+                "Thinking.",
+                border_style=self.PANEL_ASSISTANT_STYLE,
+                entry_id="__thinking__",
+            )
+            self._thinking_frame = 0
+        if self._thinking_timer is None:
+            self._thinking_timer = self.set_interval(0.45, self._advance_thinking_indicator, pause=False)
+        else:
+            self._thinking_timer.resume()
+
+    def _hide_thinking_indicator(self) -> None:
+        if self._thinking_timer is not None:
+            self._thinking_timer.pause()
+        self._remove_entry("__thinking__")
+
+    def _advance_thinking_indicator(self) -> None:
+        entry = self._find_entry("__thinking__")
+        if entry is None:
+            if self._thinking_timer is not None:
+                self._thinking_timer.pause()
+            return
+        frames = ["Thinking.", "Thinking..", "Thinking..."]
+        self._thinking_frame = (self._thinking_frame + 1) % len(frames)
+        entry.text = frames[self._thinking_frame]
+        self._replay_chat_entries()
+
+    def _find_entry(self, entry_id: str) -> ChatEntry | None:
+        for entry in self._chat_entries:
+            if entry.entry_id == entry_id:
+                return entry
+        return None
+
+    def _remove_entry(self, entry_id: str) -> None:
+        before = len(self._chat_entries)
+        self._chat_entries = [entry for entry in self._chat_entries if entry.entry_id != entry_id]
+        if len(self._chat_entries) != before:
+            self._replay_chat_entries()
 
     def _render_chat_entry(self, entry: ChatEntry) -> None:
         chat = self.query_one("#chat", RichLog)
@@ -794,11 +1087,11 @@ class SkitterTuiApp(App[None]):
         chat.scroll_end(animate=False)
 
     def _replay_chat_entries(self) -> None:
-        if not self._chat_entries:
-            return
         chat = self.query_one("#chat", RichLog)
         snapshot = list(self._chat_entries)
         chat.clear()
+        if not snapshot:
+            return
         for entry in snapshot:
             self._render_chat_entry(entry)
 

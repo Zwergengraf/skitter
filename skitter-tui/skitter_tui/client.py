@@ -33,6 +33,19 @@ class CommandResult:
     data: dict[str, Any]
 
 
+@dataclass(slots=True)
+class ToolRun:
+    id: str
+    tool: str
+    status: str
+    created_at: str
+    session_id: str
+    requested_by: str
+    approved_by: str | None
+    input: dict[str, Any]
+    output: dict[str, Any]
+
+
 class SkitterApiClient:
     def __init__(self, api_url: str, api_key: str | None = None, timeout: float = 180.0) -> None:
         base = api_url.rstrip("/")
@@ -180,6 +193,56 @@ class SkitterApiClient:
         if not isinstance(body, dict):
             raise ApiError("Invalid /v1/sessions/{id}/detail response payload")
         return body
+
+    async def list_pending_tool_runs(self, *, session_id: str, limit: int = 200) -> list[ToolRun]:
+        response = await self._request(
+            "GET",
+            f"/v1/tools?status=pending&limit={limit}",
+            requires_auth=True,
+        )
+        payload = response.json()
+        if not isinstance(payload, list):
+            raise ApiError("Invalid /v1/tools response payload")
+        items: list[ToolRun] = []
+        for item in payload:
+            if not isinstance(item, dict):
+                continue
+            if str(item.get("session_id") or "").strip() != session_id:
+                continue
+            tool_run_id = str(item.get("id") or "").strip()
+            if not tool_run_id:
+                continue
+            items.append(
+                ToolRun(
+                    id=tool_run_id,
+                    tool=str(item.get("tool") or "tool"),
+                    status=str(item.get("status") or ""),
+                    created_at=str(item.get("created_at") or ""),
+                    session_id=str(item.get("session_id") or ""),
+                    requested_by=str(item.get("requested_by") or ""),
+                    approved_by=str(item.get("approved_by") or "").strip() or None,
+                    input=item.get("input") if isinstance(item.get("input"), dict) else {},
+                    output=item.get("output") if isinstance(item.get("output"), dict) else {},
+                )
+            )
+        items.sort(key=lambda row: row.created_at)
+        return items
+
+    async def approve_tool_run(self, *, tool_run_id: str, decided_by: str) -> None:
+        await self._request(
+            "POST",
+            f"/v1/tools/{tool_run_id}/approve",
+            json={"approved_by": decided_by},
+            requires_auth=True,
+        )
+
+    async def deny_tool_run(self, *, tool_run_id: str, decided_by: str) -> None:
+        await self._request(
+            "POST",
+            f"/v1/tools/{tool_run_id}/deny",
+            json={"approved_by": decided_by},
+            requires_auth=True,
+        )
 
     async def download_attachment(self, path_or_url: str) -> bytes:
         target = (path_or_url or "").strip()
