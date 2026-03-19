@@ -256,6 +256,30 @@ struct APIClient {
             }
     }
 
+    func pendingUserPrompts(config: APIConfiguration, sessionID: String) async throws -> [PendingUserPrompt] {
+        let payload: [UserPromptPayload] = try await requestJSON(
+            baseURL: config.baseURL,
+            token: config.token,
+            path: "/v1/user-prompts?session_id=\(sessionID)",
+            method: "GET",
+            body: Optional<Int>.none
+        )
+        return payload
+            .filter { $0.session_id == sessionID }
+            .sorted(by: { $0.created_at > $1.created_at })
+            .map {
+                PendingUserPrompt(
+                    id: $0.id,
+                    sessionID: $0.session_id,
+                    question: $0.question,
+                    choices: $0.choices,
+                    allowFreeText: $0.allow_free_text,
+                    status: $0.status,
+                    createdAt: parseDate($0.created_at)
+                )
+            }
+    }
+
     func approveToolRun(config: APIConfiguration, toolRunID: String, decidedBy: String) async throws {
         let body = ["approved_by": decidedBy]
         let _: ToolApprovalResultPayload = try await requestJSON(

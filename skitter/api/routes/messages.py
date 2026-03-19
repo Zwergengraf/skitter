@@ -112,12 +112,44 @@ async def send_message(
             "is_private": scope_type == "private",
         }
     )
+    answered_prompt = await repo.answer_pending_user_prompt_for_session(
+        payload.session_id,
+        answer=payload.text,
+        answered_by=request_user_id,
+    )
+    if answered_prompt is not None:
+        metadata["answered_prompt_id"] = answered_prompt.id
     await repo.add_message(payload.session_id, role="user", content=payload.text, metadata=metadata)
 
     envelope.metadata.update(metadata)
 
     runtime = request.app.state.runtime
     response = await runtime.handle_message(payload.session_id, envelope)
+    if response.pending_prompt is not None:
+        assistant_meta = {
+            "response_to": envelope.message_id,
+            "user_prompt": True,
+            "user_prompt_id": response.pending_prompt.prompt_id,
+            "user_prompt_question": response.pending_prompt.question,
+            "user_prompt_choices": list(response.pending_prompt.choices),
+            "user_prompt_allow_free_text": bool(response.pending_prompt.allow_free_text),
+        }
+        if response.run_id:
+            assistant_meta["run_id"] = response.run_id
+        assistant_msg = await repo.add_message(
+            payload.session_id,
+            role="assistant",
+            content=response.text,
+            metadata=assistant_meta,
+        )
+        return MessageOut(
+            id=assistant_msg.id,
+            session_id=assistant_msg.session_id,
+            role=assistant_msg.role,
+            content=assistant_msg.content,
+            created_at=assistant_msg.created_at,
+            attachments=[],
+        )
     serialized_attachments = _serialize_runtime_attachments(response.attachments)
     assistant_meta = {"response_to": envelope.message_id}
     if response.run_id:

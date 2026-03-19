@@ -75,6 +75,15 @@ class SessionToolRunOut(BaseModel):
     created_at: datetime
 
 
+class SessionUserPromptOut(BaseModel):
+    id: str
+    question: str
+    choices: list[str] = Field(default_factory=list)
+    allow_free_text: bool = True
+    status: str
+    created_at: datetime
+
+
 class SessionDetailOut(BaseModel):
     id: str
     user_id: str
@@ -96,6 +105,7 @@ class SessionDetailOut(BaseModel):
     last_usage_at: datetime | None = None
     messages: list[SessionMessageOut]
     tool_runs: list[SessionToolRunOut]
+    pending_user_prompts: list[SessionUserPromptOut] = Field(default_factory=list)
 
 
 class MemoryEntryOut(BaseModel):
@@ -200,6 +210,16 @@ class MemoryForgetRequest(BaseModel):
 class EventOut(BaseModel):
     type: str
     data: Dict[str, Any]
+    created_at: datetime
+
+
+class UserPromptOut(BaseModel):
+    id: str
+    session_id: str
+    question: str
+    choices: list[str] = Field(default_factory=list)
+    allow_free_text: bool = True
+    status: str
     created_at: datetime
 
 

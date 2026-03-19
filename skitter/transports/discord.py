@@ -1,10 +1,11 @@
 from __future__ import annotations
 import asyncio
+import contextlib
 import io
 import json
 import re
 from datetime import datetime
-from typing import Iterable, Optional
+from typing import Awaitable, Callable, Iterable, Optional
 
 import discord
 from discord import app_commands
@@ -157,19 +158,66 @@ class ApprovalView(discord.ui.View):
             except discord.HTTPException:
                 pass
 
-    @discord.ui.button(label="Deny", style=discord.ButtonStyle.danger)
-    async def deny(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
-        if self.approval_service is not None:
-            await self.approval_service.resolve(self.tool_run_id, approved=False, decided_by=str(interaction.user.id))
-        await self._append_status(":no_entry_sign: Denied")
-        try:
-            await interaction.response.defer(thinking=False)
-        except discord.HTTPException:
-            try:
-                await interaction.followup.send("Denied.", delete_after=5)
-            except discord.HTTPException:
-                pass
 
+UserPromptResponder = Callable[[str, str, str, str], Awaitable[None]]
+UserPromptClosed = Callable[[str], None]
+MAX_USER_PROMPT_BUTTON_CHARS = 24
+
+
+def _prompt_button_label(text: str, limit: int = MAX_USER_PROMPT_BUTTON_CHARS) -> str:
+    value = str(text or "").strip()
+    if len(value) <= limit:
+        return value
+    return value[:limit] + "..."
+
+
+class UserPromptView(discord.ui.View):
+    def __init__(
+        self,
+        prompt_id: str,
+        choices: list[str],
+        allow_free_text: bool,
+        responder: UserPromptResponder | None,
+        on_closed: UserPromptClosed | None = None,
+    ) -> None:
+        super().__init__(timeout=900)
+        self.prompt_id = prompt_id
+        self.choices = choices[:4]
+        self.responder = responder
+        self.on_closed = on_closed
+        self.message: Optional[discord.Message] = None
+
+        for index, choice in enumerate(self.choices):
+            button = discord.ui.Button(
+                label=_prompt_button_label(choice),
+                style=discord.ButtonStyle.primary,
+                custom_id=f"user-prompt:{prompt_id}:{index}",
+            )
+            button.callback = self._make_choice_handler(choice)
+            self.add_item(button)
+
+    async def on_timeout(self) -> None:
+        if self.message is not None:
+            with contextlib.suppress(discord.HTTPException):
+                await self.message.edit(view=None)
+        if self.on_closed is not None:
+            self.on_closed(self.prompt_id)
+
+    def _make_choice_handler(self, choice: str):
+        async def _handler(interaction: discord.Interaction) -> None:
+            if self.responder is None or interaction.channel_id is None:
+                await interaction.response.send_message("Prompt responder is not configured.", ephemeral=True)
+                return
+            if self.on_closed is not None:
+                self.on_closed(self.prompt_id)
+            if self.message is not None:
+                with contextlib.suppress(discord.HTTPException):
+                    await interaction.response.edit_message(view=None)
+            else:
+                await interaction.response.defer(thinking=False)
+            await self.responder(self.prompt_id, choice, str(interaction.user.id), str(interaction.channel_id))
+
+        return _handler
 
 class DiscordTransport(TransportAdapter):
     def __init__(self, token: Optional[str] = None) -> None:
@@ -181,6 +229,8 @@ class DiscordTransport(TransportAdapter):
         self._handler: EventHandler | None = None
         self.token = token or settings.discord_token
         self._approval_service: ToolApprovalService | None = None
+        self._user_prompt_responder: UserPromptResponder | None = None
+        self._user_prompt_messages: dict[str, discord.Message] = {}
 
         @self.client.event
         async def on_ready() -> None:
@@ -279,6 +329,19 @@ class DiscordTransport(TransportAdapter):
 
     def set_approval_service(self, approval_service: ToolApprovalService) -> None:
         self._approval_service = approval_service
+
+    def set_user_prompt_responder(self, responder: UserPromptResponder | None) -> None:
+        self._user_prompt_responder = responder
+
+    def _forget_user_prompt_message(self, prompt_id: str) -> None:
+        self._user_prompt_messages.pop(prompt_id, None)
+
+    async def clear_user_prompt(self, prompt_id: str) -> None:
+        message = self._user_prompt_messages.pop(prompt_id, None)
+        if message is None:
+            return
+        with contextlib.suppress(discord.HTTPException):
+            await message.edit(view=None)
 
     async def start(self) -> None:
         if not self.token:
@@ -401,6 +464,39 @@ class DiscordTransport(TransportAdapter):
         content = f"Agent wants to run `{tool_name}` with input:\n```json\n{formatted}\n```\nApprove or deny?"
         message = await channel.send(content, view=view)
         view.message = message
+
+    async def send_user_prompt_request(
+        self,
+        prompt_id: str,
+        channel_id: str,
+        question: str,
+        choices: list[str],
+        allow_free_text: bool,
+    ) -> None:
+        channel = await self.client.fetch_channel(int(channel_id))
+        if not isinstance(channel, (discord.DMChannel, discord.TextChannel, discord.Thread)):
+            return
+        content = f"Skitter needs your input:\n\n{question}"
+        if choices:
+            choice_lines = "\n".join(f"- {choice}" for choice in choices[:4])
+            content = f"{content}\n\nChoices:\n{choice_lines}"
+            if allow_free_text:
+                content = f"{content}\n\nYou can also reply with your own answer."
+            view = UserPromptView(
+                prompt_id,
+                choices[:4],
+                allow_free_text,
+                self._user_prompt_responder,
+                self._forget_user_prompt_message,
+            )
+            message = await channel.send(content, view=view)
+            view.message = message
+            self._user_prompt_messages[prompt_id] = message
+            return
+        suffix = "\n\nPlease reply with your answer."
+        if allow_free_text:
+            suffix = "\n\nPlease reply in chat with your answer."
+        await channel.send(content + suffix)
 
     async def _handle_command(
         self,

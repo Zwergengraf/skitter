@@ -164,6 +164,7 @@ tools:
   approval_tools:
   - write
   - edit
+  - apply_patch
   - delete
   - download
   - transfer_file

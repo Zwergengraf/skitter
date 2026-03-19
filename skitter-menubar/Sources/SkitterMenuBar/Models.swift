@@ -174,6 +174,16 @@ struct ToolRunStatus {
     }
 }
 
+struct PendingUserPrompt: Identifiable, Equatable {
+    let id: String
+    let sessionID: String
+    let question: String
+    let choices: [String]
+    let allowFreeText: Bool
+    let status: String
+    let createdAt: Date
+}
+
 struct CommandResult {
     let ok: Bool
     let message: String

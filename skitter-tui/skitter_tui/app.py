@@ -19,7 +19,7 @@ from textual.message import Message
 from textual.screen import ModalScreen
 from textual.widgets import Button, Footer, Header, Input, RichLog, Static
 
-from .client import ApiError, AuthUser, SkitterApiClient, StreamEvent, ToolRun
+from .client import ApiError, AuthUser, SkitterApiClient, StreamEvent, ToolRun, UserPrompt
 from .onboarding import OnboardingData, OnboardingWizard
 
 
@@ -49,6 +49,15 @@ class PendingApproval:
     tool_name: str
     payload: dict[str, Any]
     requested_by: str
+    created_at: str | None = None
+
+
+@dataclass(slots=True)
+class PendingUserPrompt:
+    prompt_id: str
+    question: str
+    choices: list[str]
+    allow_free_text: bool
     created_at: str | None = None
 
 
@@ -192,6 +201,109 @@ class ToolApprovalDialog(ModalScreen[tuple[str, bool] | None]):
             return
 
 
+class UserPromptDialog(ModalScreen[str | None]):
+    CSS = """
+    UserPromptDialog {
+        align: center middle;
+        background: $surface 50%;
+    }
+
+    #user-prompt-card {
+        width: 90;
+        max-width: 96;
+        height: auto;
+        max-height: 28;
+        border: round $accent;
+        background: $panel;
+        padding: 0 1;
+        overflow-y: auto;
+    }
+
+    #user-prompt-title {
+        text-style: bold;
+    }
+
+    #user-prompt-subtitle {
+        color: $text-muted;
+        margin-bottom: 1;
+    }
+
+    #user-prompt-question {
+        margin-bottom: 1;
+    }
+
+    .user-prompt-choice {
+        margin-bottom: 0;
+    }
+
+    #user-prompt-actions {
+        height: auto;
+        margin-top: 1;
+    }
+
+    #user-prompt-actions Button {
+        width: 1fr;
+        margin-right: 1;
+    }
+
+    #user-prompt-actions Button:last-child {
+        margin-right: 0;
+    }
+    """
+
+    def __init__(self, prompt: PendingUserPrompt) -> None:
+        super().__init__()
+        self._prompt = prompt
+
+    @staticmethod
+    def _button_label(text: str, limit: int = 24) -> str:
+        value = str(text or "").strip()
+        if len(value) <= limit:
+            return value
+        return value[:limit] + "..."
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="user-prompt-card"):
+            yield Static("Skitter needs your input", id="user-prompt-title")
+            subtitle = (
+                "Choose an option below or type your own reply in the input box."
+                if self._prompt.allow_free_text
+                else "Choose one of the options below to continue."
+            )
+            if not self._prompt.choices:
+                subtitle = "Type your answer in the input box below to continue."
+            yield Static(subtitle, id="user-prompt-subtitle")
+            yield Static(self._prompt.question, id="user-prompt-question")
+            for index, choice in enumerate(self._prompt.choices[:4], start=1):
+                yield Button(
+                    self._button_label(choice),
+                    id=f"user-prompt-choice-{index}",
+                    classes="user-prompt-choice",
+                    variant="primary",
+                )
+            with Horizontal(id="user-prompt-actions"):
+                if self._prompt.allow_free_text or not self._prompt.choices:
+                    yield Button("Reply in chat", id="user-prompt-dismiss", variant="default")
+                else:
+                    yield Button("Close", id="user-prompt-dismiss", variant="default")
+
+    async def on_button_pressed(self, event: Button.Pressed) -> None:
+        button_id = event.button.id or ""
+        if button_id == "user-prompt-dismiss":
+            self.dismiss(None)
+            return
+        if button_id.startswith("user-prompt-choice-"):
+            try:
+                index = int(button_id.rsplit("-", 1)[1]) - 1
+            except ValueError:
+                self.dismiss(None)
+                return
+            if 0 <= index < len(self._prompt.choices):
+                self.dismiss(self._prompt.choices[index])
+                return
+        self.dismiss(None)
+
+
 class SkitterTuiApp(App[None]):
     CSS = """
     #root {
@@ -246,6 +358,9 @@ class SkitterTuiApp(App[None]):
         self._pending_approvals: dict[str, PendingApproval] = {}
         self._approval_queue: list[str] = []
         self._active_approval_id: str | None = None
+        self._pending_user_prompts: dict[str, PendingUserPrompt] = {}
+        self._user_prompt_queue: list[str] = []
+        self._active_user_prompt_id: str | None = None
         self._thinking_timer = None
         self._thinking_frame = 0
         saved_theme = self._persisted_state.get("theme")
@@ -393,6 +508,9 @@ class SkitterTuiApp(App[None]):
         self._pending_approvals.clear()
         self._approval_queue.clear()
         self._active_approval_id = None
+        self._pending_user_prompts.clear()
+        self._user_prompt_queue.clear()
+        self._active_user_prompt_id = None
         self._hide_thinking_indicator()
         chat = self.query_one("#chat", RichLog)
         chat.clear()
@@ -430,6 +548,7 @@ class SkitterTuiApp(App[None]):
         while not stop_event.is_set():
             try:
                 await self._refresh_pending_approvals(session_id)
+                await self._refresh_pending_user_prompts(session_id)
                 async for event in self.api.stream_events(session_id=session_id, stop_event=stop_event):
                     if stop_event.is_set():
                         return
@@ -523,6 +642,15 @@ class SkitterTuiApp(App[None]):
                 requested_by=str(payload.get("requested_by") or "agent"),
             )
             self._queue_pending_approval(approval)
+            return
+        if event.event == "user_prompt_requested":
+            prompt = PendingUserPrompt(
+                prompt_id=str(payload.get("prompt_id") or "").strip(),
+                question=str(payload.get("question") or "").strip(),
+                choices=[str(choice).strip() for choice in (payload.get("choices") or []) if str(choice).strip()],
+                allow_free_text=bool(payload.get("allow_free_text", True)),
+            )
+            self._queue_user_prompt(prompt)
             return
         if event.event == "message_response":
             if self._busy:
@@ -623,6 +751,86 @@ class SkitterTuiApp(App[None]):
             if self._active_approval_id == tool_run_id:
                 self._active_approval_id = None
             self.call_after_refresh(self._present_next_approval_dialog)
+
+    def _queue_user_prompt(self, prompt: PendingUserPrompt) -> None:
+        if not prompt.prompt_id:
+            return
+        existing = self._pending_user_prompts.get(prompt.prompt_id)
+        if existing is not None:
+            return
+        self._pending_user_prompts[prompt.prompt_id] = prompt
+        self._user_prompt_queue.append(prompt.prompt_id)
+        self._append_system(self._render_user_prompt_text(prompt))
+        self._update_status("Waiting input", "user reply needed")
+        self.call_after_refresh(self._present_next_user_prompt_dialog)
+
+    def _present_next_user_prompt_dialog(self) -> None:
+        if self._active_user_prompt_id is not None:
+            return
+        while self._user_prompt_queue:
+            prompt_id = self._user_prompt_queue.pop(0)
+            prompt = self._pending_user_prompts.get(prompt_id)
+            if prompt is None:
+                continue
+            self._active_user_prompt_id = prompt_id
+            self.push_screen(UserPromptDialog(prompt), self._on_user_prompt_closed)
+            return
+
+    def _on_user_prompt_closed(self, answer: str | None) -> None:
+        prompt_id = self._active_user_prompt_id
+        self._active_user_prompt_id = None
+        if prompt_id and answer:
+            self.run_worker(
+                self._submit_user_prompt_answer(prompt_id=prompt_id, answer=answer),
+                name=f"user-prompt:{prompt_id}",
+                group="user-prompts",
+                exclusive=False,
+            )
+        self.call_after_refresh(self._present_next_user_prompt_dialog)
+
+    async def _refresh_pending_user_prompts(self, session_id: str) -> None:
+        try:
+            prompts = await self.api.list_pending_user_prompts(session_id=session_id)
+        except Exception:
+            return
+        active_ids = {prompt.id for prompt in prompts}
+        for prompt_id in list(self._pending_user_prompts.keys()):
+            if prompt_id not in active_ids:
+                self._pending_user_prompts.pop(prompt_id, None)
+        for item in prompts:
+            self._queue_user_prompt(
+                PendingUserPrompt(
+                    prompt_id=item.id,
+                    question=item.question,
+                    choices=list(item.choices),
+                    allow_free_text=bool(item.allow_free_text),
+                    created_at=item.created_at,
+                )
+            )
+
+    async def _submit_user_prompt_answer(self, *, prompt_id: str, answer: str) -> None:
+        self._pending_user_prompts.pop(prompt_id, None)
+        if self._busy:
+            self._append_system("A request is already running. Please wait for the current response.")
+            return
+        if not self._session_id:
+            self._append_error("No active session.")
+            return
+        self._busy = True
+        self._append_user(answer, optimistic=True)
+        self._show_thinking_indicator()
+        self._update_status("Thinking", "sending request")
+        await self._send_message(answer)
+
+    @staticmethod
+    def _render_user_prompt_text(prompt: PendingUserPrompt) -> str:
+        lines = [f"Skitter needs your input:\n{prompt.question}"]
+        if prompt.choices:
+            lines.append("Choices:")
+            lines.extend(f"- {choice}" for choice in prompt.choices)
+        if prompt.allow_free_text or not prompt.choices:
+            lines.append("Reply in chat to continue.")
+        return "\n".join(lines)
 
     async def on_status_update(self, message: StatusUpdate) -> None:
         self._update_status(message.title, message.detail)

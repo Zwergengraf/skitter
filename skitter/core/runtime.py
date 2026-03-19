@@ -18,6 +18,7 @@ from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, System
 from .config import settings
 from .events import EventBus
 from .graph import (
+    UserPromptRequired,
     build_graph,
     current_user_id,
     reset_current_channel_id,
@@ -37,7 +38,7 @@ from .graph import (
     set_current_session_id,
     set_current_user_id,
 )
-from .models import AgentResponse, Attachment, MessageEnvelope, StreamEvent
+from .models import AgentResponse, Attachment, MessageEnvelope, PendingUserPrompt, StreamEvent
 from .llm import ResolvedModel, build_llm, list_models, resolve_model, resolve_model_candidates, resolve_model_name
 from .llm_debug import ThinkingDebugCallback
 from .prompting import build_system_prompt
@@ -65,11 +66,13 @@ class AgentRuntime:
         event_bus: EventBus,
         graph: Optional[object] = None,
         approval_service: ToolApprovalService | None = None,
+        user_prompt_service=None,
         scheduler_service=None,
         job_service=None,
     ) -> None:
         self.event_bus = event_bus
         self._approval_service = approval_service
+        self._user_prompt_service = user_prompt_service
         self._scheduler_service = scheduler_service
         self._job_service = job_service
         self._fixed_graph = graph
@@ -86,6 +89,10 @@ class AgentRuntime:
     def set_job_service(self, job_service) -> None:
         self._job_service = job_service
         # Force graph rebuild so job tools are wired correctly.
+        self._graphs.clear()
+
+    def set_user_prompt_service(self, user_prompt_service) -> None:
+        self._user_prompt_service = user_prompt_service
         self._graphs.clear()
 
     def refresh_model_configuration(self) -> None:
@@ -356,6 +363,7 @@ class AgentRuntime:
         run_total_tokens = 0
         run_cost = 0.0
         run_reasoning: list[str] = []
+        pending_prompt: PendingUserPrompt | None = None
         history_len_before_invoke = 0
         await self._publish_stream_event(
             session_id,
@@ -469,8 +477,9 @@ class AgentRuntime:
                 }
                 try:
                     graph = self._get_graph(candidate_model, purpose=purpose, resolved_model=resolved_model)
+                    invoke_history = self._messages_for_invoke(history, resolved_model.provider_api_type)
                     result = await asyncio.wait_for(
-                        graph.ainvoke({"messages": history}, config=invoke_config),
+                        graph.ainvoke({"messages": invoke_history}, config=invoke_config),
                         timeout=max(1, int(settings.limits_max_runtime_seconds) + 5),
                     )
                     await self._trace_update(run_id, model=candidate_model)
@@ -600,6 +609,49 @@ class AgentRuntime:
                         "model": model_name,
                     },
                 )
+        except UserPromptRequired as exc:
+            messages = list(self._history.get(session_id, []))
+            prompt_display = self._render_user_prompt_display_content(
+                question=exc.question,
+                choices=list(exc.choices),
+                allow_free_text=bool(exc.allow_free_text),
+            )
+            messages.append(
+                SystemMessage(
+                    content=self._render_user_prompt_context_note(
+                        question=exc.question,
+                        choices=list(exc.choices),
+                        allow_free_text=bool(exc.allow_free_text),
+                    ),
+                    additional_kwargs={
+                        "user_prompt_context": True,
+                        "user_prompt": True,
+                        "user_prompt_id": exc.prompt_id,
+                        "user_prompt_choices": list(exc.choices),
+                        "user_prompt_allow_free_text": bool(exc.allow_free_text),
+                    },
+                )
+            )
+            self._history[session_id] = messages
+            run_status = "waiting_for_user"
+            pending_prompt = PendingUserPrompt(
+                prompt_id=exc.prompt_id,
+                question=exc.question,
+                choices=list(exc.choices),
+                allow_free_text=bool(exc.allow_free_text),
+            )
+            response = prompt_display
+            await self._trace_event(
+                run_id=run_id,
+                session_id=session_id,
+                event_type="user_prompt_requested",
+                payload={
+                    "prompt_id": exc.prompt_id,
+                    "question": exc.question,
+                    "choices": list(exc.choices),
+                    "allow_free_text": bool(exc.allow_free_text),
+                },
+            )
         except Exception as exc:
             _logger.exception("Agent runtime failed for session=%s", session_id)
             # Graph execution can fail after partially mutating in-memory history.
@@ -646,15 +698,30 @@ class AgentRuntime:
         await self._publish_stream_event(
             session_id,
             "message_response",
-            {"run_id": run_id, "response": response},
+            {
+                "run_id": run_id,
+                "response": response,
+                "status": run_status,
+                "pending_prompt": {
+                    "prompt_id": pending_prompt.prompt_id,
+                    "question": pending_prompt.question,
+                    "choices": pending_prompt.choices,
+                    "allow_free_text": pending_prompt.allow_free_text,
+                }
+                if pending_prompt is not None
+                else None,
+            },
         )
-        cleaned, attachments = await self._postprocess_response(
-            user_id=internal_user_id,
-            messages=messages,
-            message_id=envelope.message_id,
-            response=response,
-            session_id=session_id,
-        )
+        if pending_prompt is not None:
+            cleaned, attachments = response, []
+        else:
+            cleaned, attachments = await self._postprocess_response(
+                user_id=internal_user_id,
+                messages=messages,
+                message_id=envelope.message_id,
+                response=response,
+                session_id=session_id,
+            )
         if run_limit_reason is None:
             run_limit_reason, run_limit_detail = self._extract_limit_from_response(cleaned)
         if run_status == "running":
@@ -685,7 +752,13 @@ class AgentRuntime:
                 "duration_ms": duration_ms,
             },
         )
-        return AgentResponse(text=cleaned, attachments=attachments, run_id=run_id, reasoning=run_reasoning)
+        return AgentResponse(
+            text=cleaned,
+            attachments=attachments,
+            run_id=run_id,
+            reasoning=run_reasoning,
+            pending_prompt=pending_prompt,
+        )
 
     def clear_history(self, session_id: str) -> None:
         self._history.pop(session_id, None)
@@ -800,6 +873,7 @@ class AgentRuntime:
         if cache_key not in self._graphs:
             self._graphs[cache_key] = build_graph(
                 approval_service=self._approval_service,
+                user_prompt_service=self._user_prompt_service,
                 scheduler_service=self._scheduler_service,
                 job_service=self._job_service,
                 model_name=resolved.name,
@@ -998,6 +1072,65 @@ class AgentRuntime:
                 parts.append(str(item))
             return "\n".join(part for part in parts if part).strip()
         return str(content)
+
+    def _render_user_prompt_display_content(
+        self,
+        *,
+        question: str,
+        choices: list[str] | None,
+        allow_free_text: bool,
+    ) -> str:
+        lines = [str(question or "").strip()]
+        normalized_choices = [str(choice).strip() for choice in (choices or []) if str(choice).strip()]
+        if normalized_choices:
+            lines.append("")
+            lines.append("Choices:")
+            lines.extend(f"- {choice}" for choice in normalized_choices)
+        if allow_free_text:
+            lines.append("")
+            lines.append("The user may also reply with a custom free-text answer.")
+        return "\n".join(lines).strip()
+
+    def _render_user_prompt_context_note(
+        self,
+        *,
+        question: str,
+        choices: list[str] | None,
+        allow_free_text: bool,
+    ) -> str:
+        lines = ["ask_user interaction:"]
+        lines.append(f"Question: {str(question or '').strip()}")
+        normalized_choices = [str(choice).strip() for choice in (choices or []) if str(choice).strip()]
+        if normalized_choices:
+            lines.append("Choices:")
+            lines.extend(f"- {choice}" for choice in normalized_choices)
+        if allow_free_text:
+            lines.append("Custom free-text replies were allowed.")
+        else:
+            lines.append("Only the listed choices were allowed.")
+        return "\n".join(lines).strip()
+
+    def _messages_for_invoke(self, history: list[BaseMessage], provider_api_type: str) -> list[BaseMessage]:
+        prepared = list(history)
+        if provider_api_type != "anthropic":
+            return prepared
+        system_messages = [msg for msg in prepared if isinstance(msg, SystemMessage)]
+        if len(system_messages) <= 1:
+            return prepared
+        combined_parts: list[str] = []
+        combined_meta: dict[str, object] = {}
+        for msg in system_messages:
+            text = self._message_content_to_text(msg.content)
+            if text:
+                combined_parts.append(text)
+            meta = getattr(msg, "additional_kwargs", None) or {}
+            if isinstance(meta, dict):
+                combined_meta.update(meta)
+        combined = "\n\n".join(part for part in combined_parts if part).strip()
+        others = [msg for msg in prepared if not isinstance(msg, SystemMessage)]
+        if combined:
+            return [SystemMessage(content=combined, additional_kwargs=combined_meta), *others]
+        return others
 
     def _exception_text_chain(self, exc: Exception) -> str:
         parts: list[str] = []
@@ -1407,24 +1540,76 @@ Each bullet must be self-contained, explicit, and searchable.
             repo = Repository(session)
             session_record = await repo.get_session(session_id)
             records = await repo.list_messages(session_id)
+            prompts = await repo.list_user_prompts_for_session(session_id)
+        persisted_prompt_ids = {
+            str((record.meta or {}).get("user_prompt_id") or "").strip()
+            for record in records
+            if record.role == "assistant"
+        }
         history: list[BaseMessage] = []
+        timeline: list[tuple[datetime, int, object]] = []
         for record in records:
-            role = record.role
-            content = record.content
-            meta = dict(record.meta or {})
-            meta["_db_message_id"] = record.id
-            meta["_db_created_at"] = record.created_at.isoformat()
-            if role == "user":
-                attachments_meta = meta.get("attachments")
-                if isinstance(attachments_meta, list) and attachments_meta:
-                    blocks = self._build_content_blocks(content, attachments_meta)
-                    history.append(HumanMessage(content_blocks=blocks, additional_kwargs=meta))
+            timeline.append((record.created_at, 0, record))
+        for prompt in prompts:
+            timeline.append((prompt.created_at, 1, prompt))
+        timeline.sort(key=lambda item: (item[0], item[1]))
+        for _, _, item in timeline:
+            if hasattr(item, "role"):
+                record = item
+                role = record.role
+                content = record.content
+                meta = dict(record.meta or {})
+                meta["_db_message_id"] = record.id
+                meta["_db_created_at"] = record.created_at.isoformat()
+                if role == "user":
+                    attachments_meta = meta.get("attachments")
+                    if isinstance(attachments_meta, list) and attachments_meta:
+                        blocks = self._build_content_blocks(content, attachments_meta)
+                        history.append(HumanMessage(content_blocks=blocks, additional_kwargs=meta))
+                    else:
+                        history.append(HumanMessage(content=content, additional_kwargs=meta))
+                elif role == "assistant":
+                    if meta.get("user_prompt"):
+                        history.append(
+                            SystemMessage(
+                                content=self._render_user_prompt_context_note(
+                                    question=str(meta.get("user_prompt_question") or content),
+                                    choices=list(meta.get("user_prompt_choices") or []),
+                                    allow_free_text=bool(meta.get("user_prompt_allow_free_text", True)),
+                                ),
+                                additional_kwargs={**meta, "user_prompt_context": True},
+                            )
+                        )
+                    else:
+                        history.append(AIMessage(content=content, additional_kwargs=meta))
+                elif role == "system":
+                    history.append(SystemMessage(content=content, additional_kwargs=meta))
                 else:
                     history.append(HumanMessage(content=content, additional_kwargs=meta))
-            elif role == "assistant":
-                history.append(AIMessage(content=content, additional_kwargs=meta))
-            elif role == "system":
-                history.append(SystemMessage(content=content, additional_kwargs=meta))
+                continue
+            prompt = item
+            if prompt.id in persisted_prompt_ids:
+                continue
+            prompt_meta = {
+                "user_prompt": True,
+                "user_prompt_id": prompt.id,
+                "user_prompt_choices": list(prompt.choices or []),
+                "user_prompt_allow_free_text": bool(prompt.allow_free_text),
+                "user_prompt_status": prompt.status,
+                "_db_created_at": prompt.created_at.isoformat(),
+            }
+            if prompt.answered_at is not None:
+                prompt_meta["user_prompt_answered_at"] = prompt.answered_at.isoformat()
+            history.append(
+                SystemMessage(
+                    content=self._render_user_prompt_context_note(
+                        question=prompt.question,
+                        choices=list(prompt.choices or []),
+                        allow_free_text=bool(prompt.allow_free_text),
+                    ),
+                    additional_kwargs={**prompt_meta, "user_prompt_context": True},
+                )
+            )
         if session_record and session_record.context_summary:
             checkpoint = session_record.context_summary_checkpoint
             history.insert(

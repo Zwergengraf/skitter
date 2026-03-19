@@ -359,7 +359,7 @@ class Settings(BaseSettings):
     tool_approval_required: bool = Field(default=True)
     tool_approval_tools: str = Field(
         default=(
-            "read,write,edit,list,delete,download,transfer_file,attach_file,"
+            "read,write,edit,apply_patch,list,delete,download,transfer_file,attach_file,"
             "browser,browser_action,sub_agent,sub_agent_batch,job_start,shell,create_secret,mcp_call"
         )
     )

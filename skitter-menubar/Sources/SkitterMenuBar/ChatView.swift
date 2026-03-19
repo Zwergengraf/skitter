@@ -106,6 +106,26 @@ struct ChatView: View {
                 Divider()
             }
 
+            if !state.pendingUserPrompts.isEmpty {
+                VStack(alignment: .leading, spacing: 8) {
+                    HStack {
+                        Label("Reply needed", systemImage: "questionmark.bubble.fill")
+                            .font(.caption.bold())
+                        Spacer()
+                        Text("\(state.pendingUserPrompts.count)")
+                            .font(.caption.monospaced())
+                            .foregroundStyle(.secondary)
+                    }
+                    ForEach(state.pendingUserPrompts, id: \.id) { prompt in
+                        userPromptCard(prompt)
+                    }
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 8)
+                .background(Color.blue.opacity(colorScheme == .dark ? 0.14 : 0.08))
+                Divider()
+            }
+
             if state.shouldShowOnboarding {
                 onboardingNotice()
                 Divider()
@@ -148,6 +168,10 @@ struct ChatView: View {
                 }
                 .onChange(of: state.messages.count) { oldValue, newValue in
                     guard newValue > oldValue else { return }
+                    guard isNearBottom else { return }
+                    scrollToBottom(proxy, animated: false)
+                }
+                .onChange(of: state.pendingUserPrompts.count) { _, _ in
                     guard isNearBottom else { return }
                     scrollToBottom(proxy, animated: false)
                 }
@@ -534,6 +558,50 @@ struct ChatView: View {
     }
 
     @ViewBuilder
+    private func userPromptCard(_ prompt: PendingUserPrompt) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(prompt.question)
+                .font(.callout)
+            Text(promptDetailLine(for: prompt))
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+            if !prompt.choices.isEmpty {
+                VStack(alignment: .leading, spacing: 6) {
+                    ForEach(prompt.choices, id: \.self) { choice in
+                        Button {
+                            Task { await state.answerUserPrompt(id: prompt.id, answer: choice) }
+                        } label: {
+                            Text(truncatedPromptChoice(choice))
+                                .frame(maxWidth: .infinity)
+                        }
+                        .buttonStyle(.borderedProminent)
+                    }
+                }
+            }
+            if prompt.allowFreeText || prompt.choices.isEmpty {
+                Text("Reply in chat below to continue.")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .padding(9)
+        .background(
+            RoundedRectangle(cornerRadius: 8)
+                .fill(panelBackground)
+                .overlay(
+                    RoundedRectangle(cornerRadius: 8)
+                        .stroke(panelStroke, lineWidth: 1)
+                )
+        )
+    }
+
+    private func truncatedPromptChoice(_ choice: String, limit: Int = 24) -> String {
+        guard choice.count > limit else { return choice }
+        let endIndex = choice.index(choice.startIndex, offsetBy: limit)
+        return String(choice[..<endIndex]) + "..."
+    }
+
+    @ViewBuilder
     private func progressMessageRow() -> some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack {
@@ -658,6 +726,11 @@ struct ChatView: View {
         }
         let relative = Self.relativeTimeFormatter.localizedString(for: toolRun.createdAt, relativeTo: Date())
         return "Requested\(who) \(relative)"
+    }
+
+    private func promptDetailLine(for prompt: PendingUserPrompt) -> String {
+        let relative = Self.relativeTimeFormatter.localizedString(for: prompt.createdAt, relativeTo: Date())
+        return "Requested \(relative)"
     }
 
     private func copyToPasteboard(_ text: String) {

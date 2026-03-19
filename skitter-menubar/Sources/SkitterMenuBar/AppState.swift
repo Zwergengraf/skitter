@@ -33,6 +33,7 @@ final class AppState: ObservableObject {
     @Published var draft: String = ""
     @Published private(set) var isSending: Bool = false
     @Published private(set) var pendingToolApprovals: [ToolRunStatus] = []
+    @Published private(set) var pendingUserPrompts: [PendingUserPrompt] = []
     @Published private(set) var decidingToolRunIDs: Set<String> = []
     @Published private(set) var unreadMessageCount: Int = 0
     @Published private(set) var isChatWindowVisible: Bool = false
@@ -135,6 +136,7 @@ final class AppState: ObservableObject {
         activity = .idle
         progressStatusText = ""
         pendingToolApprovals = []
+        pendingUserPrompts = []
         decidingToolRunIDs = []
         unreadMessageCount = 0
         isChatWindowVisible = false
@@ -153,6 +155,7 @@ final class AppState: ObservableObject {
         messages = []
         localOverlayMessages = []
         pendingToolApprovals = []
+        pendingUserPrompts = []
         decidingToolRunIDs = []
         unreadMessageCount = 0
         isSending = false
@@ -189,6 +192,13 @@ final class AppState: ObservableObject {
 
     func denyToolRun(id: String) async {
         await decideToolRun(id: id, approved: false)
+    }
+
+    func answerUserPrompt(id: String, answer: String) async {
+        let trimmed = answer.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        pendingUserPrompts.removeAll { $0.id == id }
+        await send(text: trimmed)
     }
 
     func ensureSession(forceNew: Bool = false, syncWithServer: Bool = false) async throws -> String {
@@ -1316,15 +1326,24 @@ final class AppState: ObservableObject {
                 lastError = error
                 pendingToolApprovals = []
             }
+            do {
+                pendingUserPrompts = try await api.pendingUserPrompts(sessionID: activeSessionID)
+                anySuccess = true
+            } catch {
+                lastError = error
+                pendingUserPrompts = []
+            }
         } else {
             pendingToolApprovals = []
+            pendingUserPrompts = []
         }
 
         let pendingCount = pendingToolApprovals.count
+        let promptCount = pendingUserPrompts.count
         if isSending {
             activity = .thinking
-        } else if pendingCount > 0 {
-            activity = .activeTasks(pendingCount)
+        } else if (pendingCount + promptCount) > 0 {
+            activity = .activeTasks(pendingCount + promptCount)
         } else {
             activity = .idle
         }

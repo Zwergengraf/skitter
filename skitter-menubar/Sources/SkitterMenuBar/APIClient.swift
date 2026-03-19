@@ -206,6 +206,29 @@ struct APIClient {
             }
     }
 
+    func pendingUserPrompts(sessionID: String) async throws -> [PendingUserPrompt] {
+        let payload: [UserPromptPayload] = try await requestJSON(
+            path: "/v1/user-prompts?session_id=\(sessionID)",
+            method: "GET",
+            body: Optional<Int>.none,
+            requiresAPIKey: true
+        )
+        return payload
+            .filter { $0.session_id == sessionID }
+            .sorted(by: { $0.created_at > $1.created_at })
+            .map {
+                PendingUserPrompt(
+                    id: $0.id,
+                    sessionID: $0.session_id,
+                    question: $0.question,
+                    choices: $0.choices,
+                    allowFreeText: $0.allow_free_text,
+                    status: $0.status,
+                    createdAt: parseDate($0.created_at)
+                )
+            }
+    }
+
     func approveToolRun(toolRunID: String, decidedBy: String) async throws {
         let body = ToolApprovalBody(approved_by: decidedBy)
         let _: ToolApprovalResult = try await requestJSON(
@@ -493,6 +516,16 @@ private struct ToolRunPayload: Decodable {
     let created_at: String
     let requested_by: String?
     let input: [String: JSONValue]?
+}
+
+private struct UserPromptPayload: Decodable {
+    let id: String
+    let session_id: String
+    let question: String
+    let choices: [String]
+    let allow_free_text: Bool
+    let status: String
+    let created_at: String
 }
 
 private struct ModelPayload: Decodable {

@@ -2,13 +2,13 @@ from __future__ import annotations
 
 import asyncio
 import os
-from pathlib import Path
-import shutil
 import base64
 import json
 import mimetypes
-from typing import Any, Dict
 from contextlib import asynccontextmanager
+from pathlib import Path
+import shutil
+from typing import Any, Dict
 from urllib.parse import urlparse
 
 import httpx
@@ -183,6 +183,18 @@ def create_app() -> FastAPI:
 
     def _payload_path(payload: Dict[str, Any]) -> str:
         return payload.get("path") or payload.get("file_path") or ""
+
+    def _detect_patch_strip_count(patch_text: str) -> int:
+        for raw_line in patch_text.splitlines():
+            if raw_line.startswith("--- ") or raw_line.startswith("+++ "):
+                candidate = raw_line[4:].strip()
+                if not candidate or candidate == "/dev/null":
+                    continue
+                header_path = candidate.split("\t", 1)[0].strip()
+                if header_path.startswith(("a/", "b/")):
+                    return 1
+                return 0
+        return 0
 
     def _workspace_response_path(target: Path) -> str:
         try:
@@ -414,6 +426,48 @@ def create_app() -> FastAPI:
                     target.unlink()
                 return {"status": "ok", "deleted": True}
             raise HTTPException(status_code=400, detail="Unknown filesystem tool")
+
+        if req.tool == "apply_patch":
+            patch_text = req.payload.get("patch")
+            if patch_text is None or str(patch_text).strip() == "":
+                raise HTTPException(status_code=400, detail="patch is required")
+            cwd = req.payload.get("cwd", "")
+            working_dir = safe_path(cwd) if cwd else workspace_root
+            if not working_dir.exists():
+                raise HTTPException(status_code=404, detail="cwd not found")
+            if not working_dir.is_dir():
+                raise HTTPException(status_code=400, detail="cwd is not a directory")
+            strip_count = _detect_patch_strip_count(str(patch_text))
+            argv = [
+                "patch",
+                "--batch",
+                "--forward",
+                "--reject-file=-",
+                f"-p{strip_count}",
+            ]
+            try:
+                proc = await asyncio.create_subprocess_exec(
+                    *argv,
+                    cwd=str(working_dir),
+                    stdin=asyncio.subprocess.PIPE,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                )
+            except FileNotFoundError as exc:
+                raise HTTPException(status_code=503, detail="patch command is not available on this executor") from exc
+            stdout, stderr = await proc.communicate(str(patch_text).encode("utf-8"))
+
+            def _trim_patch_output(data: bytes) -> str:
+                return data.decode("utf-8", errors="replace")[:12000]
+
+            return {
+                "status": "ok" if proc.returncode == 0 else "error",
+                "exit_code": proc.returncode,
+                "stdout": _trim_patch_output(stdout),
+                "stderr": _trim_patch_output(stderr),
+                "cwd": _workspace_response_path(working_dir),
+                "strip": strip_count,
+            }
 
         if req.tool == "http_fetch":
             url = req.payload.get("url")

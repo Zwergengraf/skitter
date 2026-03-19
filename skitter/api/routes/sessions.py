@@ -15,6 +15,7 @@ from ..schemas import (
     SessionMessageOut,
     SessionOut,
     SessionToolRunOut,
+    SessionUserPromptOut,
 )
 from ...core.llm import list_models, resolve_model_name
 from ...core.config import settings
@@ -185,6 +186,7 @@ async def get_session_detail(session_id: str, request: Request, repo: Repository
     user = await repo.get_user_by_id(session.user_id)
     messages = await repo.list_messages(session_id)
     tool_runs = await repo.list_tool_runs_by_session(session_id)
+    pending_user_prompts = await repo.list_pending_user_prompts(session_id=session_id, limit=20)
     last_active_at = messages[-1].created_at if messages else None
     return SessionDetailOut(
         id=session.id,
@@ -227,6 +229,17 @@ async def get_session_detail(session_id: str, request: Request, repo: Repository
                 created_at=tool_run.created_at,
             )
             for tool_run in tool_runs
+        ],
+        pending_user_prompts=[
+            SessionUserPromptOut(
+                id=prompt.id,
+                question=prompt.question,
+                choices=list(prompt.choices or []),
+                allow_free_text=bool(prompt.allow_free_text),
+                status=prompt.status,
+                created_at=prompt.created_at,
+            )
+            for prompt in pending_user_prompts
         ],
     )
 

@@ -7,6 +7,8 @@ from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, Tool
 
 from skitter.core.config import settings
 from skitter.core.events import EventBus
+from skitter.core.graph import UserPromptRequired
+from skitter.core.models import MessageEnvelope
 from skitter.core.runtime import AgentRuntime
 
 
@@ -140,6 +142,25 @@ def test_model_bad_request_detection() -> None:
     assert runtime._is_model_bad_request(Exception("network timeout")) is False
 
 
+def test_messages_for_invoke_merges_non_consecutive_system_messages_for_anthropic() -> None:
+    runtime = _runtime()
+    history = [
+        SystemMessage(content="Main system prompt", additional_kwargs={"system_prompt": True}),
+        HumanMessage(content="First question"),
+        SystemMessage(content="ask_user interaction:\nQuestion: Pick one", additional_kwargs={"user_prompt_context": True}),
+        AIMessage(content="Assistant reply"),
+    ]
+
+    prepared = runtime._messages_for_invoke(history, "anthropic")
+
+    assert len([msg for msg in prepared if isinstance(msg, SystemMessage)]) == 1
+    assert isinstance(prepared[0], SystemMessage)
+    assert "Main system prompt" in prepared[0].content
+    assert "ask_user interaction" in prepared[0].content
+    assert isinstance(prepared[1], HumanMessage)
+    assert isinstance(prepared[2], AIMessage)
+
+
 class _ApiStatusError(Exception):
     def __init__(self, status_code: int) -> None:
         super().__init__(f"status={status_code}")
@@ -234,3 +255,83 @@ async def test_summarize_session_uses_previous_summary_and_skips_tool_chatter(
     assert "mcp_list_tools" not in final_human
     assert "boards.list" not in final_human
     assert "Old message already summarized" not in final_human
+
+
+class _PromptGraph:
+    async def ainvoke(self, *_args, **_kwargs):
+        raise UserPromptRequired(
+            prompt_id="prompt-1",
+            question="Which machine should I use?",
+            choices=["docker", "macbook"],
+            allow_free_text=True,
+        )
+
+
+@pytest.mark.asyncio
+async def test_handle_message_returns_pending_prompt_when_ask_user_is_triggered(monkeypatch) -> None:
+    runtime = AgentRuntime(event_bus=EventBus(), graph=_PromptGraph())
+
+    async def _fake_ensure_history(session_id: str) -> None:
+        runtime._history.setdefault(session_id, [SystemMessage(content="system")])
+
+    async def _noop_async(*_args, **_kwargs) -> None:
+        return None
+
+    async def _fake_get_session_model(_session_id: str, _envelope) -> str:
+        return "provider/main"
+
+    monkeypatch.setattr("skitter.core.runtime.list_models", lambda: [object()])
+    monkeypatch.setattr("skitter.core.runtime.resolve_model_name", lambda _value=None, purpose="main": "provider/main")
+    monkeypatch.setattr("skitter.core.runtime.resolve_model_candidates", lambda _value, purpose="main": ["provider/main"])
+    monkeypatch.setattr(
+        "skitter.core.runtime.resolve_model",
+        lambda _value, purpose="main": type(
+            "Resolved",
+            (),
+            {
+                "input_cost_per_1m": 0.0,
+                "output_cost_per_1m": 0.0,
+                "provider_api_type": "openai",
+            },
+        )(),
+    )
+    monkeypatch.setattr(runtime, "_ensure_history", _fake_ensure_history)
+    monkeypatch.setattr(runtime, "_get_session_model", _fake_get_session_model)
+    monkeypatch.setattr(runtime, "_ensure_system_prompt", lambda history, _user_id: None)
+    monkeypatch.setattr(runtime, "_compact_history_for_context", _noop_async)
+    monkeypatch.setattr(runtime, "_trace_create", _noop_async)
+    monkeypatch.setattr(runtime, "_trace_update", _noop_async)
+    monkeypatch.setattr(runtime, "_trace_event", _noop_async)
+
+    envelope = MessageEnvelope(
+        message_id="msg-1",
+        channel_id="chan-1",
+        user_id="user-1",
+        timestamp=datetime.now(UTC),
+        text="Please continue.",
+        origin="tui",
+        metadata={"internal_user_id": "user-1"},
+    )
+
+    response = await runtime.handle_message("session-1", envelope)
+
+    assert response.text == (
+        "Which machine should I use?\n\n"
+        "Choices:\n"
+        "- docker\n"
+        "- macbook\n\n"
+        "The user may also reply with a custom free-text answer."
+    )
+    assert response.pending_prompt is not None
+    assert response.pending_prompt.prompt_id == "prompt-1"
+    assert response.pending_prompt.question == "Which machine should I use?"
+    assert response.pending_prompt.choices == ["docker", "macbook"]
+    assert isinstance(runtime._history["session-1"][-1], SystemMessage)
+    assert runtime._history["session-1"][-1].content == (
+        "ask_user interaction:\n"
+        "Question: Which machine should I use?\n"
+        "Choices:\n"
+        "- docker\n"
+        "- macbook\n"
+        "Custom free-text replies were allowed."
+    )

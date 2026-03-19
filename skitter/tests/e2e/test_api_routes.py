@@ -11,6 +11,7 @@ from fastapi.testclient import TestClient
 from skitter.api.app import create_app
 from skitter.api.deps import get_repo
 from skitter.api.routes import commands as commands_routes
+from skitter.core.models import AgentResponse, PendingUserPrompt
 from skitter.core.config import ModelConfig, ProviderConfig, settings
 
 
@@ -56,6 +57,12 @@ def _client_with_repo(repo: Any) -> TestClient:
     app = create_app()
     app.dependency_overrides[get_repo] = lambda: repo
     return TestClient(app)
+
+
+def _app_with_repo(repo: Any):
+    app = create_app()
+    app.dependency_overrides[get_repo] = lambda: repo
+    return app
 
 
 @dataclass
@@ -260,6 +267,101 @@ class _CommandsRepo:
         return self.session
 
 
+@dataclass
+class _PromptRow:
+    id: str
+    session_id: str
+    question: str
+    choices: list[str]
+    allow_free_text: bool
+    status: str
+    created_at: datetime
+
+
+@dataclass
+class _UserSessionRow:
+    id: str
+    user_id: str
+    origin: str
+    scope_type: str
+    scope_id: str
+
+
+@dataclass
+class _ApprovedUser:
+    id: str
+    approved: bool
+    meta: dict[str, Any]
+
+
+class _PromptRepo:
+    def __init__(self) -> None:
+        self.session = _UserSessionRow(
+            id="session-1",
+            user_id="user-1",
+            origin="tui",
+            scope_type="private",
+            scope_id="private:user-1",
+        )
+        self.user = _ApprovedUser(id="user-1", approved=True, meta={})
+        self.prompts = [
+            _PromptRow(
+                id="prompt-1",
+                session_id="session-1",
+                question="Which machine should I use?",
+                choices=["docker", "macbook"],
+                allow_free_text=True,
+                status="pending",
+                created_at=datetime.now(UTC),
+            )
+        ]
+        self.messages: list[tuple[str, str, str, dict[str, Any] | None]] = []
+
+    async def get_session(self, session_id: str) -> _UserSessionRow | None:
+        return self.session if session_id == self.session.id else None
+
+    async def get_user_by_id(self, user_id: str) -> _ApprovedUser | None:
+        return self.user if user_id == self.user.id else None
+
+    async def set_user_meta(self, user_id: str, updates: dict[str, Any]):
+        _ = user_id
+        self.user.meta.update(updates)
+        return self.user
+
+    async def list_pending_user_prompts(self, *, session_id: str | None = None, user_id: str | None = None, limit: int = 50):
+        _ = user_id, limit
+        if session_id and session_id != self.session.id:
+            return []
+        return [prompt for prompt in self.prompts if prompt.status == "pending"]
+
+    async def answer_pending_user_prompt_for_session(
+        self,
+        session_id: str,
+        *,
+        answer: str,
+        answered_by: str | None = None,
+    ):
+        _ = answered_by
+        if session_id != self.session.id:
+            return None
+        for prompt in self.prompts:
+            if prompt.status == "pending":
+                prompt.status = "answered"
+                return prompt
+        return None
+
+    async def add_message(self, session_id: str, role: str, content: str, metadata: dict | None = None):
+        self.messages.append((session_id, role, content, metadata))
+        return SimpleNamespace(
+            id=f"msg-{len(self.messages)}",
+            session_id=session_id,
+            role=role,
+            content=content,
+            created_at=datetime.now(UTC),
+            meta=metadata or {},
+        )
+
+
 def test_runs_routes_require_auth_and_return_detail(admin_api_key: str) -> None:
     repo = _RunsRepo()
     with _client_with_repo(repo) as client:
@@ -369,3 +471,74 @@ def test_commands_reject_unapproved_user(admin_api_key: str) -> None:
         )
     assert response.status_code == 403
     assert "not yet approved" in response.json()["detail"].lower()
+
+
+def test_user_prompts_route_lists_pending_prompts(admin_api_key: str) -> None:
+    repo = _PromptRepo()
+    with _client_with_repo(repo) as client:
+        response = client.get(
+            "/v1/user-prompts",
+            headers={"x-api-key": admin_api_key},
+            params={"session_id": "session-1"},
+        )
+    assert response.status_code == 200
+    payload = response.json()
+    assert len(payload) == 1
+    assert payload[0]["id"] == "prompt-1"
+    assert payload[0]["question"] == "Which machine should I use?"
+
+
+def test_send_message_persists_assistant_prompt_when_runtime_requests_user_input(admin_api_key: str) -> None:
+    repo = _PromptRepo()
+    app = _app_with_repo(repo)
+
+    class _RuntimeStub:
+        async def handle_message(self, session_id: str, envelope):
+            assert session_id == "session-1"
+            assert envelope.text == "Use the macbook."
+            return AgentResponse(
+                text="Anything else?\n\nThe user may also reply with a custom free-text answer.",
+                run_id="run-1",
+                pending_prompt=PendingUserPrompt(
+                    prompt_id="prompt-2",
+                    question="Anything else?",
+                    choices=[],
+                    allow_free_text=True,
+                ),
+            )
+
+    app.state.runtime = _RuntimeStub()
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/v1/messages",
+            headers={"x-api-key": admin_api_key},
+            json={
+                "session_id": "session-1",
+                "user_id": "user-1",
+                "text": "Use the macbook.",
+                "metadata": {},
+            },
+        )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["id"] == "msg-2"
+    assert payload["content"] == "Anything else?\n\nThe user may also reply with a custom free-text answer."
+    assert repo.prompts[0].status == "answered"
+    assert len(repo.messages) == 2
+    session_id, role, content, metadata = repo.messages[0]
+    assert session_id == "session-1"
+    assert role == "user"
+    assert content == "Use the macbook."
+    assert metadata is not None
+    assert metadata["answered_prompt_id"] == "prompt-1"
+    session_id, role, content, metadata = repo.messages[1]
+    assert session_id == "session-1"
+    assert role == "assistant"
+    assert content == "Anything else?\n\nThe user may also reply with a custom free-text answer."
+    assert metadata is not None
+    assert metadata["user_prompt"] is True
+    assert metadata["user_prompt_id"] == "prompt-2"
+    assert metadata["user_prompt_question"] == "Anything else?"
+    assert metadata["user_prompt_choices"] == []

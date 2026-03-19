@@ -41,6 +41,22 @@ from .web_search import WebSearchConfigError, WebSearchError, search_web
 _logger = logging.getLogger(__name__)
 
 
+class UserPromptRequired(Exception):
+    def __init__(
+        self,
+        *,
+        prompt_id: str,
+        question: str,
+        choices: list[str] | None = None,
+        allow_free_text: bool = True,
+    ) -> None:
+        super().__init__("user input required")
+        self.prompt_id = prompt_id
+        self.question = question
+        self.choices = list(choices or [])
+        self.allow_free_text = allow_free_text
+
+
 _CURRENT_SESSION_ID: ContextVar[str] = ContextVar("skitter_session_id", default="default")
 _CURRENT_CHANNEL_ID: ContextVar[str] = ContextVar("skitter_channel_id", default="default")
 _CURRENT_USER_ID: ContextVar[str] = ContextVar("skitter_user_id", default="default")
@@ -195,6 +211,7 @@ async def _maybe_approve(
 
 def build_graph(
     approval_service: ToolApprovalService | None = None,
+    user_prompt_service=None,
     scheduler_service: SchedulerService | None = None,
     job_service=None,
     model_name: str | None = None,
@@ -766,6 +783,38 @@ def build_graph(
             decision.tool_run_id,
             payload,
             target_machine=machine,
+        )
+        if error:
+            return error
+        return json.dumps(result)
+
+    @tool("apply_patch")
+    async def apply_patch(
+        patch: str,
+        cwd: Optional[str] = None,
+        target_machine: Optional[str] = None,
+    ) -> str:
+        """Apply a standard unified diff patch. Prefer plain relative paths or standard a/... and b/... diff paths. Relative paths resolve from cwd (or workspace root if cwd is omitted). Absolute paths inside the diff are treated as literal sandbox paths."""
+        patch_text = str(patch or "")
+        if not patch_text.strip():
+            return await _fail_untracked_call("apply_patch", {"cwd": cwd}, "apply_patch error: patch is required")
+        payload: dict[str, Any] = {"patch": patch_text}
+        if cwd:
+            payload["cwd"] = cwd
+        machine = _normalize_target_machine(target_machine)
+        approval_payload = _with_target_machine(payload, machine)
+        budget_message = await _enforce_tool_budget("apply_patch", approval_payload)
+        if budget_message:
+            return budget_message
+        decision = await _maybe_approve("apply_patch", approval_payload, approval_service, policy)
+        if not decision.approved:
+            return _denied_message("apply_patch")
+        result, error = await _execute_sandbox_tool(
+            "apply_patch",
+            decision.tool_run_id,
+            payload,
+            target_machine=machine,
+            timeout=120,
         )
         if error:
             return error
@@ -1405,6 +1454,81 @@ def build_graph(
         await _complete_tool_run(tool_run_id, "completed", output)
         return json.dumps(output)
 
+    @tool("ask_user")
+    async def ask_user(
+        question: str,
+        choices: list[str] | None = None,
+        allow_free_text: bool = True,
+    ) -> str:
+        """Ask the user one short clarifying question and pause the current run.
+
+        Use this only when a meaningful user decision is required before you can continue.
+        Keep the question concise. Prefer 2-4 short choices when the decision is bounded.
+        Keep each choice label short when possible; transports may truncate button labels longer than about 24 characters.
+        If the user did not explicitly ask for a specific model, executor, or option, prefer making a reasonable choice instead of using this tool.
+        """
+        normalized_question = str(question or "").strip()
+        normalized_choices = [str(item).strip() for item in (choices or []) if str(item).strip()]
+        payload: dict[str, Any] = {
+            "question": normalized_question,
+            "choices": normalized_choices,
+            "allow_free_text": bool(allow_free_text),
+        }
+        budget_message = await _enforce_tool_budget("ask_user", payload)
+        if budget_message:
+            return budget_message
+        if _origin() in {"heartbeat", "scheduler"} or (_run_id() or "").startswith("job:"):
+            return await _fail_untracked_call(
+                "ask_user",
+                payload,
+                "ask_user error: unavailable in background or system-triggered runs",
+            )
+        if user_prompt_service is None:
+            return await _fail_untracked_call("ask_user", payload, "ask_user error: prompt service unavailable")
+        if not normalized_question:
+            return await _fail_untracked_call("ask_user", payload, "ask_user error: question is required")
+        if len(normalized_choices) > 4:
+            return await _fail_untracked_call(
+                "ask_user",
+                payload,
+                "ask_user error: choices must contain at most 4 items",
+            )
+        async with SessionLocal() as session:
+            repo = Repository(session)
+            existing = await repo.get_pending_user_prompt_for_session(_session_id())
+        if existing is not None:
+            return await _fail_untracked_call(
+                "ask_user",
+                payload,
+                "ask_user error: another user prompt is already pending in this session",
+            )
+        tool_run_id = await _create_auto_tool_run("ask_user", payload)
+        prompt_request = await user_prompt_service.request(
+            session_id=_session_id(),
+            channel_id=_channel_id(),
+            question=normalized_question,
+            choices=normalized_choices,
+            allow_free_text=bool(allow_free_text),
+            run_id=_run_id() or None,
+            message_id=_message_id() or None,
+        )
+        await _complete_tool_run(
+            tool_run_id,
+            "completed",
+            {
+                "prompt_id": prompt_request.prompt_id,
+                "question": prompt_request.question,
+                "choices": list(prompt_request.choices),
+                "allow_free_text": bool(prompt_request.allow_free_text),
+            },
+        )
+        raise UserPromptRequired(
+            prompt_id=prompt_request.prompt_id,
+            question=prompt_request.question,
+            choices=list(prompt_request.choices),
+            allow_free_text=bool(prompt_request.allow_free_text),
+        )
+
     @tool("mcp_list_tools")
     async def mcp_list_tools(server_name: str | None = None) -> str:
         """List tools from configured and enabled MCP servers."""
@@ -1976,6 +2100,7 @@ def build_graph(
         read,
         write,
         edit,
+        apply_patch,
         list_files,
         delete,
         download,
@@ -1990,6 +2115,7 @@ def build_graph(
         create_secret,
         list_secrets,
         model_list,
+        ask_user,
         mcp_list_tools,
         mcp_call,
         memory_search,
@@ -2004,12 +2130,12 @@ def build_graph(
         tools.extend([job_start, job_status, job_list, job_cancel, sub_agent, sub_agent_batch])
 
     def _should_retry_tool_exception(exc: Exception) -> bool:
-        # Cancellation must short-circuit immediately; do not retry cancelled tool calls.
-        return not isinstance(exc, RunCancelledError)
+        # Cancellation and explicit user-input requests must short-circuit immediately.
+        return not isinstance(exc, (RunCancelledError, UserPromptRequired))
 
     def _tool_retry_on_failure(exc: Exception) -> str:
-        # Raise cancellation through the graph so job runs terminate promptly.
-        if isinstance(exc, RunCancelledError):
+        # Raise cancellation/user-input control flow through the graph untouched.
+        if isinstance(exc, (RunCancelledError, UserPromptRequired)):
             raise exc
         error_text = str(exc).strip()
         lowered = error_text.lower()

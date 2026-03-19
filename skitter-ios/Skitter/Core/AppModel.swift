@@ -10,6 +10,7 @@ final class AppModel: ObservableObject {
     @Published private(set) var sessionID: String?
     @Published private(set) var messages: [ChatMessage] = []
     @Published private(set) var pendingApprovals: [ToolRunStatus] = []
+    @Published private(set) var pendingPrompts: [PendingUserPrompt] = []
     @Published private(set) var availableModels: [String] = []
     @Published private(set) var modelName: String = "default"
     @Published private(set) var contextTokens: Int = 0
@@ -181,6 +182,7 @@ final class AppModel: ObservableObject {
         sessionID = nil
         messages = []
         pendingApprovals = []
+        pendingPrompts = []
         availableModels = []
         modelName = "default"
         contextTokens = 0
@@ -248,6 +250,7 @@ final class AppModel: ObservableObject {
             sessionID = nil
             messages = []
             pendingApprovals = []
+            pendingPrompts = []
             didPrimeMessageBaseline = false
             _ = try await ensureSession(forceNew: false)
             await refreshState(showErrors: true)
@@ -277,16 +280,18 @@ final class AppModel: ObservableObject {
             async let snapshot = apiClient.sessionSnapshot(config: config, sessionID: id)
             async let detail = apiClient.sessionDetail(config: config, sessionID: id)
             async let approvals = apiClient.pendingToolRuns(config: config, sessionID: id)
+            async let prompts = apiClient.pendingUserPrompts(config: config, sessionID: id)
 
             let snapshotValue = try await snapshot
             let detailValue = try await detail
             let approvalValue = try await approvals
+            let promptValue = try await prompts
             if currentUser == nil {
                 let user = try await apiClient.authMe(config: config)
                 currentUser = user
             }
 
-            apply(snapshot: snapshotValue, messages: detailValue, approvals: approvalValue)
+            apply(snapshot: snapshotValue, messages: detailValue, approvals: approvalValue, prompts: promptValue)
             if shouldRefreshModels() {
                 availableModels = try await apiClient.listModelNames(config: config)
                 lastModelRefreshAt = Date()
@@ -348,6 +353,13 @@ final class AppModel: ObservableObject {
         } catch {
             errorText = error.localizedDescription
         }
+    }
+
+    func answer(_ prompt: PendingUserPrompt, with answer: String) async {
+        let trimmed = answer.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        pendingPrompts.removeAll { $0.id == prompt.id }
+        await send(text: trimmed)
     }
 
     func resolvedAttachmentURL(_ attachment: MessageAttachment) -> URL? {
@@ -473,6 +485,7 @@ final class AppModel: ObservableObject {
                 sessionID = nil
                 messages = []
                 pendingApprovals = []
+                pendingPrompts = []
                 didPrimeMessageBaseline = false
             }
             await refreshState(showErrors: true)
@@ -486,7 +499,12 @@ final class AppModel: ObservableObject {
         messages.append(.local(id: "local-\(UUID().uuidString)", role: .system, content: text))
     }
 
-    private func apply(snapshot: SessionSnapshot, messages newMessages: [ChatMessage], approvals: [ToolRunStatus]) {
+    private func apply(
+        snapshot: SessionSnapshot,
+        messages newMessages: [ChatMessage],
+        approvals: [ToolRunStatus],
+        prompts: [PendingUserPrompt]
+    ) {
         contextTokens = snapshot.contextTokens
         totalTokens = snapshot.totalTokens
         sessionCost = snapshot.totalCost
@@ -495,6 +513,7 @@ final class AppModel: ObservableObject {
         let previousAssistantIDs = Set(messages.filter { $0.role == .assistant }.map(\.id))
         messages = newMessages
         pendingApprovals = approvals
+        pendingPrompts = prompts
 
         if didPrimeMessageBaseline {
             let newAssistantMessages = newMessages.filter {
@@ -523,14 +542,14 @@ final class AppModel: ObservableObject {
     }
 
     private func updateBadgeCount() {
-        notificationManager.updateBadgeCount(unreadCount + pendingApprovals.count)
+        notificationManager.updateBadgeCount(unreadCount + pendingApprovals.count + pendingPrompts.count)
     }
 
     private func recalculateActivity() {
         if isSending || isRefreshing {
             activity = .thinking
-        } else if !pendingApprovals.isEmpty {
-            activity = .activeTasks(pendingApprovals.count)
+        } else if !pendingApprovals.isEmpty || !pendingPrompts.isEmpty {
+            activity = .activeTasks(pendingApprovals.count + pendingPrompts.count)
         } else {
             activity = .idle
         }

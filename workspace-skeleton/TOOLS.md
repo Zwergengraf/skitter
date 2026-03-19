@@ -8,6 +8,13 @@ Skills define _how_ tools work. This file is for _your_ specifics — the stuff 
 - Relative paths in tools/shell are resolved from `{{WORKSPACE_ROOT}}`
 - Absolute paths are treated as literal Linux paths
 
+## File Editing Notes
+
+- Prefer `apply_patch` for normal code edits, especially when changing multiple lines or files.
+- Use standard unified diff format.
+- Prefer relative paths in diffs, or standard `a/...` and `b/...` diff paths.
+- Use `edit` for tiny exact string replacements only.
+
 ---
 
 ## Browser Tool Notes
@@ -65,6 +72,34 @@ Skills define _how_ tools work. This file is for _your_ specifics — the stuff 
   - clear task
   - useful context
   - concrete acceptance criteria
+
+---
+
+## Ask User Notes
+
+- `ask_user` pauses the current run and waits for the human to answer in chat.
+- Use it only when you are blocked by a real decision or missing requirement.
+- Keep the question short and concrete.
+- Prefer 2-4 short choices when the decision is bounded.
+- Keep each choice label short when possible. Transport UIs may truncate button labels longer than about 24 characters.
+- Do **not** use it for routine choices you can make yourself.
+- Do **not** use it in background/system work:
+  - heartbeats
+  - scheduled jobs
+  - background jobs
+
+### When To Use `ask_user`
+
+- A meaningful choice changes the outcome
+- You are missing critical input
+- There are several valid paths with non-obvious consequences
+
+### When Not To Use `ask_user`
+
+- You can discover the answer with tools
+- A reasonable default is obvious
+- The user already implied a preference
+- The work is running asynchronously in the background
 
 ---
 

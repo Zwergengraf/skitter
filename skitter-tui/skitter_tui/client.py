@@ -46,6 +46,17 @@ class ToolRun:
     output: dict[str, Any]
 
 
+@dataclass(slots=True)
+class UserPrompt:
+    id: str
+    session_id: str
+    question: str
+    choices: list[str]
+    allow_free_text: bool
+    status: str
+    created_at: str
+
+
 class SkitterApiClient:
     def __init__(self, api_url: str, api_key: str | None = None, timeout: float = 180.0) -> None:
         base = api_url.rstrip("/")
@@ -223,6 +234,36 @@ class SkitterApiClient:
                     approved_by=str(item.get("approved_by") or "").strip() or None,
                     input=item.get("input") if isinstance(item.get("input"), dict) else {},
                     output=item.get("output") if isinstance(item.get("output"), dict) else {},
+                )
+            )
+        items.sort(key=lambda row: row.created_at)
+        return items
+
+    async def list_pending_user_prompts(self, *, session_id: str) -> list[UserPrompt]:
+        response = await self._request(
+            "GET",
+            f"/v1/user-prompts?session_id={session_id}",
+            requires_auth=True,
+        )
+        payload = response.json()
+        if not isinstance(payload, list):
+            raise ApiError("Invalid /v1/user-prompts response payload")
+        items: list[UserPrompt] = []
+        for item in payload:
+            if not isinstance(item, dict):
+                continue
+            prompt_id = str(item.get("id") or "").strip()
+            if not prompt_id:
+                continue
+            items.append(
+                UserPrompt(
+                    id=prompt_id,
+                    session_id=str(item.get("session_id") or session_id),
+                    question=str(item.get("question") or "").strip(),
+                    choices=[str(choice).strip() for choice in (item.get("choices") or []) if str(choice).strip()],
+                    allow_free_text=bool(item.get("allow_free_text", True)),
+                    status=str(item.get("status") or ""),
+                    created_at=str(item.get("created_at") or ""),
                 )
             )
         items.sort(key=lambda row: row.created_at)

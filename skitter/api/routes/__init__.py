@@ -18,6 +18,7 @@ from . import (
     sessions,
     skills,
     tools,
+    user_prompts,
     users,
 )
 
@@ -36,6 +37,7 @@ __all__ = [
     "skills",
     "secrets",
     "tools",
+    "user_prompts",
     "runs",
     "users",
     "sandbox",

@@ -18,7 +18,7 @@ from .core.heartbeat import HeartbeatService
 from .core.jobs import JobService
 from .core.conversation_scope import resolve_conversation_scope
 from .core.config import SECRETS_APPROVAL_BYPASS_MAGIC, settings
-from .core.models import StreamEvent
+from .core.models import MessageEnvelope, StreamEvent
 from .core.sessions import SessionManager
 from .data.db import SessionLocal
 from .data.repositories import Repository
@@ -68,6 +68,7 @@ async def main() -> None:
     app = create_app()
     runtime: AgentRuntime = app.state.runtime
     approval_service = app.state.approval_service
+    user_prompt_service = app.state.user_prompt_service
     scheduler: SchedulerService = app.state.scheduler_service
     heartbeat_service = HeartbeatService(runtime)
     job_service = JobService(
@@ -98,6 +99,7 @@ async def main() -> None:
         transport_by_origin["discord"] = discord_transport
         approval_service.set_notifier(discord_transport.send_approval_request)
         discord_transport.set_approval_service(approval_service)
+        user_prompt_service.set_notifier(discord_transport.send_user_prompt_request)
         app.state.user_notifier = discord_transport.send_user_message
 
     async def _deliver(origin: str, destination_id: str, text: str, attachments: list) -> None:
@@ -195,11 +197,19 @@ async def main() -> None:
                 envelope.metadata["attachments"] = attachments_meta
         return metadata
 
-    async def _persist_user_message(session_id: str, envelope, internal_user_id: str) -> None:
+    async def _persist_user_message(session_id: str, envelope, internal_user_id: str):
         metadata = _build_message_metadata(envelope, internal_user_id)
         async with SessionLocal() as session:
             repo = Repository(session)
+            answered_prompt = await repo.answer_pending_user_prompt_for_session(
+                session_id,
+                answer=envelope.text,
+                answered_by=internal_user_id,
+            )
+            if answered_prompt is not None:
+                metadata["answered_prompt_id"] = answered_prompt.id
             await repo.add_message(session_id, role="user", content=envelope.text, metadata=metadata)
+        return answered_prompt
 
     async def _persist_assistant_message(
         session_id: str,
@@ -208,12 +218,15 @@ async def main() -> None:
         run_id: str | None = None,
         reasoning: list[str] | None = None,
         attachments: list | None = None,
+        extra_metadata: dict[str, object] | None = None,
     ) -> None:
         metadata: dict[str, object] = {"response_to": response_to}
         if run_id:
             metadata["run_id"] = run_id
         if reasoning:
             metadata["reasoning"] = reasoning
+        if extra_metadata:
+            metadata.update(extra_metadata)
         if attachments:
             serialized = _serialize_attachments(attachments)
             if serialized:
@@ -226,6 +239,32 @@ async def main() -> None:
                 content=response_text,
                 metadata=metadata,
             )
+
+    async def _submit_prompt_reply(
+        prompt_id: str,
+        answer: str,
+        transport_user_id: str,
+        channel_id: str,
+    ) -> None:
+        async with SessionLocal() as session:
+            repo = Repository(session)
+            prompt = await repo.get_user_prompt(prompt_id)
+            if prompt is None or prompt.status != "pending":
+                return
+            prompt_session = await repo.get_session(prompt.session_id)
+            user = await repo.get_user_by_transport_id(transport_user_id)
+            if prompt_session is None or user is None or user.id != prompt_session.user_id or not user.approved:
+                return
+        envelope = MessageEnvelope(
+            message_id=f"prompt:{prompt_id}:{int(datetime.now(UTC).timestamp() * 1000)}",
+            channel_id=channel_id,
+            user_id=transport_user_id,
+            timestamp=datetime.now(UTC),
+            text=answer,
+            origin="discord",
+            metadata={},
+        )
+        await handler(envelope)
 
     async def _resolve_internal_user_id(envelope, transport) -> str | None:
         if envelope.origin != "discord":
@@ -578,14 +617,26 @@ async def main() -> None:
         )
 
         progress_stop, progress_task = await _start_progress_tracking(envelope, transport, session_id)
-        await _persist_user_message(session_id, envelope, internal_user_id)
+        answered_prompt = await _persist_user_message(session_id, envelope, internal_user_id)
+        if answered_prompt is not None and isinstance(transport, DiscordTransport):
+            await transport.clear_user_prompt(answered_prompt.id)
 
         try:
             response = await runtime.handle_message(session_id, envelope)
         finally:
             await _stop_progress_tracking(progress_stop, progress_task)
-        if response.text or response.attachments:
+        prompt_metadata: dict[str, object] | None = None
+        if response.pending_prompt is not None:
+            prompt_metadata = {
+                "user_prompt": True,
+                "user_prompt_id": response.pending_prompt.prompt_id,
+                "user_prompt_question": response.pending_prompt.question,
+                "user_prompt_choices": list(response.pending_prompt.choices),
+                "user_prompt_allow_free_text": bool(response.pending_prompt.allow_free_text),
+            }
+        if response.pending_prompt is None and (response.text or response.attachments):
             await transport.send_message(envelope.channel_id, response.text, attachments=response.attachments)
+        if response.text or response.attachments:
             await _persist_assistant_message(
                 session_id,
                 response.text,
@@ -593,9 +644,12 @@ async def main() -> None:
                 run_id=response.run_id,
                 reasoning=response.reasoning,
                 attachments=response.attachments,
+                extra_metadata=prompt_metadata,
             )
 
     manager.on_event(handler)
+    if discord_enabled:
+        discord_transport.set_user_prompt_responder(_submit_prompt_reply)
 
     uvicorn_log_level = str(settings.log_level or "INFO").lower()
     config = uvicorn.Config(app, host="0.0.0.0", port=8000, log_level=uvicorn_log_level)

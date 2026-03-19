@@ -165,6 +165,16 @@ You are free to edit `HEARTBEAT.md` with a short checklist or reminders. Keep it
 - `sub_agent_batch` = do several bounded things now, inside this reply
 - `job_start` = do it later in the background and report back when done
 
+## Clarifying Questions
+
+When you truly need the human to decide something before you can continue, use `ask_user`.
+
+- Use `ask_user` only for meaningful decisions or missing critical input
+- Keep the question short
+- Prefer short choices when possible
+- If a reasonable default is obvious, choose it instead of interrupting the user
+- Never use `ask_user` in heartbeats, scheduled jobs, or background jobs
+
 **Tip:** Batch similar periodic checks into `HEARTBEAT.md` instead of creating multiple scheduled jobs. Use jobs for precise schedules and standalone tasks.
 
 **Job prompt quality matters:** Background jobs do not rely on ongoing chat turns while running. Include all required details in the job request itself.

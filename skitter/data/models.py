@@ -92,6 +92,23 @@ class ToolRun(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
+class UserPrompt(Base):
+    __tablename__ = "user_prompts"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    session_id: Mapped[str] = mapped_column(String, index=True)
+    run_id: Mapped[str | None] = mapped_column(String, index=True, nullable=True)
+    message_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    question: Mapped[str] = mapped_column(Text)
+    choices: Mapped[list] = mapped_column(JSON, default=list)
+    allow_free_text: Mapped[bool] = mapped_column(default=True)
+    status: Mapped[str] = mapped_column(String, default="pending")
+    answer: Mapped[str | None] = mapped_column(Text, nullable=True)
+    answered_by: Mapped[str | None] = mapped_column(String, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    answered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
 class RunTrace(Base):
     __tablename__ = "run_traces"
 

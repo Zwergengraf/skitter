@@ -113,7 +113,7 @@ struct MainShellView: View {
             .tabItem {
                 Label("Chat", systemImage: "bubble.left.and.bubble.right")
             }
-            .badge(model.unreadCount + model.pendingApprovals.count)
+            .badge(model.unreadCount + model.pendingApprovals.count + model.pendingPrompts.count)
             .tag(AppSection.chat)
 
             NavigationStack {
@@ -149,7 +149,7 @@ struct MainShellView: View {
     private func badgeValue(for section: AppSection) -> Int? {
         switch section {
         case .chat:
-            let count = model.unreadCount + model.pendingApprovals.count
+            let count = model.unreadCount + model.pendingApprovals.count + model.pendingPrompts.count
             return count == 0 ? nil : count
         case .voice, .settings:
             return nil
@@ -226,7 +226,7 @@ private struct ChatScreen: View {
             ScrollViewReader { proxy in
                 ScrollView {
                     LazyVStack(spacing: 12) {
-                        if model.messages.isEmpty && model.pendingApprovals.isEmpty && !model.isSending {
+                        if model.messages.isEmpty && model.pendingApprovals.isEmpty && model.pendingPrompts.isEmpty && !model.isSending {
                             EmptyChatState()
                         } else {
                             ForEach(model.messages) { message in
@@ -243,6 +243,11 @@ private struct ChatScreen: View {
                             ForEach(model.pendingApprovals) { toolRun in
                                 ApprovalMessageBubble(toolRun: toolRun, model: model)
                                     .id("approval-\(toolRun.id)")
+                            }
+
+                            ForEach(model.pendingPrompts) { prompt in
+                                UserPromptMessageBubble(prompt: prompt, model: model)
+                                    .id("prompt-\(prompt.id)")
                             }
                         }
 
@@ -263,6 +268,9 @@ private struct ChatScreen: View {
                     scrollToBottom(proxy)
                 }
                 .onChange(of: model.pendingApprovals.count) { _, _ in
+                    scrollToBottom(proxy, animated: false)
+                }
+                .onChange(of: model.pendingPrompts.count) { _, _ in
                     scrollToBottom(proxy, animated: false)
                 }
                 .onChange(of: model.isSending) { _, _ in
@@ -1090,6 +1098,78 @@ private struct ApprovalMessageBubble: View {
         }
         let relative = RelativeTimeFormatters.approvals.localizedString(for: toolRun.createdAt, relativeTo: Date())
         return "Requested\(who) \(relative)"
+    }
+}
+
+private struct UserPromptMessageBubble: View {
+    let prompt: PendingUserPrompt
+    @ObservedObject var model: AppModel
+
+    var body: some View {
+        HStack {
+            VStack(alignment: .leading, spacing: 14) {
+                HStack(alignment: .top) {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Label("Reply needed", systemImage: "questionmark.bubble.fill")
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(.blue)
+
+                        Text(prompt.question)
+                            .font(.headline)
+
+                        Text(promptDetailLine)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    StatusChip(label: "Pending", tint: .blue)
+                }
+
+                if !prompt.choices.isEmpty {
+                    VStack(spacing: 10) {
+                        ForEach(prompt.choices, id: \.self) { choice in
+                            Button(truncatedPromptChoice(choice)) {
+                                Task {
+                                    await model.answer(prompt, with: choice)
+                                }
+                            }
+                            .buttonStyle(.borderedProminent)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                        }
+                    }
+                }
+
+                if prompt.allowFreeText || prompt.choices.isEmpty {
+                    Text("Reply in chat below to continue.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .padding(16)
+            .frame(maxWidth: 560, alignment: .leading)
+            .background(
+                RoundedRectangle(cornerRadius: 22, style: .continuous)
+                    .fill(Color.blue.opacity(0.10))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 22, style: .continuous)
+                            .stroke(Color.blue.opacity(0.22), lineWidth: 1)
+                    )
+            )
+
+            Spacer(minLength: 40)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private var promptDetailLine: String {
+        let relative = RelativeTimeFormatters.approvals.localizedString(for: prompt.createdAt, relativeTo: Date())
+        return "Requested \(relative)"
+    }
+
+    private func truncatedPromptChoice(_ choice: String, limit: Int = 24) -> String {
+        guard choice.count > limit else { return choice }
+        let endIndex = choice.index(choice.startIndex, offsetBy: limit)
+        return String(choice[..<endIndex]) + "..."
     }
 }
 

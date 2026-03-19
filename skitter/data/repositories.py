@@ -24,6 +24,7 @@ from .models import (
     Session,
     Secret,
     ToolRun,
+    UserPrompt,
     User,
 )
 
@@ -338,6 +339,131 @@ class Repository:
         if to_delete:
             await self.session.commit()
         return len(to_delete)
+
+    async def get_user_prompt(self, prompt_id: str) -> UserPrompt | None:
+        result = await self.session.execute(select(UserPrompt).where(UserPrompt.id == prompt_id))
+        return result.scalar_one_or_none()
+
+    async def get_pending_user_prompt_for_session(self, session_id: str) -> UserPrompt | None:
+        result = await self.session.execute(
+            select(UserPrompt)
+            .where(
+                UserPrompt.session_id == session_id,
+                UserPrompt.status == "pending",
+            )
+            .order_by(UserPrompt.created_at.desc())
+        )
+        return result.scalars().first()
+
+    async def list_pending_user_prompts(
+        self,
+        *,
+        session_id: str | None = None,
+        user_id: str | None = None,
+        limit: int = 50,
+    ) -> List[UserPrompt]:
+        stmt = (
+            select(UserPrompt)
+            .join(Session, Session.id == UserPrompt.session_id)
+            .where(UserPrompt.status == "pending")
+            .order_by(UserPrompt.created_at.asc())
+            .limit(limit)
+        )
+        if session_id:
+            stmt = stmt.where(UserPrompt.session_id == session_id)
+        if user_id:
+            stmt = stmt.where(Session.user_id == user_id)
+        result = await self.session.execute(stmt)
+        return list(result.scalars().all())
+
+    async def list_user_prompts_for_session(self, session_id: str) -> List[UserPrompt]:
+        result = await self.session.execute(
+            select(UserPrompt)
+            .where(UserPrompt.session_id == session_id)
+            .order_by(UserPrompt.created_at.asc(), UserPrompt.id.asc())
+        )
+        return list(result.scalars().all())
+
+    async def create_user_prompt(
+        self,
+        *,
+        session_id: str,
+        question: str,
+        choices: list[str] | None = None,
+        allow_free_text: bool = True,
+        run_id: str | None = None,
+        message_id: str | None = None,
+    ) -> UserPrompt:
+        existing = await self.get_pending_user_prompt_for_session(session_id)
+        if existing is not None:
+            return existing
+        prompt = UserPrompt(
+            id=str(uuid.uuid4()),
+            session_id=session_id,
+            run_id=run_id,
+            message_id=message_id,
+            question=question,
+            choices=choices or [],
+            allow_free_text=allow_free_text,
+            status="pending",
+            created_at=self._utcnow(),
+        )
+        self.session.add(prompt)
+        await self.session.commit()
+        if run_id:
+            await self.append_run_trace_event(
+                run_id=run_id,
+                session_id=session_id,
+                event_type="user_prompt_created",
+                payload={
+                    "prompt_id": prompt.id,
+                    "question": question,
+                    "choices": prompt.choices or [],
+                    "allow_free_text": bool(prompt.allow_free_text),
+                },
+            )
+        return prompt
+
+    async def answer_user_prompt(
+        self,
+        prompt_id: str,
+        *,
+        answer: str,
+        answered_by: str | None = None,
+    ) -> UserPrompt | None:
+        result = await self.session.execute(select(UserPrompt).where(UserPrompt.id == prompt_id))
+        prompt = result.scalar_one_or_none()
+        if prompt is None:
+            return None
+        prompt.status = "answered"
+        prompt.answer = answer
+        prompt.answered_by = answered_by
+        prompt.answered_at = self._utcnow()
+        await self.session.commit()
+        if prompt.run_id:
+            await self.append_run_trace_event(
+                run_id=prompt.run_id,
+                session_id=prompt.session_id,
+                event_type="user_prompt_answered",
+                payload={
+                    "prompt_id": prompt.id,
+                    "answer": answer,
+                    "answered_by": answered_by,
+                },
+            )
+        return prompt
+
+    async def answer_pending_user_prompt_for_session(
+        self,
+        session_id: str,
+        *,
+        answer: str,
+        answered_by: str | None = None,
+    ) -> UserPrompt | None:
+        prompt = await self.get_pending_user_prompt_for_session(session_id)
+        if prompt is None:
+            return None
+        return await self.answer_user_prompt(prompt.id, answer=answer, answered_by=answered_by)
 
     async def list_recent_sessions(self, limit: int = 10, status: str | None = "active") -> List[tuple]:
         last_active_subq = (

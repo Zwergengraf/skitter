@@ -18,6 +18,7 @@ from ..data.db import SessionLocal
 from ..data.repositories import Repository
 from ..observability.logging import configure_logging
 from ..tools.approval_service import ToolApprovalService
+from ..tools.user_prompt_service import UserPromptService
 from ..tools.sandbox_manager import sandbox_manager
 from .security import AuthPrincipal, extract_credential, hash_secret, utcnow
 from .routes import (
@@ -40,6 +41,7 @@ from .routes import (
     sessions,
     skills,
     tools,
+    user_prompts,
     users,
 )
 
@@ -70,7 +72,12 @@ def create_app() -> FastAPI:
 
     app.state.event_bus = EventBus()
     app.state.approval_service = ToolApprovalService(app.state.event_bus)
-    app.state.runtime = AgentRuntime(app.state.event_bus, approval_service=app.state.approval_service)
+    app.state.user_prompt_service = UserPromptService(app.state.event_bus)
+    app.state.runtime = AgentRuntime(
+        app.state.event_bus,
+        approval_service=app.state.approval_service,
+        user_prompt_service=app.state.user_prompt_service,
+    )
     app.state.scheduler_service = SchedulerService(app.state.runtime)
     app.state.runtime.set_scheduler_service(app.state.scheduler_service)
     app.state.job_service = None
@@ -132,6 +139,7 @@ def create_app() -> FastAPI:
     app.include_router(messages.router)
     app.include_router(events.router)
     app.include_router(tools.router)
+    app.include_router(user_prompts.router)
     app.include_router(agent_jobs.router)
     app.include_router(runs.router)
     app.include_router(skills.router)

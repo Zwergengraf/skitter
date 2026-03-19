@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import difflib
 from pathlib import Path
 
 import pytest
@@ -112,3 +113,60 @@ async def test_runner_shell_supports_multiline_bash_script(runner_workspace: tup
     assert body["status"] == "ok"
     assert body["exit_code"] == 0
     assert "done" in body["stdout"]
+
+
+@pytest.mark.asyncio
+async def test_runner_apply_patch_updates_file_with_plain_relative_paths(
+    runner_workspace: tuple[Path, object]
+) -> None:
+    workspace_root, app = runner_workspace
+    target = workspace_root / "hello.txt"
+    target.write_text("old\n", encoding="utf-8")
+    patch = "".join(
+        difflib.unified_diff(
+            ["old\n"],
+            ["new\n"],
+            fromfile="hello.txt",
+            tofile="hello.txt",
+        )
+    )
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response = await _execute(client, tool="apply_patch", payload={"patch": patch})
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "ok"
+    assert body["exit_code"] == 0
+    assert body["strip"] == 0
+    assert "patching file hello.txt" in body["stdout"]
+    assert target.read_text(encoding="utf-8") == "new\n"
+
+
+@pytest.mark.asyncio
+async def test_runner_apply_patch_uses_git_style_strip_level(
+    runner_workspace: tuple[Path, object]
+) -> None:
+    workspace_root, app = runner_workspace
+    target = workspace_root / "src" / "main.py"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text("print('old')\n", encoding="utf-8")
+    patch = "".join(
+        difflib.unified_diff(
+            ["print('old')\n"],
+            ["print('new')\n"],
+            fromfile="a/src/main.py",
+            tofile="b/src/main.py",
+        )
+    )
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response = await _execute(client, tool="apply_patch", payload={"patch": patch})
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "ok"
+    assert body["exit_code"] == 0
+    assert body["strip"] == 1
+    assert "src/main.py" in body["stdout"]
+    assert target.read_text(encoding="utf-8") == "print('new')\n"

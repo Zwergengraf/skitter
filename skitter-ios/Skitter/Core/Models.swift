@@ -314,6 +314,16 @@ struct ToolRunStatus: Identifiable, Equatable {
     }
 }
 
+struct PendingUserPrompt: Identifiable, Equatable {
+    let id: String
+    let sessionID: String
+    let question: String
+    let choices: [String]
+    let allowFreeText: Bool
+    let status: String
+    let createdAt: Date
+}
+
 struct CommandResult {
     let ok: Bool
     let message: String
@@ -395,6 +405,16 @@ struct ToolRunPayload: Decodable {
     let session_id: String
     let input: [String: JSONValue]?
     let reasoning: [String]
+}
+
+struct UserPromptPayload: Decodable {
+    let id: String
+    let session_id: String
+    let question: String
+    let choices: [String]
+    let allow_free_text: Bool
+    let status: String
+    let created_at: String
 }
 
 struct CommandExecutePayload: Decodable {

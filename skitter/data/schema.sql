@@ -158,6 +158,31 @@ CREATE INDEX IF NOT EXISTS tool_runs_executor_id_idx
 CREATE INDEX IF NOT EXISTS tool_runs_session_created_idx
     ON tool_runs (session_id, created_at DESC);
 
+CREATE TABLE IF NOT EXISTS user_prompts (
+    id TEXT PRIMARY KEY,
+    session_id TEXT NOT NULL,
+    run_id TEXT,
+    message_id TEXT,
+    question TEXT NOT NULL,
+    choices JSONB NOT NULL DEFAULT '[]'::jsonb,
+    allow_free_text BOOLEAN NOT NULL DEFAULT TRUE,
+    status TEXT NOT NULL DEFAULT 'pending',
+    answer TEXT,
+    answered_by TEXT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    answered_at TIMESTAMPTZ
+);
+
+CREATE INDEX IF NOT EXISTS user_prompts_session_created_idx
+    ON user_prompts (session_id, created_at DESC);
+
+CREATE INDEX IF NOT EXISTS user_prompts_status_created_idx
+    ON user_prompts (status, created_at DESC);
+
+CREATE UNIQUE INDEX IF NOT EXISTS user_prompts_session_pending_idx
+    ON user_prompts (session_id)
+    WHERE status = 'pending';
+
 CREATE TABLE IF NOT EXISTS executors (
     id TEXT PRIMARY KEY,
     owner_user_id TEXT NOT NULL,

@@ -36,8 +36,17 @@ class StreamEvent:
 
 
 @dataclass
+class PendingUserPrompt:
+    prompt_id: str
+    question: str
+    choices: List[str] = field(default_factory=list)
+    allow_free_text: bool = True
+
+
+@dataclass
 class AgentResponse:
     text: str
     attachments: List[Attachment] = field(default_factory=list)
     run_id: str | None = None
     reasoning: List[str] = field(default_factory=list)
+    pending_prompt: PendingUserPrompt | None = None

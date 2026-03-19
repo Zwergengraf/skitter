@@ -162,6 +162,14 @@ final class StatusItemController: NSObject, NSMenuDelegate {
                 valueColor: .systemOrange
             ))
         }
+        if !state.pendingUserPrompts.isEmpty {
+            statusMenu.addItem(infoItem(
+                icon: "questionmark.bubble",
+                label: "Reply needed",
+                value: "\(state.pendingUserPrompts.count) pending",
+                valueColor: .systemBlue
+            ))
+        }
         if state.hasUnreadMessages {
             statusMenu.addItem(infoItem(
                 icon: "envelope.badge",
