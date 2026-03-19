@@ -217,6 +217,7 @@ def build_graph(
     model_name: str | None = None,
     purpose: str = "main",
     include_subagent_tools: bool = True,
+    include_user_prompt_tools: bool = True,
 ):
     client = ToolRunnerClient()
     policy = ToolApprovalPolicy()
@@ -233,6 +234,7 @@ def build_graph(
                 model_name=worker_model,
                 purpose="main",
                 include_subagent_tools=False,
+                include_user_prompt_tools=False,
             )
         )
 
@@ -2115,7 +2117,6 @@ def build_graph(
         create_secret,
         list_secrets,
         model_list,
-        ask_user,
         mcp_list_tools,
         mcp_call,
         memory_search,
@@ -2126,6 +2127,8 @@ def build_graph(
         schedule_delete,
         schedule_list,
     ]
+    if include_user_prompt_tools:
+        tools.append(ask_user)
     if include_subagent_tools:
         tools.extend([job_start, job_status, job_list, job_cancel, sub_agent, sub_agent_batch])
 

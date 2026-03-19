@@ -87,6 +87,7 @@ Skills define _how_ tools work. This file is for _your_ specifics — the stuff 
   - heartbeats
   - scheduled jobs
   - background jobs
+  - sub-agents
 
 ### When To Use `ask_user`
 

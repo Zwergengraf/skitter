@@ -429,6 +429,7 @@ class AgentRuntime:
             baseline_history = list(history)
             result: dict[str, object] | None = None
             model_name = selected_model
+            allow_user_prompts = envelope.origin not in {"heartbeat", "scheduler"}
             for attempt_index, candidate_model in enumerate(candidate_models):
                 model_name = candidate_model
                 _logger.info(
@@ -476,7 +477,12 @@ class AgentRuntime:
                     "recursion_limit": max(32, int(settings.limits_max_tool_calls) * 4 + 16),
                 }
                 try:
-                    graph = self._get_graph(candidate_model, purpose=purpose, resolved_model=resolved_model)
+                    graph = self._get_graph(
+                        candidate_model,
+                        purpose=purpose,
+                        resolved_model=resolved_model,
+                        include_user_prompt_tools=allow_user_prompts,
+                    )
                     invoke_history = self._messages_for_invoke(history, resolved_model.provider_api_type)
                     result = await asyncio.wait_for(
                         graph.ainvoke({"messages": invoke_history}, config=invoke_config),
@@ -859,6 +865,7 @@ class AgentRuntime:
         model_name: str,
         purpose: str = "main",
         resolved_model: ResolvedModel | None = None,
+        include_user_prompt_tools: bool = True,
     ) -> object:
         if self._fixed_graph is not None:
             return self._fixed_graph
@@ -869,6 +876,7 @@ class AgentRuntime:
             resolved.provider_api_type.lower(),
             resolved.model,
             resolved.api_base,
+            bool(include_user_prompt_tools),
         )
         if cache_key not in self._graphs:
             self._graphs[cache_key] = build_graph(
@@ -878,6 +886,7 @@ class AgentRuntime:
                 job_service=self._job_service,
                 model_name=resolved.name,
                 purpose=purpose,
+                include_user_prompt_tools=include_user_prompt_tools,
             )
         return self._graphs[cache_key]
 

@@ -80,6 +80,7 @@ async def main() -> None:
             model_name=worker_model,
             purpose="main",
             include_subagent_tools=False,
+            include_user_prompt_tools=False,
         ),
     )
     app.state.job_service = job_service

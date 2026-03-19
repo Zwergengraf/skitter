@@ -173,7 +173,7 @@ When you truly need the human to decide something before you can continue, use `
 - Keep the question short
 - Prefer short choices when possible
 - If a reasonable default is obvious, choose it instead of interrupting the user
-- Never use `ask_user` in heartbeats, scheduled jobs, or background jobs
+- Never use `ask_user` in heartbeats, scheduled jobs, background jobs, or sub-agents
 
 **Tip:** Batch similar periodic checks into `HEARTBEAT.md` instead of creating multiple scheduled jobs. Use jobs for precise schedules and standalone tasks.
 
