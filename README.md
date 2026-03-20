@@ -23,14 +23,17 @@ Skitter is a personal agent system with:
 - A Python server (`FastAPI` + `LangGraph`) that runs the assistant.
 - Distributed executors: Docker sandboxes for isolation with support for external node runners.
 - Built-in tools such as filesystem access, shell, browser, web tools.
-- Support for [Agent skills](https://agentskills.io/) (per-user) and MCP servers.
-- Scheduled jobs / cronjobs.
+- Support for [Agent Skills](https://agentskills.io/) (per-user) and MCP servers.
+- Scheduled jobs / cron jobs.
 - Memory indexing and retrieval (PostgreSQL + pgvector).
 - Human-in-the-loop approvals for sensitive tools.
-- Encrypted secret storage with human approvals for secret usage (API keys, passwords, ...).
+- Encrypted secret storage with human approvals for using secrets (API keys, passwords, ...).
 - Multiple client apps over one API: Discord bot (recommended for first-time setup), admin web UI, standalone TUI, a native macOS menubar app, and a native iPhone/iPad app.
+- Isolation: your agent cannot edit its own code or config files by default (unless you really want it to).
 
-Skitter is largely inspired by OpenClaw.
+Skitter is inspired by OpenClaw, with a focus on Docker-based isolation, human approvals, secret storage, and simplicity.
+Instead of adding many smaller features into the core application itself, Skitter focuses on providing a framework that can easily be extended with Agent Skills and MCP servers.
+It supports the current standard LLM APIs: OpenAI and Anthropic. Provider-specific integrations and OAuth flows are intentionally out of scope. Instead, run a local API proxy and let Skitter focus on the agent-specific implementation.
 
 > [!NOTE]  
 > A dedicated documentation website is in progress (see `./docs`). For now, please use this `README.md`.
@@ -74,6 +77,9 @@ Edit the file directly or use the admin web UI, then restart with `./setup.sh re
 Once the API server is running, open the Admin Web UI, set up a Discord bot, or connect with a different client (TUI, macOS, or iOS app).
 
 If you want to use Discord, see the bot setup guide in `docs/components/discord-transport.md`.
+
+> [!TIP]
+> Discord is the recommended client interface. It supports inline image and audio attachments, buttons for approvals and questions, and it is easy to use.
 
 Other useful commands:
 
@@ -216,10 +222,12 @@ Selection behavior:
 
 1. Open Admin Web UI → **Executors**.
 2. Click **Add executor node** and create token/command.
-3. Clone the repo and run the generated command on the target host (macOS/Linux):
+3. Clone the repo, create a virtual environment (`uv` is highly recommended), and run the generated command on the target host (macOS/Linux):
 
 ```bash
-pip install "."
+uv venv venv
+source venv/bin/activate
+uv pip install .
 skitter-node --api-url "http://<api-host>:8000" --token "<token>" --name "<node-name>" --workspace-root "<path>" --write-config
 ```
 
