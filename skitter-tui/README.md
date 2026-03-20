@@ -46,10 +46,9 @@ A standalone terminal UI client for interacting with a remote Skitter server ove
 ## Install
 
 ```bash
-cd /Users/gabriel/Code/Skitter/skitter-tui
-python -m venv .venv
-source .venv/bin/activate
-pip install -e .
+uv venv venv
+source venv/bin/activate
+uv pip install -e .
 ```
 
 ## Run

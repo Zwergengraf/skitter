@@ -1,7 +1,7 @@
 site_name: Skitter Docs
 site_description: Documentation for Skitter
-repo_name: gabriel/Skitter
-repo_url: https://github.com/gabriel/Skitter
+repo_name: Zwergengraf/skitter
+repo_url: https://github.com/Zwergengraf/skitter
 
 theme:
   name: material
