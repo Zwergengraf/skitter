@@ -38,7 +38,7 @@ Self-hosted, sandboxed executors (Docker), and with human-in-the-loop approval f
 ---
 
 !!! tip "Recommended First 30 Minutes"
-    1. Run [Quickstart](getting-started/quickstart.md).
+    1. Run [Manual Setup](getting-started/manual-setup.md).
     2. Pair one additional client (for example menubar + TUI).
     3. Run `/model`, `/tools`, and create one scheduled task.
     4. Open the admin web UI and inspect run traces and tool runs.

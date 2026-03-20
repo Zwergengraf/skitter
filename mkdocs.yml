@@ -29,7 +29,7 @@ nav:
   - Home: index.md
   - Getting Started:
       - Overview: getting-started/overview.md
-      - Quickstart: getting-started/quickstart.md
+      - Manual Setup: getting-started/manual-setup.md
       - Local Development: getting-started/local-development.md
       - Docker Compose: getting-started/docker-compose.md
       - Configuration: getting-started/configuration.md

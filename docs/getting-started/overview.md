@@ -48,6 +48,6 @@ Check the [Patterns](../patterns/overview.md) section for integration ideas and 
 
 ## Next Steps
 
-- Fast local setup: [Quickstart](quickstart.md)
+- Fast local setup: [Manual Setup](manual-setup.md)
 - Containerized core stack: [Docker Compose](docker-compose.md)
 - Configuration reference: [Configuration](configuration.md)
