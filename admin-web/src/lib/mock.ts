@@ -25,7 +25,7 @@ export const services: ServiceStatus[] = [
 export const sessions: SessionRow[] = [
   {
     id: "sess_1d2f",
-    user: "@gabriel",
+    user: "@user",
     transport: "discord",
     lastActive: "2 min ago",
     state: "active",
@@ -54,7 +54,7 @@ export const toolRuns: ToolRunRow[] = [
     id: "tool_1",
     tool: "shell",
     status: "pending",
-    requestedBy: "@gabriel",
+    requestedBy: "@user",
     createdAt: "Just now",
   },
   {
