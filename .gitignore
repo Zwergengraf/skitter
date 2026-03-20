@@ -218,3 +218,6 @@ browser-data/
 
 # Local config
 config.yaml
+
+# Backups
+backups/

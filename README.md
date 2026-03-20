@@ -50,6 +50,36 @@ Skitter is a personal agent system with:
 
 ## Setup (Docker, Recommended)
 
+The easiest install/upgrade path is the root setup script:
+
+```bash
+./setup.sh install
+```
+
+It will:
+
+- check required tools (`git`, Docker, Docker Compose, `python3`, `openssl`)
+- create `.env` and `config.yaml` if they are missing
+- generate secure values for `SKITTER_API_KEY`, `SKITTER_BOOTSTRAP_CODE`, and a valid Fernet `SKITTER_SECRETS_MASTER_KEY`
+- build the Docker images and start `postgres`, `api`, and `admin-web`
+
+Other useful commands:
+
+```bash
+./setup.sh doctor
+./setup.sh status
+./setup.sh restart
+./setup.sh logs api
+./setup.sh backup
+./setup.sh restore backups/<name>
+./setup.sh upgrade latest
+./setup.sh uninstall
+```
+
+`backup` stores `.env`, `config.yaml`, and a PostgreSQL dump in `./backups/<timestamp>/`.
+
+If you want the manual path instead, keep reading below.
+
 ### 1) Clone the repo and prepare config files
 
 ```bash

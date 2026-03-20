@@ -2,6 +2,25 @@
 
 This path gets you to a running local stack (DB + API + optional clients) as an alternative to the Docker setup, useful for quick development/testing.
 
+If you want the simplest install/upgrade workflow instead, use:
+
+```bash
+./setup.sh install
+```
+
+Useful companions:
+
+```bash
+./setup.sh doctor
+./setup.sh status
+./setup.sh restart
+./setup.sh logs api
+./setup.sh backup
+./setup.sh restore backups/<name>
+./setup.sh upgrade latest
+./setup.sh uninstall
+```
+
 ## Prerequisites
 
 - Python 3.11+

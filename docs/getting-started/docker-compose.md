@@ -2,6 +2,29 @@
 
 Use Docker Compose when you want a containerized core stack.
 
+For most installs, the easiest entrypoint is:
+
+```bash
+./setup.sh install
+```
+
+That command checks prerequisites, creates missing local config, generates secrets, builds images, and starts the core services.
+
+Useful follow-ups:
+
+```bash
+./setup.sh doctor
+./setup.sh status
+./setup.sh restart
+./setup.sh logs api
+./setup.sh backup
+./setup.sh restore backups/<name>
+./setup.sh upgrade latest
+./setup.sh uninstall
+```
+
+Backups are stored in `./backups/<timestamp>/` and include `.env`, `config.yaml`, and a PostgreSQL SQL dump.
+
 ## Services in `docker-compose.yml`
 
 - `postgres`: PostgreSQL + pgvector
