@@ -125,6 +125,7 @@ browser:
 # scheduler:
 #   timezone: UTC
 discord:
+  enabled: true
   token: ""
   progress_updates: true
   progress_interval_seconds: 3

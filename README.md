@@ -41,16 +41,6 @@ Skitter is a personal agent system with:
 | Native iOS App | `/skitter-ios` | Universal iPhone/iPad client with chat, inline approvals, voice mode, and notification support |
 | Executor Node | `/skitter/node` | External host runner (macOS/Linux) that connects to API via WebSocket |
 
-## Architecture (High Level)
-
-- `skitter/core`: runtime, graph, sessions, memory, scheduler, heartbeats, sub-agents.
-- `skitter/api`: `/v1/*` API routes and auth middleware.
-- `skitter/tools`: approvals, executor router, docker sandbox manager.
-- `skitter/sandbox`: tool runner app used by docker sandbox and external executor node.
-- `skitter/node`: external executor process (`skitter-node`).
-- `skitter/data`: models, repositories, schema init.
-- `workspace-skeleton`: default per-user workspace bootstrap content.
-
 ## Prerequisites
 
 - Docker + Docker Compose
@@ -337,11 +327,22 @@ python -m skitter.data.init_db
 python -m skitter.server
 ```
 
-To run without Discord:
+To run without Discord, set this in `config.yaml`:
 
-```bash
-SKITTER_ENABLE_DISCORD=false python -m skitter.server
+```yaml
+discord:
+  enabled: false
 ```
+
+## Architecture (High Level)
+
+- `skitter/core`: runtime, graph, sessions, memory, scheduler, heartbeats, sub-agents.
+- `skitter/api`: `/v1/*` API routes and auth middleware.
+- `skitter/tools`: approvals, executor router, docker sandbox manager.
+- `skitter/sandbox`: tool runner app used by docker sandbox and external executor node.
+- `skitter/node`: external executor process (`skitter-node`).
+- `skitter/data`: models, repositories, schema init.
+- `workspace-skeleton`: default per-user workspace bootstrap content.
 
 ## API Auth
 

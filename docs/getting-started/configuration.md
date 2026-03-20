@@ -110,5 +110,14 @@ Keep these in environment variables (not in YAML):
 Common optional env flags:
 
 - `SKITTER_CONFIG_PATH`
-- `SKITTER_ENABLE_DISCORD`
 - `SKITTER_LOG_LEVEL`
+
+## Discord Enablement
+
+Discord transport startup is configured in `config.yaml`, not via env var:
+
+```yaml
+discord:
+  enabled: true
+  token: ""
+```

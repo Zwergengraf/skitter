@@ -319,6 +319,7 @@ class Settings(BaseSettings):
 
     scheduler_timezone: str = Field(default_factory=_detect_system_timezone)
 
+    discord_enabled: bool = Field(default=True)
     discord_token: str = Field(default="")
     user_approved_message: str = Field(default="Hey! I just came online. Who am I? Who are you?")
 

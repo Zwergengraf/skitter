@@ -23,8 +23,14 @@ Optional but common:
 - `SKITTER_POSTGRES_USER` (default `postgres`)
 - `SKITTER_POSTGRES_PASSWORD` (default `postgres`)
 - `SKITTER_POSTGRES_DB` (default `skitter`)
-- `SKITTER_ENABLE_DISCORD` (`true`/`false`)
 - `ADMIN_WEB_API_BASE_URL` (default `http://localhost:8000`)
+
+Discord transport enablement now lives in `config.yaml`:
+
+```yaml
+discord:
+  enabled: true
+```
 
 ## Build Images
 

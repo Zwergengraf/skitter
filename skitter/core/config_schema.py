@@ -376,6 +376,14 @@ FIELDS: list[ConfigFieldSpec] = [
         field_type="string",
     ),
     ConfigFieldSpec(
+        key="discord_enabled",
+        path=("discord", "enabled"),
+        category="discord",
+        label="Enabled",
+        field_type="boolean",
+        description="Start the Discord transport when the API server launches.",
+    ),
+    ConfigFieldSpec(
         key="discord_token",
         path=("discord", "token"),
         category="discord",

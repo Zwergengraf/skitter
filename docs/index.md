@@ -3,7 +3,7 @@
 Skitter is your personal AI operator that can chat, run tools, automate recurring work, and execute tasks across multiple machines.
 Self-hosted, sandboxed executors (Docker), and with human-in-the-loop approval for secret usage.
 
-[View on GitHub](https://github.com/gabriel/Skitter){ .md-button }
+[View on GitHub](https://github.com/Zwergengraf/skitter){ .md-button }
 
 ---
 
@@ -19,13 +19,13 @@ Self-hosted, sandboxed executors (Docker), and with human-in-the-loop approval f
 
 === "Quickstart using Docker"
 
-    - Start with [Quickstart](getting-started/quickstart.md)
     - Use [Docker Compose](getting-started/docker-compose.md)
     - Learn login flow in [Auth and Pairing](getting-started/auth-and-pairing.md)
     - Explore workflows in [Patterns](patterns/overview.md)
 
 === "I Want to Self-Host Skitter"
 
+    - Use the [Manual Setup](getting-started/manual-setup.md)
     - Configure models/executors in [Configuration](getting-started/configuration.md)
     - Check health and operations in [Operations](operations/deployment.md)
 

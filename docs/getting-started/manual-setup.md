@@ -1,6 +1,6 @@
-# Quickstart
+# Manual Setup
 
-This path gets you to a running local stack quickly (DB + API + optional clients).
+This path gets you to a running local stack (DB + API + optional clients) as an alternative to the Docker setup, useful for quick development/testing.
 
 ## Prerequisites
 
@@ -8,12 +8,9 @@ This path gets you to a running local stack quickly (DB + API + optional clients
 - Docker (for PostgreSQL)
 - Node 18+ (only if you also run the admin web UI)
 
-## 1) Clone and Install
+## 1) Install
 
 ```bash
-git clone <your-repo-url>
-cd Skitter
-
 python -m venv venv
 source venv/bin/activate
 pip install -e .[dev]
@@ -26,55 +23,37 @@ cp config.example.yaml config.yaml
 cp .env.example .env
 ```
 
-Generate a Fernet key:
+Generate a valid Fernet key for `SKITTER_SECRETS_MASTER_KEY`:
 
 ```bash
-python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+python -c "import base64, secrets; print(base64.urlsafe_b64encode(secrets.token_bytes(32)).decode())"
 ```
 
-Set required env vars in `.env`:
+Generate random values for `SKITTER_API_KEY` and `SKITTER_BOOTSTRAP_CODE` with:
 
-```env
+```bash
+openssl rand -hex 24
+```
+
+Set these values in `.env`:
+
+```bash
 SKITTER_CONFIG_PATH=config.yaml
-SKITTER_API_KEY=<long-random-admin-key>
-SKITTER_BOOTSTRAP_CODE=<one-time-setup-code>
-SKITTER_SECRETS_MASTER_KEY=<fernet-key>
+SKITTER_API_KEY=
+SKITTER_BOOTSTRAP_CODE=
+SKITTER_SECRETS_MASTER_KEY=
+ADMIN_WEB_API_BASE_URL=http://localhost:8000
 ```
 
-## 3) Configure Models in `config.yaml`
+## 3) Configure models/providers in `config.yaml`
 
-At minimum, define:
+At minimum, set:
 
-- `providers`
-- `models`
-- `main_model` (ordered list of `provider/model`)
-- `heartbeat_model` (ordered list of `provider/model`)
-
-Example shape:
-
-```yaml
-providers:
-  - name: local
-    api_base: http://localhost:1234/v1
-    api_key: ""
-
-models:
-  - name: main
-    provider: local
-    model_id: your-main-model
-    input_cost_per_1m: 0
-    output_cost_per_1m: 0
-  - name: heartbeat
-    provider: local
-    model_id: your-heartbeat-model
-    input_cost_per_1m: 0
-    output_cost_per_1m: 0
-
-main_model:
-  - local/main
-heartbeat_model:
-  - local/heartbeat
-```
+- `providers` (`name`, optional `api_type` = `openai|anthropic`, `api_base`, `api_key`)
+- `models` (`name`, `provider`, `model_id`, token costs)
+- `main_model` (ordered fallback list of `provider/model`)
+- `heartbeat_model` (ordered fallback list of `provider/model`)
+- `discord.token` (if Discord transport is enabled)
 
 ## 4) Start PostgreSQL and Initialize DB
 
@@ -89,10 +68,11 @@ python -m skitter.data.init_db
 python -m skitter.server
 ```
 
-Optional (disable Discord transport):
+Optional (disable Discord transport in `config.yaml`):
 
-```bash
-SKITTER_ENABLE_DISCORD=false python -m skitter.server
+```yaml
+discord:
+  enabled: false
 ```
 
 ## 6) Optional: Start Admin Web UI
@@ -115,7 +95,7 @@ curl -sS -X POST http://localhost:8000/v1/auth/bootstrap \
   -H 'Content-Type: application/json' \
   -d '{
     "bootstrap_code": "<your-bootstrap-code>",
-    "display_name": "Gabriel",
+    "display_name": "User",
     "device_name": "local-dev",
     "device_type": "tui"
   }'

@@ -63,8 +63,14 @@ swift run
 - `SKITTER_API_KEY`: admin API key
 - `SKITTER_BOOTSTRAP_CODE`: one-time bootstrap code for first user/device
 - `SKITTER_SECRETS_MASTER_KEY`: encryption key for per-user secrets
-- `SKITTER_ENABLE_DISCORD`: `true`/`false` (default true)
 - `SKITTER_LOG_LEVEL`: `DEBUG|INFO|WARNING|ERROR`
+
+Discord transport startup is controlled in `config.yaml`:
+
+```yaml
+discord:
+  enabled: true
+```
 
 ## Discord Notes (Current Behavior)
 

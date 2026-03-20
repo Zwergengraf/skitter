@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import os
 import json
 import contextlib
 from datetime import datetime, UTC, timedelta
@@ -89,7 +88,7 @@ async def main() -> None:
     if sandbox_manager is not None:
         await sandbox_manager.start()
 
-    discord_enabled = os.environ.get("SKITTER_ENABLE_DISCORD", "true").lower() == "true"
+    discord_enabled = settings.discord_enabled
 
     transports = []
     transport_by_origin = {}
