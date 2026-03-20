@@ -13,13 +13,17 @@ from skitter.node.__main__ import (
 
 
 def test_normalize_tools_filters_unknown_and_dedupes() -> None:
-    tools = _normalize_tools(["read", "write", "read", "unknown"])
-    assert tools == ("read", "write")
+    tools = _normalize_tools(["read", "apply_patch", "read", "unknown"])
+    assert tools == ("read", "apply_patch")
 
 
 def test_normalize_tools_fallbacks_to_default_when_empty() -> None:
     assert _normalize_tools([]) == DEFAULT_NODE_TOOLS
     assert _normalize_tools(",,,") == DEFAULT_NODE_TOOLS
+
+
+def test_default_node_tools_matches_runner_surface() -> None:
+    assert "apply_patch" in DEFAULT_NODE_TOOLS
 
 
 def test_resolve_config_reads_capabilities_tools(tmp_path: Path) -> None:

@@ -28,7 +28,12 @@ Skitter is a personal agent system with:
 - Memory indexing and retrieval (PostgreSQL + pgvector).
 - Human-in-the-loop approvals for sensitive tools.
 - Encrypted secret storage with human approvals for secret usage (API keys, passwords, ...).
-- Multiple client apps over one API: Discord bot, admin web UI, standalone TUI, a native macOS menubar app, and a native iPhone/iPad app.
+- Multiple client apps over one API: Discord bot (recommended for first-time setup), admin web UI, standalone TUI, a native macOS menubar app, and a native iPhone/iPad app.
+
+Skitter is largely inspired by OpenClaw.
+
+> [!NOTE]  
+> A dedicated documentation website is in progress (see `./docs`). For now, please use this `README.md`.
 
 ## Applications
 
@@ -63,10 +68,12 @@ It will:
 - generate secure values for `SKITTER_API_KEY`, `SKITTER_BOOTSTRAP_CODE`, and a valid Fernet `SKITTER_SECRETS_MASTER_KEY`
 - build the Docker images and start `postgres`, `api`, and `admin-web`
 
-Note: You must set some values in config.yaml (e.g. LLM providers / API keys / models, Discord bot token if Discord is active).
-Edit the file or use the admin web UI to edit the config, then restart with `./setup.sh restart`.
+Note: you must still set some values in `config.yaml` first, for example your LLM providers, API keys, models, and Discord bot token if Discord is enabled.
+Edit the file directly or use the admin web UI, then restart with `./setup.sh restart`.
 
-Once the API server is running, open the Admin Web UI, setup a Discord bot or connect with a different client (TUI, macOS / iOS app).
+Once the API server is running, open the Admin Web UI, set up a Discord bot, or connect with a different client (TUI, macOS, or iOS app).
+
+If you want to use Discord, see the bot setup guide in `docs/components/discord-transport.md`.
 
 Other useful commands:
 
@@ -125,6 +132,8 @@ At minimum, set:
 - `main_model` (ordered fallback list of `provider/model`)
 - `heartbeat_model` (ordered fallback list of `provider/model`)
 - `discord.token` (if Discord transport is enabled)
+
+If you want to use Discord, see the bot setup guide in `docs/components/discord-transport.md`.
 
 Other options (can be edited in the admin web UI):
 
@@ -201,15 +210,24 @@ Selection behavior:
 
 ### Onboard a node executor (recommended path)
 
+> [!CAUTION]
+> This runs an executor process **without** a Docker sandbox, directly on the host, with the user's permissions.
+> This is an advanced feature. Only use it if you understand the implications.
+
 1. Open Admin Web UI → **Executors**.
 2. Click **Add executor node** and create token/command.
-3. Run generated command on target host (macOS/Linux):
+3. Clone the repo and run the generated command on the target host (macOS/Linux):
 
 ```bash
+pip install "."
 skitter-node --api-url "http://<api-host>:8000" --token "<token>" --name "<node-name>" --workspace-root "<path>" --write-config
 ```
 
+After the first run, you can start the executor again by simply running `skitter-node`. The config is stored in `$HOME/.config/skitternode/config.yaml`.
+
 4. Node appears online in Executors view once connected.
+
+5. Ask your agent to list the available executor nodes, or to run a command on the new node.
 
 ### Configure executor tool capabilities
 
@@ -405,9 +423,9 @@ Useful auth endpoints:
 
 ### A) No Discord (menubar/TUI/iOS)
 
-1. Set `SKITTER_BOOTSTRAP_CODE` in server env.
-2. In menubar/TUI/iOS, run bootstrap with setup code + display name.
-3. Client receives a user access token and connects.
+1. Set `SKITTER_BOOTSTRAP_CODE` in the server environment.
+2. In the menubar app, TUI, or iOS app, run bootstrap with the setup code and a display name.
+3. The client receives a user access token and connects.
 
 ### B) Start from Discord
 
@@ -435,4 +453,4 @@ Useful auth endpoints:
 
 ## License
 
-MIT (see `pyproject.toml`).
+MIT (see `LICENSE`).

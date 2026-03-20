@@ -46,6 +46,7 @@ Current Discord mode is DM-only.
 - If a Discord user DMs the bot for the first time, a user record is created.
 - That user must be approved in the admin UI before they can use the agent.
 - While unapproved, Discord replies are blocked (after the initial not-approved notice).
+- Bot setup steps are documented in [Discord Transport](../components/discord-transport.md).
 
 ## Admin Key vs User Token
 

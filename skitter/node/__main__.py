@@ -27,6 +27,7 @@ DEFAULT_NODE_TOOLS: tuple[str, ...] = (
     "read",
     "write",
     "edit",
+    "apply_patch",
     "list",
     "delete",
     "download",
@@ -68,9 +69,7 @@ class NodeConfig:
 
 def _default_config_path() -> Path:
     home = Path.home()
-    if sys.platform == "darwin":
-        return home / "Library" / "Application Support" / "SkitterNode" / "config.yaml"
-    return home / ".config" / "skitternode" / "config.yaml"
+    return home / ".config" / "skitter-node" / "config.yaml"
 
 
 def _load_yaml(path: Path) -> dict[str, Any]:
