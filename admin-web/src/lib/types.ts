@@ -83,6 +83,12 @@ export interface SessionDetail {
   last_cost: number;
   last_model?: string | null;
   last_usage_at?: string | null;
+  summary_status?: string | null;
+  summary_attempts?: number | null;
+  summary_next_retry_at?: string | null;
+  summary_last_error?: string | null;
+  summary_path?: string | null;
+  summary_completed_at?: string | null;
   messages: SessionMessage[];
   tool_runs: SessionToolRun[];
 }

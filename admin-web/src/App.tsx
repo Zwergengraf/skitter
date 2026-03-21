@@ -135,6 +135,63 @@ const inRange = (value: string | null | undefined, range: TableRange): boolean =
   return ts >= start;
 };
 
+const summaryStatusLabel = (detail: SessionDetail): string => {
+  const status = detail.summary_status;
+  if (!status) {
+    return "Not queued";
+  }
+  if (status === "completed") {
+    return "Completed";
+  }
+  if (status === "failed") {
+    return "Failed";
+  }
+  if (status === "running") {
+    return "In progress";
+  }
+  if (status === "pending" && detail.summary_attempts && detail.summary_attempts > 0) {
+    return "Retry scheduled";
+  }
+  if (status === "pending") {
+    return "Queued";
+  }
+  return status;
+};
+
+const summaryStatusVariant = (detail: SessionDetail): "secondary" | "warning" | "success" | "danger" => {
+  const status = detail.summary_status;
+  if (status === "completed") {
+    return "success";
+  }
+  if (status === "failed") {
+    return "danger";
+  }
+  if (status === "pending" || status === "running") {
+    return "warning";
+  }
+  return "secondary";
+};
+
+const summaryStatusHint = (detail: SessionDetail): string => {
+  const status = detail.summary_status;
+  if (!status) {
+    return "No background summary was queued for this session.";
+  }
+  if (status === "completed") {
+    return "The archived session summary was generated and embedded successfully.";
+  }
+  if (status === "failed") {
+    return "Automatic retries stopped after repeated failures.";
+  }
+  if (status === "running") {
+    return "The server is currently generating and indexing the archived session summary.";
+  }
+  if (detail.summary_attempts && detail.summary_attempts > 0) {
+    return "A previous attempt failed; the server will retry automatically.";
+  }
+  return "The archived session summary is queued for background processing.";
+};
+
 const SETTINGS_TEXTAREA_FIELDS = new Set([
   "heartbeat_prompt",
   "user_approved_message",
@@ -5406,7 +5463,7 @@ export default function App() {
                 </div>
               ) : sessionDetail ? (
                 <div className="grid gap-6 overflow-hidden">
-                  <div className="grid gap-4 md:grid-cols-3">
+                  <div className="grid gap-4 md:grid-cols-4">
                     <div className="rounded-2xl border border-border bg-card p-4">
                       <p className="text-xs uppercase tracking-[0.2em] text-mutedForeground">Session</p>
                       <p className="mt-2 text-sm font-semibold">{sessionDetail.id}</p>
@@ -5429,6 +5486,46 @@ export default function App() {
                         <p>Last output: {formatNumber(sessionDetail.last_output_tokens ?? 0)} tokens</p>
                         <p>Total tokens: {formatNumber(sessionDetail.total_tokens ?? 0)}</p>
                         <p>Total cost: {formatCurrency(sessionDetail.total_cost ?? 0)}</p>
+                      </div>
+                    </div>
+                    <div className="rounded-2xl border border-border bg-card p-4">
+                      <p className="text-xs uppercase tracking-[0.2em] text-mutedForeground">Archive Summary</p>
+                      <div className="mt-2 space-y-2 text-xs text-mutedForeground">
+                        <div className="flex items-center gap-2">
+                          <span className="text-foreground/80">Status</span>
+                          <Badge variant={summaryStatusVariant(sessionDetail)}>{summaryStatusLabel(sessionDetail)}</Badge>
+                        </div>
+                        <p className="leading-relaxed">{summaryStatusHint(sessionDetail)}</p>
+                        <div className="space-y-1 rounded-2xl bg-muted/40 px-3 py-2">
+                          <p>
+                            Attempts: <span className="text-foreground">{sessionDetail.summary_attempts ?? 0}</span>
+                          </p>
+                          <p>
+                            Next retry:{" "}
+                            <span className="text-foreground">
+                              {sessionDetail.summary_next_retry_at
+                                ? formatRelativeTime(sessionDetail.summary_next_retry_at)
+                                : "—"}
+                            </span>
+                          </p>
+                          <p>
+                            Finished:{" "}
+                            <span className="text-foreground">
+                              {sessionDetail.summary_completed_at
+                                ? formatRelativeTime(sessionDetail.summary_completed_at)
+                                : "—"}
+                            </span>
+                          </p>
+                          <p className="break-all">
+                            File: <span className="text-foreground">{sessionDetail.summary_path ?? "—"}</span>
+                          </p>
+                        </div>
+                        {sessionDetail.summary_last_error ? (
+                          <div className="rounded-2xl border border-rose-200/60 bg-rose-500/5 px-3 py-2 text-rose-700 dark:border-rose-900/50 dark:text-rose-300">
+                            <p className="text-[11px] uppercase tracking-[0.2em]">Last Error</p>
+                            <p className="mt-1 whitespace-pre-wrap break-words">{sessionDetail.summary_last_error}</p>
+                          </div>
+                        ) : null}
                       </div>
                     </div>
                   </div>

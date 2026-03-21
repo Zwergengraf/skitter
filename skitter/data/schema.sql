@@ -76,6 +76,24 @@ ALTER TABLE sessions
     ADD COLUMN IF NOT EXISTS context_summary_checkpoint TIMESTAMPTZ;
 
 ALTER TABLE sessions
+    ADD COLUMN IF NOT EXISTS summary_status TEXT;
+
+ALTER TABLE sessions
+    ADD COLUMN IF NOT EXISTS summary_attempts INTEGER;
+
+ALTER TABLE sessions
+    ADD COLUMN IF NOT EXISTS summary_next_retry_at TIMESTAMPTZ;
+
+ALTER TABLE sessions
+    ADD COLUMN IF NOT EXISTS summary_last_error TEXT;
+
+ALTER TABLE sessions
+    ADD COLUMN IF NOT EXISTS summary_path TEXT;
+
+ALTER TABLE sessions
+    ADD COLUMN IF NOT EXISTS summary_completed_at TIMESTAMPTZ;
+
+ALTER TABLE sessions
     ADD COLUMN IF NOT EXISTS input_tokens INTEGER NOT NULL DEFAULT 0;
 
 ALTER TABLE sessions

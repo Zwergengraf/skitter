@@ -15,6 +15,7 @@ from .core.llm import list_models, resolve_model_name
 from .core.scheduler import SchedulerService
 from .core.heartbeat import HeartbeatService
 from .core.jobs import JobService
+from .core.session_finalizer import SessionFinalizerService
 from .core.conversation_scope import resolve_conversation_scope
 from .core.config import SECRETS_APPROVAL_BYPASS_MAGIC, settings
 from .core.models import MessageEnvelope, StreamEvent
@@ -70,6 +71,7 @@ async def main() -> None:
     user_prompt_service = app.state.user_prompt_service
     scheduler: SchedulerService = app.state.scheduler_service
     heartbeat_service = HeartbeatService(runtime)
+    session_finalizer_service = SessionFinalizerService(runtime)
     job_service = JobService(
         runtime=runtime,
         graph_factory=lambda worker_model: build_graph(
@@ -83,6 +85,7 @@ async def main() -> None:
         ),
     )
     app.state.job_service = job_service
+    app.state.session_finalizer_service = session_finalizer_service
     runtime.set_job_service(job_service)
     session_manager = SessionManager(runtime, settings.workspace_root)
     if sandbox_manager is not None:
@@ -113,6 +116,7 @@ async def main() -> None:
     job_service.set_deliver(_deliver)
     await scheduler.start()
     await heartbeat_service.start()
+    await session_finalizer_service.start()
     await job_service.start()
 
     manager = TransportManager(transports)
@@ -364,7 +368,7 @@ async def main() -> None:
                 active = await repo.get_active_session_by_scope(scope.scope_type, scope.scope_id)
                 if active is not None:
                     old_session_id = active.id
-            summary_path, new_session_id = await session_manager.start_new_session_for_scope(
+            _, new_session_id = await session_manager.start_new_session_for_scope(
                 user_id=internal_user_id,
                 scope_type=scope.scope_type,
                 scope_id=scope.scope_id,
@@ -378,12 +382,7 @@ async def main() -> None:
                     scope=scope,
                     initiated_by_origin=envelope.origin,
                 )
-            if summary_path:
-                await transport.send_message(
-                    envelope.channel_id, f"Started a new session. Summary saved to `{summary_path.name}`."
-                )
-            else:
-                await transport.send_message(envelope.channel_id, "Started a new session.")
+            await transport.send_message(envelope.channel_id, "Started a new session.")
             return True
         if envelope.command == "memory_reindex":
             stats = await session_manager.reindex_memories(internal_user_id)
@@ -658,6 +657,7 @@ async def main() -> None:
     try:
         await asyncio.gather(server.serve(), manager.start())
     finally:
+        await session_finalizer_service.stop()
         await job_service.stop()
 
 

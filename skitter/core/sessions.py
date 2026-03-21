@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
@@ -10,6 +9,29 @@ from .memory_service import MemoryService
 from .runtime import AgentRuntime
 from .llm import resolve_model_name
 from .workspace import ensure_user_workspace, user_workspace_root
+
+
+def normalize_session_summary(summary: object) -> str:
+    if isinstance(summary, str):
+        normalized = summary
+    elif isinstance(summary, list):
+        normalized = "\n".join(str(item) for item in summary)
+    else:
+        normalized = str(summary)
+    return normalized.strip() + "\n"
+
+
+def session_summary_relative_path(session_id: str) -> Path:
+    return Path("memory") / "session-summaries" / f"{session_id}.md"
+
+
+def write_session_summary_file(user_id: str, session_id: str, summary: object) -> tuple[Path, str]:
+    path = user_workspace_root(user_id) / session_summary_relative_path(session_id)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    header = f"# Session Summary ({session_id})\n\n"
+    body = normalize_session_summary(summary)
+    path.write_text(header + body, encoding="utf-8")
+    return path, body
 
 
 class SessionManager:
@@ -102,26 +124,14 @@ class SessionManager:
         origin: str,
         channel_id: str | None = None,
     ) -> tuple[Optional[Path], str]:
-        summary_path: Optional[Path] = None
         ensure_user_workspace(user_id)
         async with SessionLocal() as session:
             repo = Repository(session)
             active = await repo.get_active_session_by_scope(scope_type, scope_id)
             if active is not None:
-                if scope_type == "private":
-                    summary_model_name = (
-                        str(getattr(active, "last_model", "") or "").strip()
-                        or str(getattr(active, "model", "") or "").strip()
-                        or None
-                    )
-                    summary = await self.runtime.summarize_session(
-                        active.id,
-                        model_name=summary_model_name,
-                    )
-                    summary_path, _ = self._write_summary(user_id, summary, active.id)
-                    if summary_path is not None:
-                        await self.memory_service.index_file(user_id, active.id, summary_path, force=True)
                 await repo.end_session(active.id, status="ended")
+                if scope_type == "private":
+                    await repo.queue_session_summary(active.id)
                 self.runtime.clear_history(active.id)
             model_name = resolve_model_name(None, purpose="main")
             new_session = await repo.create_session(
@@ -134,7 +144,7 @@ class SessionManager:
         if channel_id:
             self._scope_session[channel_id] = new_session.id
         self._scope_session[scope_id] = new_session.id
-        return summary_path, new_session.id
+        return None, new_session.id
 
     async def reindex_memories(self, user_id: str) -> dict:
         memory_root = user_workspace_root(user_id) / "memory"
@@ -142,23 +152,3 @@ class SessionManager:
 
     async def search_memories(self, user_id: str, query: str, top_k: int = 5) -> list[dict]:
         return await self.memory_service.search(user_id, query, top_k)
-
-    def _write_summary(self, user_id: str, summary: object, session_id: str) -> tuple[Path, str]:
-        memory_root = user_workspace_root(user_id) / "memory"
-        memory_root.mkdir(parents=True, exist_ok=True)
-        filename = f"{datetime.utcnow().date().isoformat()}.md"
-        path = memory_root / filename
-        header = f"# Session Summary ({session_id})\n\n"
-        if isinstance(summary, str):
-            normalized = summary
-        elif isinstance(summary, list):
-            normalized = "\n".join(str(item) for item in summary)
-        else:
-            normalized = str(summary)
-        body = normalized.strip() + "\n"
-        if path.exists():
-            content = f"\n---\n\n{header}{body}"
-            path.write_text(path.read_text(encoding="utf-8") + content, encoding="utf-8")
-        else:
-            path.write_text(header + body, encoding="utf-8")
-        return path, body

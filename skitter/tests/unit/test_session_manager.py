@@ -17,12 +17,16 @@ class _SessionRow:
     scope_type: str
     scope_id: str
     model: str = "provider/main"
+    last_model: str | None = None
+    summary_status: str | None = None
+    summary_attempts: int | None = None
 
 
 class _FakeRepo:
     def __init__(self) -> None:
         self.sessions: dict[str, _SessionRow] = {}
         self.create_calls = 0
+        self.queued_summary_ids: list[str] = []
 
     async def get_session(self, session_id: str) -> _SessionRow | None:
         return self.sessions.get(session_id)
@@ -62,6 +66,16 @@ class _FakeRepo:
         if row is None:
             return None
         row.status = status
+        self.sessions[session_id] = row
+        return row
+
+    async def queue_session_summary(self, session_id: str) -> _SessionRow | None:
+        row = self.sessions.get(session_id)
+        if row is None:
+            return None
+        row.summary_status = "pending"
+        row.summary_attempts = 0
+        self.queued_summary_ids.append(session_id)
         self.sessions[session_id] = row
         return row
 
@@ -135,7 +149,7 @@ async def test_get_or_create_session_refreshes_stale_cached_session(
 
 
 @pytest.mark.asyncio
-async def test_start_new_session_uses_active_model_for_summary(
+async def test_start_new_session_queues_background_summary_without_blocking(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -157,20 +171,16 @@ async def test_start_new_session_uses_active_model_for_summary(
     monkeypatch.setattr(sessions_module, "user_workspace_root", lambda user_id: tmp_path / user_id)
     monkeypatch.setattr(sessions_module, "resolve_model_name", lambda _value, purpose: f"{purpose}-model")
 
-    captured: dict[str, str | None] = {"session_id": None, "model_name": None}
-
     class _RuntimeCapture:
         async def summarize_session(self, session_id: str, model_name: str | None = None) -> str:
-            captured["session_id"] = session_id
-            captured["model_name"] = model_name
-            return "summary"
+            raise AssertionError("summarize_session should not run inline when starting a new session")
 
         def clear_history(self, session_id: str) -> None:
             _ = session_id
 
     class _MemoryStub:
         async def index_file(self, user_id: str, session_id: str, summary_path: object, force: bool = False) -> None:
-            _ = user_id, session_id, summary_path, force
+            raise AssertionError("memory indexing should not run inline when starting a new session")
 
     manager = SessionManager(runtime=_RuntimeCapture(), workspace_root="workspace", memory_service=_MemoryStub())
 
@@ -182,7 +192,8 @@ async def test_start_new_session_uses_active_model_for_summary(
         channel_id=None,
     )
 
-    assert summary_path is not None
+    assert summary_path is None
     assert new_session_id.startswith("created-")
-    assert captured["session_id"] == "session-active"
-    assert captured["model_name"] == "provider/session-model"
+    assert repo.sessions["session-active"].status == "ended"
+    assert repo.sessions["session-active"].summary_status == "pending"
+    assert repo.queued_summary_ids == ["session-active"]

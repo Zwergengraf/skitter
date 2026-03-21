@@ -81,6 +81,7 @@ def create_app() -> FastAPI:
     app.state.scheduler_service = SchedulerService(app.state.runtime)
     app.state.runtime.set_scheduler_service(app.state.scheduler_service)
     app.state.job_service = None
+    app.state.session_finalizer_service = None
     app.state.user_notifier = None
     app.state.started_at = datetime.utcnow()
 

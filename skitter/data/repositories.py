@@ -210,6 +210,74 @@ class Repository:
         await self.session.commit()
         return session
 
+    async def queue_session_summary(self, session_id: str) -> Session | None:
+        result = await self.session.execute(select(Session).where(Session.id == session_id))
+        session = result.scalar_one_or_none()
+        if session is None:
+            return None
+        session.summary_status = "pending"
+        session.summary_attempts = 0
+        session.summary_next_retry_at = None
+        session.summary_last_error = None
+        session.summary_path = None
+        session.summary_completed_at = None
+        await self.session.commit()
+        return session
+
+    async def claim_next_session_summary(self) -> Session | None:
+        now = self._utcnow()
+        stmt = (
+            select(Session)
+            .where(
+                Session.summary_status == "pending",
+                (Session.summary_next_retry_at.is_(None)) | (Session.summary_next_retry_at <= now),
+            )
+            .order_by(Session.created_at.asc())
+            .limit(1)
+            .with_for_update(skip_locked=True)
+        )
+        result = await self.session.execute(stmt)
+        session = result.scalars().first()
+        if session is None:
+            return None
+        session.summary_status = "running"
+        session.summary_attempts = int(session.summary_attempts or 0) + 1
+        session.summary_next_retry_at = None
+        await self.session.commit()
+        return session
+
+    async def complete_session_summary(self, session_id: str, *, summary_path: str) -> Session | None:
+        result = await self.session.execute(select(Session).where(Session.id == session_id))
+        session = result.scalar_one_or_none()
+        if session is None:
+            return None
+        session.summary_status = "completed"
+        session.summary_next_retry_at = None
+        session.summary_last_error = None
+        session.summary_path = summary_path
+        session.summary_completed_at = self._utcnow()
+        await self.session.commit()
+        return session
+
+    async def fail_session_summary(
+        self,
+        session_id: str,
+        *,
+        error: str,
+        retry_at: datetime | None,
+        terminal: bool,
+    ) -> Session | None:
+        result = await self.session.execute(select(Session).where(Session.id == session_id))
+        session = result.scalar_one_or_none()
+        if session is None:
+            return None
+        session.summary_status = "failed" if terminal else "pending"
+        session.summary_last_error = error
+        session.summary_next_retry_at = None if terminal else retry_at
+        session.summary_completed_at = None
+        await self.session.commit()
+        return session
+
     async def get_active_session_by_scope(self, scope_type: str, scope_id: str) -> Optional[Session]:
         result = await self.session.execute(
             select(Session)

@@ -106,7 +106,7 @@ async def execute_command(
     if command == "new":
         active = await repo.get_active_session_by_scope(scope_type, scope_id)
         old_session_id = active.id if active is not None else None
-        summary_path, new_session_id = await session_manager.start_new_session_for_scope(
+        _, new_session_id = await session_manager.start_new_session_for_scope(
             user_id=user.id,
             scope_type=scope_type,
             scope_id=scope_id,
@@ -136,11 +136,6 @@ async def execute_command(
                     data=payload_data,
                     created_at=now,
                 )
-            )
-        if summary_path:
-            return CommandExecuteOut(
-                message=f"Started a new session. Summary saved to `{summary_path.name}`.",
-                data={"session_id": new_session_id, "summary_file": summary_path.name},
             )
         return CommandExecuteOut(
             message="Started a new session.",

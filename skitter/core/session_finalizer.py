@@ -1,0 +1,114 @@
+from __future__ import annotations
+
+import asyncio
+import contextlib
+import logging
+from datetime import UTC, datetime, timedelta
+from pathlib import Path
+
+from ..data.db import SessionLocal
+from ..data.repositories import Repository
+from .memory_service import MemoryService
+from .sessions import session_summary_relative_path, write_session_summary_file
+
+
+class SessionFinalizerService:
+    BACKOFF_MINUTES = (1, 5, 15, 60)
+    MAX_ATTEMPTS = 5
+
+    def __init__(
+        self,
+        runtime,
+        *,
+        memory_service: MemoryService | None = None,
+        poll_interval_seconds: float = 5.0,
+    ) -> None:
+        self.runtime = runtime
+        self.memory_service = memory_service or MemoryService()
+        self.poll_interval_seconds = max(1.0, float(poll_interval_seconds))
+        self._logger = logging.getLogger(__name__)
+        self._stop_event = asyncio.Event()
+        self._task: asyncio.Task | None = None
+
+    async def start(self) -> None:
+        if self._task is not None:
+            return
+        self._stop_event.clear()
+        self._task = asyncio.create_task(self._worker_loop(), name="skitter-session-finalizer")
+
+    async def stop(self) -> None:
+        self._stop_event.set()
+        task = self._task
+        self._task = None
+        if task is None:
+            return
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+
+    async def run_once(self) -> bool:
+        async with SessionLocal() as session:
+            repo = Repository(session)
+            target = await repo.claim_next_session_summary()
+        if target is None:
+            return False
+        await self._finalize_session(target)
+        return True
+
+    async def _worker_loop(self) -> None:
+        while not self._stop_event.is_set():
+            handled = await self.run_once()
+            if handled:
+                continue
+            try:
+                await asyncio.wait_for(self._stop_event.wait(), timeout=self.poll_interval_seconds)
+            except asyncio.TimeoutError:
+                continue
+
+    async def _finalize_session(self, session_row) -> None:
+        session_id = str(session_row.id)
+        user_id = str(session_row.user_id)
+        model_name = (
+            str(getattr(session_row, "last_model", "") or "").strip()
+            or str(getattr(session_row, "model", "") or "").strip()
+            or None
+        )
+        try:
+            summary = await self.runtime.summarize_session(session_id, model_name=model_name)
+            summary_path, _ = write_session_summary_file(user_id, session_id, summary)
+            indexed = await self.memory_service.index_file(user_id, session_id, summary_path, force=True)
+            if not indexed:
+                raise RuntimeError("summary embedding/indexing did not produce any memory entries")
+        except Exception as exc:  # pragma: no cover - covered via service tests
+            await self._record_failure(session_id, exc)
+            return
+
+        relative_path = session_summary_relative_path(session_id).as_posix()
+        async with SessionLocal() as session:
+            repo = Repository(session)
+            await repo.complete_session_summary(session_id, summary_path=relative_path)
+        self._logger.info("Completed background session finalization for %s", session_id)
+
+    async def _record_failure(self, session_id: str, exc: Exception) -> None:
+        message = str(exc).strip() or exc.__class__.__name__
+        async with SessionLocal() as session:
+            repo = Repository(session)
+            current = await repo.get_session(session_id)
+            attempts = int(getattr(current, "summary_attempts", 0) or 0)
+            terminal = attempts >= self.MAX_ATTEMPTS
+            retry_at = None if terminal else self._retry_at_for_attempt(attempts)
+            await repo.fail_session_summary(
+                session_id,
+                error=message,
+                retry_at=retry_at,
+                terminal=terminal,
+            )
+        if terminal:
+            self._logger.warning("Session finalization failed permanently for %s: %s", session_id, message)
+        else:
+            self._logger.warning("Session finalization failed for %s (attempt %s): %s", session_id, attempts, message)
+
+    @classmethod
+    def _retry_at_for_attempt(cls, attempts: int) -> datetime:
+        index = max(0, min(attempts - 1, len(cls.BACKOFF_MINUTES) - 1))
+        return datetime.now(UTC) + timedelta(minutes=cls.BACKOFF_MINUTES[index])

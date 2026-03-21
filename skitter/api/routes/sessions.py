@@ -207,6 +207,12 @@ async def get_session_detail(session_id: str, request: Request, repo: Repository
         last_cost=session.last_cost or 0.0,
         last_model=session.last_model,
         last_usage_at=session.last_usage_at,
+        summary_status=session.summary_status,
+        summary_attempts=session.summary_attempts,
+        summary_next_retry_at=session.summary_next_retry_at,
+        summary_last_error=session.summary_last_error,
+        summary_path=session.summary_path,
+        summary_completed_at=session.summary_completed_at,
         messages=[
             SessionMessageOut(
                 id=message.id,

@@ -103,6 +103,12 @@ class SessionDetailOut(BaseModel):
     last_cost: float = 0.0
     last_model: str | None = None
     last_usage_at: datetime | None = None
+    summary_status: str | None = None
+    summary_attempts: int | None = None
+    summary_next_retry_at: datetime | None = None
+    summary_last_error: str | None = None
+    summary_path: str | None = None
+    summary_completed_at: datetime | None = None
     messages: list[SessionMessageOut]
     tool_runs: list[SessionToolRunOut]
     pending_user_prompts: list[SessionUserPromptOut] = Field(default_factory=list)

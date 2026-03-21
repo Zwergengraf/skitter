@@ -223,6 +223,27 @@ class _UserRow:
 class _SessionRow:
     id: str
     model: str
+    user_id: str = "user-1"
+    status: str = "active"
+    scope_type: str = "private"
+    scope_id: str = "private:user-1"
+    created_at: datetime = datetime.now(UTC)
+    input_tokens: int = 0
+    output_tokens: int = 0
+    total_tokens: int = 0
+    total_cost: float = 0.0
+    last_input_tokens: int = 0
+    last_output_tokens: int = 0
+    last_total_tokens: int = 0
+    last_cost: float = 0.0
+    last_model: str | None = None
+    last_usage_at: datetime | None = None
+    summary_status: str | None = None
+    summary_attempts: int | None = None
+    summary_next_retry_at: datetime | None = None
+    summary_last_error: str | None = None
+    summary_path: str | None = None
+    summary_completed_at: datetime | None = None
 
 
 @dataclass
@@ -265,6 +286,49 @@ class _CommandsRepo:
         _ = user_id, status, origin, scope_type, scope_id
         self.session = _SessionRow(id="session-2", model=model or "provider/main")
         return self.session
+
+
+class _SessionDetailRepo:
+    def __init__(self) -> None:
+        self.session = _SessionRow(
+            id="session-1",
+            model="provider/main",
+            last_model="provider/main",
+            summary_status="pending",
+            summary_attempts=2,
+            summary_next_retry_at=datetime.now(UTC),
+            summary_last_error="embedding timeout",
+            summary_path="memory/session-summaries/session-1.md",
+            summary_completed_at=None,
+        )
+        self.user = SimpleNamespace(id="user-1", display_name="Gabriel", transport_user_id="discord-user")
+
+    async def get_session(self, session_id: str):
+        return self.session if session_id == self.session.id else None
+
+    async def get_user_by_id(self, user_id: str):
+        return self.user if user_id == self.user.id else None
+
+    async def list_messages(self, session_id: str):
+        if session_id != self.session.id:
+            return []
+        return [
+            SimpleNamespace(
+                id="msg-1",
+                role="user",
+                content="hello",
+                created_at=datetime.now(UTC),
+                meta={},
+            )
+        ]
+
+    async def list_tool_runs_by_session(self, session_id: str):
+        _ = session_id
+        return []
+
+    async def list_pending_user_prompts(self, *, session_id: str | None = None, user_id: str | None = None, limit: int = 20):
+        _ = session_id, user_id, limit
+        return []
 
 
 @dataclass
@@ -461,6 +525,31 @@ def test_commands_model_and_tools(admin_api_key: str, monkeypatch: pytest.Monkey
         assert "Tool approvals are" in tools_resp.json()["message"]
 
 
+def test_new_command_returns_immediate_message(admin_api_key: str, monkeypatch: pytest.MonkeyPatch) -> None:
+    repo = _CommandsRepo(approved=True)
+
+    class _SessionManagerStub:
+        def __init__(self, runtime, workspace_root, memory_service=None):
+            _ = runtime, workspace_root, memory_service
+
+        async def start_new_session_for_scope(self, **kwargs):
+            _ = kwargs
+            return None, "session-2"
+
+    monkeypatch.setattr(commands_routes, "SessionManager", _SessionManagerStub)
+
+    with _client_with_repo(repo) as client:
+        response = client.post(
+            "/v1/commands/execute",
+            headers={"x-api-key": admin_api_key},
+            json={"command": "new", "user_id": "user-1"},
+        )
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["message"] == "Started a new session."
+    assert payload["data"]["session_id"] == "session-2"
+
+
 def test_commands_reject_unapproved_user(admin_api_key: str) -> None:
     repo = _CommandsRepo(approved=False)
     with _client_with_repo(repo) as client:
@@ -486,6 +575,18 @@ def test_user_prompts_route_lists_pending_prompts(admin_api_key: str) -> None:
     assert len(payload) == 1
     assert payload[0]["id"] == "prompt-1"
     assert payload[0]["question"] == "Which machine should I use?"
+
+
+def test_session_detail_includes_background_summary_state(admin_api_key: str) -> None:
+    repo = _SessionDetailRepo()
+    with _client_with_repo(repo) as client:
+        response = client.get("/v1/sessions/session-1/detail", headers={"x-api-key": admin_api_key})
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["summary_status"] == "pending"
+    assert payload["summary_attempts"] == 2
+    assert payload["summary_last_error"] == "embedding timeout"
+    assert payload["summary_path"] == "memory/session-summaries/session-1.md"
 
 
 def test_send_message_persists_assistant_prompt_when_runtime_requests_user_input(admin_api_key: str) -> None:
