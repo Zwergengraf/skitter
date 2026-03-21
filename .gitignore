@@ -218,6 +218,11 @@ browser-data/
 
 # Local config
 config.yaml
+admin-web/dist/
+admin-web/tsconfig.tsbuildinfo
+admin-web/tsconfig.node.tsbuildinfo
+admin-web/vite.config.js
+admin-web/vite.config.d.ts
 
 # Backups
 backups/
