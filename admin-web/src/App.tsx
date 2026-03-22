@@ -212,12 +212,12 @@ const SETTINGS_TAB_META: Record<
   models: {
     label: "Models",
     icon: Bot,
-    categories: ["models", "reasoning"],
+    categories: ["models", "reasoning", "embeddings"],
   },
   automation: {
     label: "Automation",
     icon: Clock3,
-    categories: ["heartbeat", "jobs", "sub_agents", "scheduler"],
+    categories: ["heartbeat", "jobs", "sub_agents", "scheduler", "limits"],
   },
   execution: {
     label: "Execution",
@@ -235,6 +235,10 @@ const SETTINGS_TAB_META: Record<
     categories: ["cors"],
   },
 };
+
+const ASSIGNED_SETTINGS_CATEGORIES = new Set(
+  Object.values(SETTINGS_TAB_META).flatMap((meta) => meta.categories)
+);
 
 const isPlainObject = (value: unknown): value is Record<string, unknown> =>
   Boolean(value) && typeof value === "object" && !Array.isArray(value);
@@ -572,7 +576,12 @@ export default function App() {
   }, [configData, settingsQueryNormalized]);
   const settingsCategoriesByTab = useMemo(() => {
     const entries = Object.entries(SETTINGS_TAB_META).map(([tabId, meta]) => {
-      const categories = filteredConfigCategories.filter((category) => meta.categories.includes(category.id));
+      const categories = filteredConfigCategories.filter((category) => {
+        if (meta.categories.includes(category.id)) {
+          return true;
+        }
+        return tabId === "advanced" && !ASSIGNED_SETTINGS_CATEGORIES.has(category.id);
+      });
       return [tabId, categories] as const;
     });
     return Object.fromEntries(entries) as Record<SettingsTabId, ConfigResponse["categories"]>;
