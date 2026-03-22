@@ -23,6 +23,7 @@ from ..tools.sandbox_manager import sandbox_manager
 from .security import AuthPrincipal, extract_credential, hash_secret, utcnow
 from .routes import (
     agent_jobs,
+    admin_events,
     auth,
     channels,
     commands,
@@ -70,7 +71,7 @@ def create_app() -> FastAPI:
         allow_headers=["*"],
     )
 
-    app.state.event_bus = EventBus()
+    app.state.event_bus = EventBus(admin_buffer_size=settings.admin_event_buffer_size)
     app.state.approval_service = ToolApprovalService(app.state.event_bus)
     app.state.user_prompt_service = UserPromptService(app.state.event_bus)
     app.state.runtime = AgentRuntime(
@@ -142,6 +143,7 @@ def create_app() -> FastAPI:
     app.include_router(tools.router)
     app.include_router(user_prompts.router)
     app.include_router(agent_jobs.router)
+    app.include_router(admin_events.router)
     app.include_router(runs.router)
     app.include_router(skills.router)
     app.include_router(models.router)

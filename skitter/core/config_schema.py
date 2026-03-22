@@ -52,6 +52,17 @@ FIELDS: list[ConfigFieldSpec] = [
         description="Python + app log level (e.g. DEBUG, INFO, WARNING, ERROR).",
     ),
     ConfigFieldSpec(
+        key="admin_event_buffer_size",
+        path=("logging", "admin_event_buffer_size"),
+        category="logging",
+        label="Live event buffer size",
+        field_type="number",
+        description="How many recent admin live events to keep in memory for the Live view.",
+        minimum=10,
+        maximum=10000,
+        step=10,
+    ),
+    ConfigFieldSpec(
         key="prompt_path",
         path=("prompt", "path"),
         category="prompt",

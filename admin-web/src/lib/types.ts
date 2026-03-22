@@ -36,6 +36,23 @@ export interface OverviewResponse {
   tool_approvals: OverviewToolApproval[];
 }
 
+export interface AdminLiveEvent {
+  id: string;
+  kind: string;
+  level: string;
+  title: string;
+  message: string;
+  data: Record<string, unknown>;
+  session_id?: string | null;
+  user_id?: string | null;
+  run_id?: string | null;
+  job_id?: string | null;
+  tool_run_id?: string | null;
+  executor_id?: string | null;
+  transport?: string | null;
+  created_at: string;
+}
+
 export interface SessionListItem {
   id: string;
   user: string;

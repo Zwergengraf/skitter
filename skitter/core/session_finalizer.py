@@ -73,6 +73,15 @@ class SessionFinalizerService:
             or str(getattr(session_row, "model", "") or "").strip()
             or None
         )
+        await self.runtime.event_bus.emit_admin(
+            kind="session.summary_started",
+            level="info",
+            title="Session summary started",
+            message="Background session summarization is running.",
+            session_id=session_id,
+            user_id=user_id,
+            data={"model": model_name},
+        )
         try:
             summary = await self.runtime.summarize_session(session_id, model_name=model_name)
             summary_path, _ = write_session_summary_file(user_id, session_id, summary)
@@ -88,6 +97,15 @@ class SessionFinalizerService:
             repo = Repository(session)
             await repo.complete_session_summary(session_id, summary_path=relative_path)
         self._logger.info("Completed background session finalization for %s", session_id)
+        await self.runtime.event_bus.emit_admin(
+            kind="session.summary_completed",
+            level="success",
+            title="Session summary completed",
+            message="Background session summarization and embedding completed.",
+            session_id=session_id,
+            user_id=user_id,
+            data={"summary_path": relative_path},
+        )
 
     async def _record_failure(self, session_id: str, exc: Exception) -> None:
         message = str(exc).strip() or exc.__class__.__name__
@@ -105,8 +123,28 @@ class SessionFinalizerService:
             )
         if terminal:
             self._logger.warning("Session finalization failed permanently for %s: %s", session_id, message)
+            await self.runtime.event_bus.emit_admin(
+                kind="session.summary_failed",
+                level="error",
+                title="Session summary failed",
+                message=message,
+                session_id=session_id,
+                data={"attempts": attempts, "terminal": True},
+            )
         else:
             self._logger.warning("Session finalization failed for %s (attempt %s): %s", session_id, attempts, message)
+            await self.runtime.event_bus.emit_admin(
+                kind="session.summary_retry_scheduled",
+                level="warning",
+                title="Session summary retry scheduled",
+                message=message,
+                session_id=session_id,
+                data={
+                    "attempts": attempts,
+                    "terminal": False,
+                    "retry_at": retry_at.isoformat() if retry_at else None,
+                },
+            )
 
     @classmethod
     def _retry_at_for_attempt(cls, attempts: int) -> datetime:

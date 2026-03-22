@@ -327,6 +327,15 @@ async def executors_connect(websocket: WebSocket) -> None:
             status="online",
             last_seen_at=datetime.now(UTC),
         )
+    await websocket.app.state.event_bus.emit_admin(
+        kind="executor.connected",
+        level="info",
+        title="Executor connected",
+        message=f"Executor {row.name} connected.",
+        executor_id=executor_id,
+        user_id=row.owner_user_id,
+        data={"kind": row.kind, "name": row.name},
+    )
 
     try:
         while True:
@@ -363,3 +372,12 @@ async def executors_connect(websocket: WebSocket) -> None:
         async with SessionLocal() as session:
             repo = Repository(session)
             await repo.update_executor(executor_id, status="offline", last_seen_at=datetime.now(UTC))
+        await websocket.app.state.event_bus.emit_admin(
+            kind="executor.disconnected",
+            level="warning",
+            title="Executor disconnected",
+            message=f"Executor {row.name} disconnected.",
+            executor_id=executor_id,
+            user_id=row.owner_user_id,
+            data={"kind": row.kind, "name": row.name},
+        )

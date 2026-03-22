@@ -1,5 +1,6 @@
 from . import (
     agent_jobs,
+    admin_events,
     auth,
     channels,
     commands,
@@ -24,6 +25,7 @@ from . import (
 
 __all__ = [
     "agent_jobs",
+    "admin_events",
     "channels",
     "commands",
     "auth",

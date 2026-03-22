@@ -71,6 +71,15 @@ class UserPromptService:
                 data=payload,
             )
         )
+        await self.event_bus.emit_admin(
+            kind="user_prompt.requested",
+            level="info",
+            title="User reply requested",
+            message=prompt.question,
+            session_id=session_id,
+            run_id=run_id,
+            data=payload,
+        )
         if self._notifier is not None and _looks_like_discord_channel_id(channel_id):
             try:
                 await self._notifier(

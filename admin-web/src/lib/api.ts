@@ -1,4 +1,5 @@
 import type {
+  AdminLiveEvent,
   AgentJobDetail,
   AgentJobListItem,
   ChannelListItem,
@@ -121,6 +122,8 @@ export const api = {
     const query = params.toString();
     return request(`/v1/overview${query ? `?${query}` : ""}`);
   },
+  getAdminEvents: (limit = 200): Promise<AdminLiveEvent[]> =>
+    request(`/v1/admin/events/recent?limit=${limit}`),
   getSessions: (status?: string): Promise<SessionListItem[]> => {
     const params = new URLSearchParams();
     if (status && status !== "all") {
@@ -254,4 +257,67 @@ export const api = {
     request(`/v1/secrets/${encodeURIComponent(name)}?user_id=${encodeURIComponent(userId)}`, {
       method: "DELETE",
     }),
+};
+
+export const streamAdminEvents = async (
+  onEvent: (event: AdminLiveEvent) => void,
+  options?: { signal?: AbortSignal }
+): Promise<void> => {
+  const apiKey = getStoredApiKey().trim();
+  if (!apiKey) {
+    throw new ApiError(401, "Admin API key is required.");
+  }
+  const response = await fetch(`${API_BASE}/v1/admin/events/stream`, {
+    headers: {
+      "X-API-Key": apiKey,
+      Accept: "text/event-stream",
+    },
+    signal: options?.signal,
+  });
+  if (!response.ok) {
+    const text = await response.text();
+    throw new ApiError(response.status, text || response.statusText);
+  }
+  if (!response.body) {
+    throw new Error("Live event stream is unavailable.");
+  }
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+
+  const flushChunk = (chunk: string) => {
+    const lines = chunk.split("\n");
+    const dataLines: string[] = [];
+    for (const rawLine of lines) {
+      const line = rawLine.trimEnd();
+      if (!line || line.startsWith(":") || line.startsWith("event:")) {
+        continue;
+      }
+      if (line.startsWith("data:")) {
+        dataLines.push(line.slice(5).trimStart());
+      }
+    }
+    if (!dataLines.length) {
+      return;
+    }
+    onEvent(JSON.parse(dataLines.join("\n")) as AdminLiveEvent);
+  };
+
+  while (true) {
+    const { value, done } = await reader.read();
+    if (done) {
+      break;
+    }
+    buffer += decoder.decode(value, { stream: true });
+    let boundary = buffer.indexOf("\n\n");
+    while (boundary >= 0) {
+      flushChunk(buffer.slice(0, boundary));
+      buffer = buffer.slice(boundary + 2);
+      boundary = buffer.indexOf("\n\n");
+    }
+  }
+  if (buffer.trim()) {
+    flushChunk(buffer);
+  }
 };

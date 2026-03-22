@@ -78,6 +78,7 @@ async def main() -> None:
             approval_service=approval_service,
             scheduler_service=scheduler,
             job_service=None,
+            event_bus=app.state.event_bus,
             model_name=worker_model,
             purpose="main",
             include_subagent_tools=False,
@@ -213,6 +214,16 @@ async def main() -> None:
             if answered_prompt is not None:
                 metadata["answered_prompt_id"] = answered_prompt.id
             await repo.add_message(session_id, role="user", content=envelope.text, metadata=metadata)
+        if answered_prompt is not None:
+            await app.state.event_bus.emit_admin(
+                kind="user_prompt.answered",
+                level="info",
+                title="User prompt answered",
+                message=envelope.text or "The user answered a pending prompt.",
+                session_id=session_id,
+                user_id=internal_user_id,
+                data={"prompt_id": answered_prompt.id},
+            )
         return answered_prompt
 
     async def _persist_assistant_message(

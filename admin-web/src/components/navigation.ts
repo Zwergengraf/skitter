@@ -3,6 +3,7 @@ import {
   AppWindow,
   Braces,
   Database,
+  Gauge,
   KeyRound,
   HardDrive,
   LayoutDashboard,
@@ -13,6 +14,7 @@ import {
 
 export const navItems = [
   { id: "overview", label: "Overview", icon: LayoutDashboard },
+  { id: "live", label: "Live", icon: Gauge },
   { id: "sessions", label: "Sessions", icon: AppWindow },
   { id: "tools", label: "Tool Runs", icon: Braces },
   { id: "agent-jobs", label: "Background Jobs", icon: Workflow },

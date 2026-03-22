@@ -48,9 +48,11 @@ import {
   getStoredApiKey,
   setApiAuthFailureHandler,
   setStoredApiKey,
+  streamAdminEvents,
 } from "@/lib/api";
 import type { NavItemId } from "@/components/navigation";
 import type {
+  AdminLiveEvent,
   AgentJobDetail,
   AgentJobListItem,
   ChannelListItem,
@@ -73,6 +75,7 @@ import type {
 
 const views: Record<NavItemId, string> = {
   overview: "Overview",
+  live: "Live",
   sessions: "Sessions",
   tools: "Tool Runs",
   "agent-jobs": "Background Jobs",
@@ -240,6 +243,25 @@ const ASSIGNED_SETTINGS_CATEGORIES = new Set(
   Object.values(SETTINGS_TAB_META).flatMap((meta) => meta.categories)
 );
 
+const liveEventLevelVariant = (level: string): "secondary" | "warning" | "success" | "danger" => {
+  if (level === "error") {
+    return "danger";
+  }
+  if (level === "warning") {
+    return "warning";
+  }
+  if (level === "success") {
+    return "success";
+  }
+  return "secondary";
+};
+
+const liveEventKindLabel = (kind: string): string =>
+  kind
+    .split(".")
+    .map((segment) => segment.replace(/_/g, " "))
+    .join(" / ");
+
 const isPlainObject = (value: unknown): value is Record<string, unknown> =>
   Boolean(value) && typeof value === "object" && !Array.isArray(value);
 
@@ -360,6 +382,14 @@ export default function App() {
   const [overviewError, setOverviewError] = useState<string | null>(null);
   const [overviewLoading, setOverviewLoading] = useState<boolean>(false);
   const [overviewRange, setOverviewRange] = useState<OverviewRange>("week");
+  const [liveEvents, setLiveEvents] = useState<AdminLiveEvent[]>([]);
+  const [liveEventsLoading, setLiveEventsLoading] = useState<boolean>(false);
+  const [liveEventsError, setLiveEventsError] = useState<string | null>(null);
+  const [liveEventsPaused, setLiveEventsPaused] = useState<boolean>(false);
+  const [liveEventsAutoScroll, setLiveEventsAutoScroll] = useState<boolean>(true);
+  const [liveEventLevelFilter, setLiveEventLevelFilter] = useState<string>("all");
+  const [liveEventKindFilter, setLiveEventKindFilter] = useState<string>("all");
+  const [liveEventSearch, setLiveEventSearch] = useState<string>("");
   const [sessionsData, setSessionsData] = useState<SessionListItem[]>([]);
   const [sessionsError, setSessionsError] = useState<string | null>(null);
   const [sessionsLoading, setSessionsLoading] = useState<boolean>(false);
@@ -481,10 +511,46 @@ export default function App() {
     return stored ? stored === "dark" : true;
   });
   const sessionMessagesEndRef = useRef<HTMLDivElement | null>(null);
+  const liveEventsEndRef = useRef<HTMLDivElement | null>(null);
 
   const activeLabel = views[active];
   const apiReady = adminApiKey.trim().length > 0;
   const maskedAdminApiKey = apiReady ? `••••${adminApiKey.slice(-4)}` : "Not configured";
+  const liveEventKinds = useMemo(
+    () => Array.from(new Set(liveEvents.map((event) => event.kind))).sort(),
+    [liveEvents]
+  );
+  const filteredLiveEvents = useMemo(() => {
+    const query = liveEventSearch.trim().toLowerCase();
+    return liveEvents.filter((event) => {
+      if (liveEventLevelFilter !== "all" && event.level !== liveEventLevelFilter) {
+        return false;
+      }
+      if (liveEventKindFilter !== "all" && event.kind !== liveEventKindFilter) {
+        return false;
+      }
+      if (!query) {
+        return true;
+      }
+      const haystack = [
+        event.kind,
+        event.title,
+        event.message,
+        event.session_id,
+        event.job_id,
+        event.run_id,
+        event.tool_run_id,
+        event.executor_id,
+        event.user_id,
+        event.transport,
+        JSON.stringify(event.data ?? {}),
+      ]
+        .filter(Boolean)
+        .join(" ")
+        .toLowerCase();
+      return haystack.includes(query);
+    });
+  }, [liveEvents, liveEventKindFilter, liveEventLevelFilter, liveEventSearch]);
 
   useEffect(() => {
     document.documentElement.classList.toggle("dark", isDark);
@@ -529,6 +595,87 @@ export default function App() {
       isMounted = false;
     };
   }, [active, overviewRange, apiReady]);
+
+  useEffect(() => {
+    if (!apiReady || active !== "live") {
+      return;
+    }
+    let isMounted = true;
+    const abortController = new AbortController();
+    setLiveEventsLoading(true);
+    setLiveEventsError(null);
+
+    const mergeEvent = (nextEvent: AdminLiveEvent) => {
+      if (!isMounted) {
+        return;
+      }
+      setLiveEvents((current) => {
+        if (current.some((item) => item.id === nextEvent.id)) {
+          return current;
+        }
+        const merged = [...current, nextEvent].sort(
+          (left, right) => Date.parse(left.created_at) - Date.parse(right.created_at)
+        );
+        return merged.slice(-1000);
+      });
+    };
+
+    const run = async () => {
+      try {
+        const items = await api.getAdminEvents(200);
+        if (!isMounted) {
+          return;
+        }
+        setLiveEvents(items);
+        setLiveEventsLoading(false);
+
+        while (isMounted && !abortController.signal.aborted) {
+          try {
+            setLiveEventsError(null);
+            await streamAdminEvents(
+              (event) => {
+                if (!liveEventsPaused) {
+                  mergeEvent(event);
+                }
+              },
+              { signal: abortController.signal }
+            );
+          } catch (error) {
+            const streamError = error as Error;
+            if (!isMounted || streamError.name === "AbortError") {
+              return;
+            }
+            setLiveEventsError(streamError.message || "Live event stream disconnected.");
+          }
+          if (!isMounted || abortController.signal.aborted) {
+            return;
+          }
+          await new Promise((resolve) => window.setTimeout(resolve, 1500));
+        }
+      } catch (error) {
+        const loadError = error as Error;
+        if (!isMounted || loadError.name === "AbortError") {
+          return;
+        }
+        setLiveEventsError(loadError.message || "Unable to load live events.");
+        setLiveEventsLoading(false);
+      }
+    };
+
+    void run();
+
+    return () => {
+      isMounted = false;
+      abortController.abort();
+    };
+  }, [active, apiReady, liveEventsPaused]);
+
+  useEffect(() => {
+    if (active !== "live" || !liveEventsAutoScroll) {
+      return;
+    }
+    liveEventsEndRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
+  }, [active, liveEvents, liveEventsAutoScroll]);
 
   const overviewSessions = overview?.live_sessions ?? [];
   const overviewToolRuns = overview?.tool_approvals ?? [];
@@ -657,6 +804,14 @@ export default function App() {
     params.delete("session");
     const query = params.toString();
     window.history.replaceState({}, "", query ? `${window.location.pathname}?${query}` : window.location.pathname);
+  };
+
+  const openRunDetail = (runId: string) => {
+    setSelectedRunId(runId);
+  };
+
+  const openAgentJobDetail = (jobId: string) => {
+    setSelectedAgentJobId(jobId);
   };
 
   useEffect(() => {
@@ -1323,10 +1478,29 @@ export default function App() {
       });
   };
 
+  const refreshLiveEvents = () => {
+    setLiveEventsLoading(true);
+    setLiveEventsError(null);
+    api
+      .getAdminEvents(200)
+      .then((data) => {
+        setLiveEvents(data);
+      })
+      .catch((error: Error) => {
+        setLiveEventsError(error.message);
+      })
+      .finally(() => {
+        setLiveEventsLoading(false);
+      });
+  };
+
   const handleRefreshActive = () => {
     switch (active) {
       case "overview":
         refreshOverview();
+        break;
+      case "live":
+        refreshLiveEvents();
         break;
       case "sessions":
         refreshSessions();
@@ -3044,6 +3218,191 @@ export default function App() {
           </div>
         )}
 
+        {active === "live" && (
+          <div className="grid gap-8">
+            <div className="grid gap-4 md:grid-cols-4">
+              <Card>
+                <CardContent className="p-6">
+                  <p className="text-xs font-semibold uppercase tracking-[0.2em] text-mutedForeground">Buffered events</p>
+                  <p className="mt-3 text-3xl font-semibold">{formatNumber(liveEvents.length)}</p>
+                </CardContent>
+              </Card>
+              <Card>
+                <CardContent className="p-6">
+                  <p className="text-xs font-semibold uppercase tracking-[0.2em] text-mutedForeground">Visible</p>
+                  <p className="mt-3 text-3xl font-semibold">{formatNumber(filteredLiveEvents.length)}</p>
+                </CardContent>
+              </Card>
+              <Card>
+                <CardContent className="p-6">
+                  <p className="text-xs font-semibold uppercase tracking-[0.2em] text-mutedForeground">Warnings</p>
+                  <p className="mt-3 text-3xl font-semibold">
+                    {formatNumber(liveEvents.filter((event) => event.level === "warning").length)}
+                  </p>
+                </CardContent>
+              </Card>
+              <Card>
+                <CardContent className="p-6">
+                  <p className="text-xs font-semibold uppercase tracking-[0.2em] text-mutedForeground">Errors</p>
+                  <p className="mt-3 text-3xl font-semibold">
+                    {formatNumber(liveEvents.filter((event) => event.level === "error").length)}
+                  </p>
+                </CardContent>
+              </Card>
+            </div>
+
+            <Card>
+              <CardHeader>
+                <div className="flex flex-wrap items-start justify-between gap-4">
+                  <div>
+                    <CardTitle>Live event stream</CardTitle>
+                    <CardDescription>
+                      Structured runtime activity from jobs, executors, approvals, prompts, schedules, and session finalization.
+                    </CardDescription>
+                  </div>
+                  <div className="flex flex-wrap items-center gap-3">
+                    <div className="flex items-center gap-2 text-sm text-mutedForeground">
+                      <span>Pause</span>
+                      <Switch checked={liveEventsPaused} onCheckedChange={setLiveEventsPaused} />
+                    </div>
+                    <div className="flex items-center gap-2 text-sm text-mutedForeground">
+                      <span>Auto-scroll</span>
+                      <Switch checked={liveEventsAutoScroll} onCheckedChange={setLiveEventsAutoScroll} />
+                    </div>
+                    <Button variant="outline" onClick={() => setLiveEvents([])}>
+                      Clear view
+                    </Button>
+                  </div>
+                </div>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                <div className="grid gap-3 lg:grid-cols-[minmax(0,1.2fr)_220px_260px]">
+                  <Input
+                    value={liveEventSearch}
+                    onChange={(event) => setLiveEventSearch(event.target.value)}
+                    placeholder="Search message, IDs, transport, or JSON payload"
+                  />
+                  <Select value={liveEventLevelFilter} onValueChange={setLiveEventLevelFilter}>
+                    <SelectTrigger>
+                      <SelectValue placeholder="Level" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="all">All levels</SelectItem>
+                      <SelectItem value="info">Info</SelectItem>
+                      <SelectItem value="success">Success</SelectItem>
+                      <SelectItem value="warning">Warning</SelectItem>
+                      <SelectItem value="error">Error</SelectItem>
+                    </SelectContent>
+                  </Select>
+                  <Select value={liveEventKindFilter} onValueChange={setLiveEventKindFilter}>
+                    <SelectTrigger>
+                      <SelectValue placeholder="Kind" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="all">All event kinds</SelectItem>
+                      {liveEventKinds.map((kind) => (
+                        <SelectItem key={kind} value={kind}>
+                          {liveEventKindLabel(kind)}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+
+                {liveEventsError ? (
+                  <div className="rounded-2xl border border-danger/40 bg-danger/10 px-4 py-3 text-sm text-danger">
+                    {liveEventsError}
+                  </div>
+                ) : null}
+
+                <ScrollArea className="h-[68vh] rounded-2xl border border-border">
+                  <div className="space-y-3 p-4">
+                    {liveEventsLoading ? (
+                      <div className="rounded-2xl border border-dashed border-border bg-muted/40 px-4 py-6 text-sm text-mutedForeground">
+                        Connecting to the live event stream...
+                      </div>
+                    ) : filteredLiveEvents.length ? (
+                      filteredLiveEvents.map((event) => {
+                        const linkedExecutor = event.executor_id
+                          ? executorsData.find((executor) => executor.id === event.executor_id) ?? null
+                          : null;
+                        return (
+                        <div key={event.id} className="rounded-2xl border border-border bg-card p-4">
+                          <div className="flex flex-wrap items-start justify-between gap-3">
+                            <div className="space-y-2">
+                              <div className="flex flex-wrap items-center gap-2">
+                                <Badge variant={liveEventLevelVariant(event.level)}>{event.level}</Badge>
+                                <Badge variant="outline">{liveEventKindLabel(event.kind)}</Badge>
+                                <span className="text-xs text-mutedForeground">{formatRelativeTime(event.created_at)}</span>
+                              </div>
+                              <div>
+                                <p className="text-sm font-semibold">{event.title}</p>
+                                <p className="mt-1 text-sm text-mutedForeground">{event.message}</p>
+                              </div>
+                            </div>
+                            <span className="text-xs text-mutedForeground">{new Date(event.created_at).toLocaleString()}</span>
+                          </div>
+
+                          <div className="mt-3 flex flex-wrap gap-2 text-xs">
+                            {event.session_id ? <Badge variant="outline">session: {event.session_id}</Badge> : null}
+                            {event.run_id ? <Badge variant="outline">run: {event.run_id}</Badge> : null}
+                            {event.job_id ? <Badge variant="outline">job: {event.job_id}</Badge> : null}
+                            {event.tool_run_id ? <Badge variant="outline">tool: {event.tool_run_id}</Badge> : null}
+                            {event.executor_id ? <Badge variant="outline">executor: {event.executor_id}</Badge> : null}
+                            {event.user_id ? <Badge variant="outline">user: {event.user_id}</Badge> : null}
+                            {event.transport ? <Badge variant="outline">transport: {event.transport}</Badge> : null}
+                          </div>
+
+                          {(event.session_id || event.run_id || event.job_id || linkedExecutor) ? (
+                            <div className="mt-3 flex flex-wrap gap-2">
+                              {event.session_id ? (
+                                <Button size="sm" variant="outline" onClick={() => openSessionDetail(event.session_id ?? "")}>
+                                  Open session
+                                </Button>
+                              ) : null}
+                              {event.run_id ? (
+                                <Button size="sm" variant="outline" onClick={() => openRunDetail(event.run_id ?? "")}>
+                                  Open run
+                                </Button>
+                              ) : null}
+                              {event.job_id ? (
+                                <Button size="sm" variant="outline" onClick={() => openAgentJobDetail(event.job_id ?? "")}>
+                                  Open job
+                                </Button>
+                              ) : null}
+                              {linkedExecutor ? (
+                                <Button size="sm" variant="outline" onClick={() => openExecutorDetail(linkedExecutor)}>
+                                  Open executor
+                                </Button>
+                              ) : null}
+                            </div>
+                          ) : null}
+
+                          {Object.keys(event.data ?? {}).length ? (
+                            <details className="mt-3 rounded-xl border border-border/70 bg-muted/20 p-3">
+                              <summary className="cursor-pointer text-xs font-semibold uppercase tracking-[0.18em] text-mutedForeground">
+                                Payload
+                              </summary>
+                              <pre className="mt-3 overflow-x-auto whitespace-pre-wrap break-words text-xs text-mutedForeground">
+                                {formatJsonPreview(event.data, 4000)}
+                              </pre>
+                            </details>
+                          ) : null}
+                        </div>
+                      )})
+                    ) : (
+                      <div className="rounded-2xl border border-dashed border-border bg-muted/40 px-4 py-6 text-sm text-mutedForeground">
+                        No live events match the current filters.
+                      </div>
+                    )}
+                    <div ref={liveEventsEndRef} />
+                  </div>
+                </ScrollArea>
+              </CardContent>
+            </Card>
+          </div>
+        )}
+
         {active === "sessions" && (
           <div className="grid gap-6">
             <Card>
@@ -4631,7 +4990,7 @@ export default function App() {
           </div>
         )}
 
-        {active !== "overview" && active !== "sessions" && active !== "tools" && active !== "agent-jobs" && active !== "jobs" && active !== "memory" && active !== "secrets" && active !== "users" && active !== "sandbox" && active !== "settings" && (
+        {active !== "overview" && active !== "live" && active !== "sessions" && active !== "tools" && active !== "agent-jobs" && active !== "jobs" && active !== "memory" && active !== "secrets" && active !== "users" && active !== "sandbox" && active !== "settings" && (
           <Card>
             <CardHeader>
               <CardTitle>Coming soon</CardTitle>

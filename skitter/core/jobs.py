@@ -144,6 +144,17 @@ class JobService:
             cancelled = await self._cancel_running_task(job.id)
             if cancelled:
                 _logger.info("Cancellation signal sent to running background job %s", job.id)
+        if job is not None:
+            await self.runtime.event_bus.emit_admin(
+                kind="job.cancel_requested",
+                level="warning",
+                title="Background job cancellation requested",
+                message=f"Cancellation was requested for background job {job.name}.",
+                job_id=job.id,
+                session_id=job.session_id,
+                user_id=user_id,
+                data={"status": job.status, "cancel_requested": bool(job.cancel_requested)},
+            )
         return job
 
     async def _set_running_task(self, job_id: str, task: asyncio.Task) -> None:
@@ -222,6 +233,16 @@ class JobService:
 
     async def _run_job(self, job) -> None:
         try:
+            await self.runtime.event_bus.emit_admin(
+                kind="job.started",
+                level="info",
+                title="Background job started",
+                message=f"Background job {job.name} started.",
+                job_id=job.id,
+                session_id=job.session_id,
+                user_id=job.user_id,
+                data={"kind": job.kind, "model": job.model},
+            )
             model_name = resolve_model_name(job.model, purpose="main")
             target_session_id = await self._ensure_target_session(job, model_name)
             execution_session_id = job.session_id or target_session_id
@@ -315,6 +336,17 @@ class JobService:
                 async with SessionLocal() as session:
                     repo = Repository(session)
                     await repo.mark_agent_job_delivered(job.id, delivery_error=delivery_error)
+            await self.runtime.event_bus.emit_admin(
+                kind=f"job.{status}",
+                level="success" if status == "completed" else ("warning" if status == "cancelled" else "error"),
+                title=f"Background job {status}",
+                message=delivery_text,
+                job_id=job.id,
+                session_id=target_session_id or job.session_id,
+                user_id=job.user_id,
+                run_id=run_id,
+                data={"delivery_error": delivery_error, "status": status},
+            )
         except asyncio.CancelledError:
             _logger.info("Background job %s interrupted by cancellation", job.id)
             async with SessionLocal() as session:
@@ -328,6 +360,15 @@ class JobService:
                         error="Cancellation requested by user.",
                     )
                 await repo.mark_agent_job_delivered(job.id, delivery_error="cancelled")
+            await self.runtime.event_bus.emit_admin(
+                kind="job.cancelled",
+                level="warning",
+                title="Background job cancelled",
+                message=f"Background job {job.name} was cancelled.",
+                job_id=job.id,
+                session_id=job.session_id,
+                user_id=job.user_id,
+            )
             raise
         except Exception as exc:
             _logger.exception("Background job %s failed unexpectedly", job.id)
@@ -339,3 +380,12 @@ class JobService:
                     result_payload={},
                     error=str(exc),
                 )
+            await self.runtime.event_bus.emit_admin(
+                kind="job.failed",
+                level="error",
+                title="Background job failed",
+                message=str(exc),
+                job_id=job.id,
+                session_id=job.session_id,
+                user_id=job.user_id,
+            )

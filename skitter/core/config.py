@@ -379,6 +379,7 @@ class Settings(BaseSettings):
     context_max_chat_messages: int = Field(default=80)
     context_compact_every_messages: int = Field(default=8)
     log_level: str = Field(default="INFO")
+    admin_event_buffer_size: int = Field(default=1000)
     limits_max_tool_calls: int = Field(default=12)
     limits_max_runtime_seconds: int = Field(default=180)
     limits_max_cost_usd: float = Field(default=2.0)
