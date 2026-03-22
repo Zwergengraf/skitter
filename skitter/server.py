@@ -78,6 +78,7 @@ async def main() -> None:
             approval_service=approval_service,
             scheduler_service=scheduler,
             job_service=None,
+            event_bus=app.state.event_bus,
             model_name=worker_model,
             purpose="main",
             include_subagent_tools=False,

@@ -927,6 +927,7 @@ class AgentRuntime:
                 user_prompt_service=self._user_prompt_service,
                 scheduler_service=self._scheduler_service,
                 job_service=self._job_service,
+                event_bus=self.event_bus,
                 model_name=resolved.name,
                 purpose=purpose,
                 include_user_prompt_tools=include_user_prompt_tools,

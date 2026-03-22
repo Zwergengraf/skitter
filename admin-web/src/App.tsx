@@ -806,6 +806,14 @@ export default function App() {
     window.history.replaceState({}, "", query ? `${window.location.pathname}?${query}` : window.location.pathname);
   };
 
+  const openRunDetail = (runId: string) => {
+    setSelectedRunId(runId);
+  };
+
+  const openAgentJobDetail = (jobId: string) => {
+    setSelectedAgentJobId(jobId);
+  };
+
   useEffect(() => {
     if (!apiReady || active !== "sessions") {
       return;
@@ -3314,7 +3322,11 @@ export default function App() {
                         Connecting to the live event stream...
                       </div>
                     ) : filteredLiveEvents.length ? (
-                      filteredLiveEvents.map((event) => (
+                      filteredLiveEvents.map((event) => {
+                        const linkedExecutor = event.executor_id
+                          ? executorsData.find((executor) => executor.id === event.executor_id) ?? null
+                          : null;
+                        return (
                         <div key={event.id} className="rounded-2xl border border-border bg-card p-4">
                           <div className="flex flex-wrap items-start justify-between gap-3">
                             <div className="space-y-2">
@@ -3341,6 +3353,31 @@ export default function App() {
                             {event.transport ? <Badge variant="outline">transport: {event.transport}</Badge> : null}
                           </div>
 
+                          {(event.session_id || event.run_id || event.job_id || linkedExecutor) ? (
+                            <div className="mt-3 flex flex-wrap gap-2">
+                              {event.session_id ? (
+                                <Button size="sm" variant="outline" onClick={() => openSessionDetail(event.session_id ?? "")}>
+                                  Open session
+                                </Button>
+                              ) : null}
+                              {event.run_id ? (
+                                <Button size="sm" variant="outline" onClick={() => openRunDetail(event.run_id ?? "")}>
+                                  Open run
+                                </Button>
+                              ) : null}
+                              {event.job_id ? (
+                                <Button size="sm" variant="outline" onClick={() => openAgentJobDetail(event.job_id ?? "")}>
+                                  Open job
+                                </Button>
+                              ) : null}
+                              {linkedExecutor ? (
+                                <Button size="sm" variant="outline" onClick={() => openExecutorDetail(linkedExecutor)}>
+                                  Open executor
+                                </Button>
+                              ) : null}
+                            </div>
+                          ) : null}
+
                           {Object.keys(event.data ?? {}).length ? (
                             <details className="mt-3 rounded-xl border border-border/70 bg-muted/20 p-3">
                               <summary className="cursor-pointer text-xs font-semibold uppercase tracking-[0.18em] text-mutedForeground">
@@ -3352,7 +3389,7 @@ export default function App() {
                             </details>
                           ) : null}
                         </div>
-                      ))
+                      )})
                     ) : (
                       <div className="rounded-2xl border border-dashed border-border bg-muted/40 px-4 py-6 text-sm text-mutedForeground">
                         No live events match the current filters.

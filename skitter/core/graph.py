@@ -214,6 +214,7 @@ def build_graph(
     user_prompt_service=None,
     scheduler_service: SchedulerService | None = None,
     job_service=None,
+    event_bus=None,
     model_name: str | None = None,
     purpose: str = "main",
     include_subagent_tools: bool = True,
@@ -231,6 +232,7 @@ def build_graph(
                 approval_service=approval_service,
                 scheduler_service=scheduler_service,
                 job_service=None,
+                event_bus=event_bus,
                 model_name=worker_model,
                 purpose="main",
                 include_subagent_tools=False,
@@ -547,6 +549,19 @@ def build_graph(
                 run_id=_run_id() or None,
                 message_id=_message_id() or None,
             )
+        if event_bus is not None:
+            await event_bus.emit_admin(
+                kind="tool.started",
+                level="info",
+                title="Tool started",
+                message=f"{tool_name} started.",
+                session_id=_session_id(),
+                user_id=_user_id(),
+                run_id=_run_id() or None,
+                tool_run_id=tool_run.id,
+                transport=_origin(),
+                data={"tool_name": tool_name, "input": payload},
+            )
         return tool_run.id
 
     async def _enforce_tool_budget(tool_name: str, payload: dict[str, Any]) -> str | None:
@@ -578,9 +593,26 @@ def build_graph(
     ) -> None:
         if not tool_run_id:
             return
+        tool_name: str | None = None
         async with SessionLocal() as session:
             repo = Repository(session)
+            existing = await repo.get_tool_run(tool_run_id)
+            tool_name = existing.tool_name if existing is not None else None
             await repo.complete_tool_run(tool_run_id, status, output, executor_id=executor_id)
+        if event_bus is not None:
+            await event_bus.emit_admin(
+                kind=f"tool.{status}",
+                level="error" if status == "failed" else ("warning" if status in {"denied"} else "info"),
+                title=f"Tool {status}",
+                message=(str(output.get("error") or "").strip() if isinstance(output, dict) else "") or f"{tool_name or 'Tool'} {status}.",
+                session_id=_session_id(),
+                user_id=_user_id(),
+                run_id=_run_id() or None,
+                tool_run_id=tool_run_id,
+                executor_id=executor_id,
+                transport=_origin(),
+                data={"tool_name": tool_name, "output": output, "status": status},
+            )
 
     async def _fail_untracked_call(tool_name: str, payload: dict[str, Any], message: str) -> str:
         tool_run_id = await _create_auto_tool_run(tool_name, payload)
