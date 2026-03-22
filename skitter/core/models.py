@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+import uuid
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any, Dict, List, Optional
 
 
@@ -33,6 +34,24 @@ class StreamEvent:
     type: str
     data: Dict[str, Any]
     created_at: datetime = field(default_factory=datetime.utcnow)
+
+
+@dataclass
+class AdminEvent:
+    kind: str
+    title: str
+    message: str
+    level: str = "info"
+    data: Dict[str, Any] = field(default_factory=dict)
+    session_id: str | None = None
+    user_id: str | None = None
+    run_id: str | None = None
+    job_id: str | None = None
+    tool_run_id: str | None = None
+    executor_id: str | None = None
+    transport: str | None = None
+    created_at: datetime = field(default_factory=lambda: datetime.now(UTC))
+    id: str = field(default_factory=lambda: str(uuid.uuid4()))
 
 
 @dataclass

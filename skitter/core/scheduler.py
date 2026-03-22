@@ -259,6 +259,16 @@ class SchedulerService:
             now_utc = self._utcnow()
             await repo.update_scheduled_run(run.id, started_at=now_utc)
             await repo.update_scheduled_job(job_id, last_run_at=now_utc)
+        await self.runtime.event_bus.emit_admin(
+            kind="schedule.triggered",
+            level="info",
+            title="Scheduled job triggered",
+            message=f"Scheduled job {job.name} started.",
+            job_id=job.id,
+            user_id=job.user_id,
+            transport=job.target_origin,
+            data={"schedule_run_id": run.id},
+        )
 
         execution_session_id = None
         target_session_id = None
@@ -362,6 +372,17 @@ class SchedulerService:
                 )
                 if job.schedule_type == "date":
                     await repo.update_scheduled_job(job_id, enabled=False)
+            await self.runtime.event_bus.emit_admin(
+                kind="schedule.completed",
+                level="success",
+                title="Scheduled job completed",
+                message=f"Scheduled job {job.name} completed successfully.",
+                job_id=job.id,
+                session_id=target_session_id,
+                user_id=job.user_id,
+                transport=job.target_origin,
+                data={"schedule_run_id": run.id, "delivery_error": delivery_error},
+            )
             if execution_session_id:
                 self.runtime.clear_history(execution_session_id)
         except Exception as exc:
@@ -373,6 +394,17 @@ class SchedulerService:
                     finished_at=self._utcnow(),
                     error=str(exc),
                 )
+            await self.runtime.event_bus.emit_admin(
+                kind="schedule.failed",
+                level="error",
+                title="Scheduled job failed",
+                message=str(exc),
+                job_id=job_id,
+                session_id=target_session_id,
+                transport=getattr(job, "target_origin", None),
+                user_id=getattr(job, "user_id", None),
+                data={"schedule_run_id": run.id},
+            )
         finally:
             async with SessionLocal() as session:
                 repo = Repository(session)

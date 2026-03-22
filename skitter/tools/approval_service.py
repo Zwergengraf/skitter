@@ -75,6 +75,17 @@ class ToolApprovalService:
                 },
             )
         )
+        await self.event_bus.emit_admin(
+            kind="tool.approval_requested",
+            level="warning",
+            title="Tool approval requested",
+            message=f"{tool_name} is waiting for user approval.",
+            session_id=session_id,
+            run_id=run_id,
+            tool_run_id=tool_run.id,
+            user_id=requested_by,
+            data={"tool_name": tool_name, "channel_id": channel_id, "payload": payload},
+        )
 
         should_notify = self._notifier is not None and _looks_like_discord_channel_id(channel_id)
         if should_notify:
@@ -119,6 +130,17 @@ class ToolApprovalService:
                 tool_run = await repo.deny_tool_run(tool_run_id, decided_by)
         if future and not future.done():
             future.set_result(approved)
+        if tool_run is not None:
+            await self.event_bus.emit_admin(
+                kind="tool.approval_resolved",
+                level="info" if approved else "warning",
+                title="Tool approval resolved",
+                message=f"{tool_run.tool_name} was {'approved' if approved else 'denied'}.",
+                session_id=tool_run.session_id,
+                tool_run_id=tool_run_id,
+                user_id=decided_by,
+                data={"approved": approved, "tool_name": tool_run.tool_name},
+            )
         return tool_run is not None
 
     async def complete(self, tool_run_id: str, status: str, output: Dict[str, Any]) -> None:

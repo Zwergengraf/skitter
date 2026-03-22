@@ -375,6 +375,17 @@ class AgentRuntime:
             envelope=envelope,
             run_id=run_id,
         )
+        await self.event_bus.emit_admin(
+            kind="run.started",
+            level="info",
+            title="Agent run started",
+            message="A new agent run started.",
+            session_id=session_id,
+            user_id=internal_user_id,
+            run_id=run_id,
+            transport=envelope.origin,
+            data={"message_id": envelope.message_id, "has_attachments": bool(envelope.attachments)},
+        )
         response: object = ""
         messages: list[BaseMessage] = []
         purpose = self._purpose_for_origin(envelope.origin)
@@ -553,6 +564,21 @@ class AgentRuntime:
                             session_id=session_id,
                             event_type="model_failover",
                             payload={
+                                "from_model": candidate_model,
+                                "to_model": next_model,
+                                "error": str(exc),
+                                "status_code": self._extract_http_status_code(exc),
+                            },
+                        )
+                        await self.event_bus.emit_admin(
+                            kind="model.failover",
+                            level="warning",
+                            title="Model failover",
+                            message=f"Switched model from {candidate_model} to {next_model}.",
+                            session_id=session_id,
+                            user_id=internal_user_id,
+                            run_id=run_id,
+                            data={
                                 "from_model": candidate_model,
                                 "to_model": next_model,
                                 "error": str(exc),
@@ -756,6 +782,21 @@ class AgentRuntime:
                 "status": run_status,
                 "response_preview": cleaned[:600],
                 "duration_ms": duration_ms,
+            },
+        )
+        await self.event_bus.emit_admin(
+            kind=f"run.{run_status}",
+            level="error" if run_status == "failed" else ("warning" if run_status in {"limited", "waiting_for_user"} else "info"),
+            title=f"Agent run {run_status}",
+            message=run_error or cleaned[:240] or f"Run {run_status}.",
+            session_id=session_id,
+            user_id=internal_user_id,
+            run_id=run_id,
+            transport=envelope.origin,
+            data={
+                "duration_ms": duration_ms,
+                "limit_reason": run_limit_reason,
+                "model": model_name,
             },
         )
         return AgentResponse(

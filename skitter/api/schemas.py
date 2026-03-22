@@ -226,6 +226,23 @@ class EventOut(BaseModel):
     created_at: datetime
 
 
+class AdminEventOut(BaseModel):
+    id: str
+    kind: str
+    level: str
+    title: str
+    message: str
+    data: Dict[str, Any] = Field(default_factory=dict)
+    session_id: str | None = None
+    user_id: str | None = None
+    run_id: str | None = None
+    job_id: str | None = None
+    tool_run_id: str | None = None
+    executor_id: str | None = None
+    transport: str | None = None
+    created_at: datetime
+
+
 class UserPromptOut(BaseModel):
     id: str
     session_id: str

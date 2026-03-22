@@ -132,6 +132,15 @@ class SessionManager:
                 await repo.end_session(active.id, status="ended")
                 if scope_type == "private":
                     await repo.queue_session_summary(active.id)
+                    await self.runtime.event_bus.emit_admin(
+                        kind="session.summary_queued",
+                        level="info",
+                        title="Session summary queued",
+                        message="Archived session summarization was moved to the background queue.",
+                        session_id=active.id,
+                        user_id=user_id,
+                        data={"scope_type": scope_type, "scope_id": scope_id},
+                    )
                 self.runtime.clear_history(active.id)
             model_name = resolve_model_name(None, purpose="main")
             new_session = await repo.create_session(
@@ -144,6 +153,16 @@ class SessionManager:
         if channel_id:
             self._scope_session[channel_id] = new_session.id
         self._scope_session[scope_id] = new_session.id
+        await self.runtime.event_bus.emit_admin(
+            kind="session.started",
+            level="info",
+            title="Session started",
+            message="Started a new active session.",
+            session_id=new_session.id,
+            user_id=user_id,
+            transport=origin,
+            data={"scope_type": scope_type, "scope_id": scope_id},
+        )
         return None, new_session.id
 
     async def reindex_memories(self, user_id: str) -> dict:

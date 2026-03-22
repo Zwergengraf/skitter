@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from types import SimpleNamespace
@@ -12,7 +13,7 @@ from fastapi.testclient import TestClient
 from skitter.api.app import create_app
 from skitter.api.deps import get_repo
 from skitter.api.routes import commands as commands_routes
-from skitter.core.models import AgentResponse, PendingUserPrompt
+from skitter.core.models import AdminEvent, AgentResponse, PendingUserPrompt
 from skitter.core.config import ModelConfig, ProviderConfig, settings
 
 
@@ -64,6 +65,28 @@ def _app_with_repo(repo: Any):
     app = create_app()
     app.dependency_overrides[get_repo] = lambda: repo
     return app
+
+
+def test_admin_events_recent_returns_buffered_events(admin_api_key: str) -> None:
+    app = create_app()
+    asyncio.run(
+        app.state.event_bus.publish_admin(
+            AdminEvent(
+                kind="job.started",
+                title="Background job started",
+                message="Job demo started.",
+                level="info",
+                job_id="job-1",
+            )
+        )
+    )
+    client = TestClient(app)
+    response = client.get("/v1/admin/events/recent?limit=10", headers={"X-API-Key": admin_api_key})
+    assert response.status_code == 200
+    payload = response.json()
+    assert len(payload) == 1
+    assert payload[0]["kind"] == "job.started"
+    assert payload[0]["job_id"] == "job-1"
 
 
 @dataclass
