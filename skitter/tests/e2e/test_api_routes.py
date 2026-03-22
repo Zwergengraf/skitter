@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from types import SimpleNamespace
 from typing import Any
+import base64
 
 import pytest
 from fastapi.testclient import TestClient
@@ -643,3 +644,55 @@ def test_send_message_persists_assistant_prompt_when_runtime_requests_user_input
     assert metadata["user_prompt_id"] == "prompt-2"
     assert metadata["user_prompt_question"] == "Anything else?"
     assert metadata["user_prompt_choices"] == []
+
+
+def test_send_message_accepts_uploaded_attachments(admin_api_key: str, monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
+    repo = _PromptRepo()
+    app = _app_with_repo(repo)
+    monkeypatch.setattr("skitter.api.routes.messages.user_workspace_root", lambda user_id: tmp_path / user_id)
+
+    payload_bytes = b"fake-image"
+    encoded = base64.b64encode(payload_bytes).decode("ascii")
+
+    class _RuntimeStub:
+        async def handle_message(self, session_id: str, envelope):
+            assert session_id == "session-1"
+            assert len(envelope.attachments) == 1
+            attachment = envelope.attachments[0]
+            assert attachment.filename == "preview.png"
+            assert attachment.content_type == "image/png"
+            assert attachment.url is not None and attachment.url.startswith("data:image/png;base64,")
+            assert attachment.path is not None
+            return AgentResponse(text="Uploaded", attachments=[])
+
+    app.state.runtime = _RuntimeStub()
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/v1/messages",
+            headers={"x-api-key": admin_api_key},
+            json={
+                "session_id": "session-1",
+                "user_id": "user-1",
+                "text": "",
+                "metadata": {},
+                "attachments": [
+                    {
+                        "filename": "preview.png",
+                        "content_type": "image/png",
+                        "data_base64": encoded,
+                    }
+                ],
+            },
+        )
+
+    assert response.status_code == 200
+    assert len(repo.messages) == 2
+    session_id, role, content, metadata = repo.messages[0]
+    assert session_id == "session-1"
+    assert role == "user"
+    assert content == ""
+    stored = metadata["attachments"][0]
+    assert stored["filename"] == "preview.png"
+    assert stored["content_type"] == "image/png"
+    assert str(stored["path"]).endswith("preview.png")

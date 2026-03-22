@@ -123,11 +123,18 @@ class MemoryEntryOut(BaseModel):
     session_ids: list[str] = []
 
 
+class MessageAttachmentCreate(BaseModel):
+    filename: str
+    data_base64: str
+    content_type: str | None = None
+
+
 class MessageCreate(BaseModel):
     session_id: str
     user_id: str | None = None
     text: str
     metadata: Dict[str, Any] = Field(default_factory=dict)
+    attachments: list[MessageAttachmentCreate] = Field(default_factory=list)
 
 
 class AuthBootstrapRequest(BaseModel):

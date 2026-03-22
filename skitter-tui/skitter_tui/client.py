@@ -2,8 +2,11 @@ from __future__ import annotations
 
 import asyncio
 import json
+import base64
+import mimetypes
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 import httpx
@@ -186,11 +189,24 @@ class SkitterApiClient:
         session_id: str,
         text: str,
         metadata: dict[str, Any] | None = None,
+        attachment_paths: list[Path] | None = None,
     ) -> dict[str, Any]:
+        attachments_payload: list[dict[str, str]] = []
+        for path in attachment_paths or []:
+            filename = path.name or "attachment"
+            content_type = mimetypes.guess_type(filename)[0] or "application/octet-stream"
+            attachments_payload.append(
+                {
+                    "filename": filename,
+                    "content_type": content_type,
+                    "data_base64": base64.b64encode(path.read_bytes()).decode("ascii"),
+                }
+            )
         payload = {
             "session_id": session_id,
             "text": text,
             "metadata": metadata or {},
+            "attachments": attachments_payload,
         }
         response = await self._request("POST", "/v1/messages", json=payload, requires_auth=True)
         body = response.json()

@@ -1,6 +1,7 @@
 import SwiftUI
 import Speech
 import UIKit
+import UniformTypeIdentifiers
 
 private enum RelativeTimeFormatters {
     static let approvals: RelativeDateTimeFormatter = {
@@ -185,6 +186,7 @@ private struct ChatScreen: View {
     @StateObject private var speechController = SpeechCaptureController()
     @StateObject private var speaker = VoicePlaybackController()
     @State private var showsDetails = false
+    @State private var showsFileImporter = false
     @FocusState private var composerIsFocused: Bool
 
     private let bottomAnchorID = "chat-bottom-anchor"
@@ -289,49 +291,13 @@ private struct ChatScreen: View {
                     quickVoiceStatus
                 }
 
+                if !model.pendingComposerAttachments.isEmpty {
+                    pendingAttachmentStrip
+                }
+
                 HStack(alignment: .bottom, spacing: 12) {
                     composer
-
-                    VStack(spacing: 10) {
-                        if composerIsFocused {
-                            Button {
-                                composerIsFocused = false
-                            } label: {
-                                Image(systemName: "keyboard.chevron.compact.down")
-                                    .font(.system(size: 22, weight: .medium))
-                                    .foregroundStyle(.secondary)
-                            }
-                            .buttonStyle(.plain)
-                            .accessibilityLabel("Hide keyboard")
-                        }
-
-                        Button {
-                            Task {
-                                await toggleQuickVoice()
-                            }
-                        } label: {
-                            Image(systemName: quickVoiceButtonIcon)
-                                .font(.system(size: 28, weight: .medium))
-                                .foregroundStyle(quickVoiceButtonTint)
-                        }
-                        .buttonStyle(.plain)
-                        .disabled(speechController.isPreparing || model.isSending)
-                        .accessibilityLabel(speechController.isListening ? "Stop voice dictation" : "Start voice dictation")
-
-                        Button {
-                            if speechController.isListening {
-                                speechController.stopListening(clearTranscript: false)
-                            }
-                            Task {
-                                await model.sendCurrentDraft()
-                            }
-                        } label: {
-                            Image(systemName: "arrow.up.circle.fill")
-                                .font(.system(size: 30))
-                        }
-                        .buttonStyle(.plain)
-                        .disabled(model.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || model.isSending)
-                    }
+                    composerControls
                 }
                 .padding(.horizontal, 16)
 
@@ -354,6 +320,18 @@ private struct ChatScreen: View {
         }
         .navigationTitle("Skitter")
         .navigationBarTitleDisplayMode(.inline)
+        .fileImporter(
+            isPresented: $showsFileImporter,
+            allowedContentTypes: [.item],
+            allowsMultipleSelection: true
+        ) { result in
+            switch result {
+            case let .success(urls):
+                Task { await model.queueComposerAttachments(urls: urls) }
+            case let .failure(error):
+                model.errorText = error.localizedDescription
+            }
+        }
         .toolbar {
             ToolbarItemGroup(placement: .topBarTrailing) {
                 Button {
@@ -413,6 +391,101 @@ private struct ChatScreen: View {
                 }
             }
             .padding(.horizontal, 16)
+        }
+    }
+
+    private var pendingAttachmentStrip: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 10) {
+                ForEach(model.pendingComposerAttachments) { item in
+                    pendingAttachmentChip(item)
+                }
+            }
+            .padding(.horizontal, 16)
+        }
+    }
+
+    @ViewBuilder
+    private func pendingAttachmentChip(_ item: PendingComposerAttachment) -> some View {
+        HStack(spacing: 8) {
+            Image(systemName: "paperclip")
+                .foregroundStyle(.secondary)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(item.filename)
+                    .font(.caption.weight(.medium))
+                    .lineLimit(1)
+                Text(item.contentType)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+            Button {
+                model.removeComposerAttachment(id: item.id)
+            } label: {
+                Image(systemName: "xmark.circle.fill")
+                    .foregroundStyle(.secondary)
+            }
+            .buttonStyle(.plain)
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 8)
+        .background(Color(uiColor: .secondarySystemBackground), in: Capsule())
+    }
+
+    private var composerControls: some View {
+        VStack(spacing: 10) {
+            if composerIsFocused {
+                Button {
+                    composerIsFocused = false
+                } label: {
+                    Image(systemName: "keyboard.chevron.compact.down")
+                        .font(.system(size: 22, weight: .medium))
+                        .foregroundStyle(.secondary)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Hide keyboard")
+            }
+
+            Button {
+                showsFileImporter = true
+            } label: {
+                Image(systemName: "paperclip.circle.fill")
+                    .font(.system(size: 28, weight: .medium))
+                    .foregroundStyle(model.pendingComposerAttachments.isEmpty ? AnyShapeStyle(.secondary) : AnyShapeStyle(Color.accentColor))
+            }
+            .buttonStyle(.plain)
+            .disabled(model.isSending)
+            .accessibilityLabel("Attach files")
+
+            Button {
+                Task {
+                    await toggleQuickVoice()
+                }
+            } label: {
+                Image(systemName: quickVoiceButtonIcon)
+                    .font(.system(size: 28, weight: .medium))
+                    .foregroundStyle(quickVoiceButtonTint)
+            }
+            .buttonStyle(.plain)
+            .disabled(speechController.isPreparing || model.isSending)
+            .accessibilityLabel(speechController.isListening ? "Stop voice dictation" : "Start voice dictation")
+
+            Button {
+                if speechController.isListening {
+                    speechController.stopListening(clearTranscript: false)
+                }
+                Task {
+                    await model.sendCurrentDraft()
+                }
+            } label: {
+                Image(systemName: "arrow.up.circle.fill")
+                    .font(.system(size: 30))
+            }
+            .buttonStyle(.plain)
+            .disabled(
+                (model.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                    && model.pendingComposerAttachments.isEmpty)
+                    || model.isSending
+            )
         }
     }
 

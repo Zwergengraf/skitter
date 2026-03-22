@@ -231,6 +231,13 @@ struct MessageAttachment: Identifiable, Equatable, Hashable {
     }
 }
 
+struct PendingComposerAttachment: Identifiable, Equatable {
+    let id: String
+    let filename: String
+    let contentType: String
+    let data: Data
+}
+
 struct ChatMessage: Identifiable, Equatable, Hashable {
     let id: String
     let role: ChatRole

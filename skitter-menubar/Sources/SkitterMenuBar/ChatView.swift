@@ -241,6 +241,16 @@ struct ChatView: View {
 
                     VStack(spacing: 8) {
                         Button(action: {
+                            Task { await state.pickComposerAttachments() }
+                        }) {
+                            Image(systemName: "paperclip.circle.fill")
+                                .font(.title2)
+                                .foregroundStyle(state.pendingComposerAttachments.isEmpty ? .secondary : Color.accentColor)
+                        }
+                        .buttonStyle(.plain)
+                        .help("Attach files")
+
+                        Button(action: {
                             Task { await state.toggleTranscription() }
                         }) {
                             Image(systemName: state.isTranscribing ? "stop.circle.fill" : (state.isTranscriptionStarting ? "waveform.circle.fill" : "mic.circle.fill"))
@@ -258,8 +268,47 @@ struct ChatView: View {
                                 .font(.title2)
                         }
                         .buttonStyle(.plain)
-                        .disabled(state.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                        .disabled(
+                            state.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty &&
+                            state.pendingComposerAttachments.isEmpty
+                        )
                     }
+                }
+
+                if !state.pendingComposerAttachments.isEmpty {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text("Queued for next message")
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(.secondary)
+                        ForEach(state.pendingComposerAttachments) { item in
+                            HStack(spacing: 8) {
+                                Image(systemName: "paperclip")
+                                    .foregroundStyle(.secondary)
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(item.filename)
+                                        .font(.caption)
+                                        .lineLimit(1)
+                                    Text(item.contentType)
+                                        .font(.caption2)
+                                        .foregroundStyle(.secondary)
+                                }
+                                Spacer()
+                                Button {
+                                    state.removeComposerAttachment(id: item.id)
+                                } label: {
+                                    Image(systemName: "xmark.circle.fill")
+                                }
+                                .buttonStyle(.plain)
+                                .foregroundStyle(.secondary)
+                            }
+                        }
+                    }
+                    .padding(8)
+                    .background(RoundedRectangle(cornerRadius: 8).fill(panelBackground))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 8)
+                            .stroke(panelStroke, lineWidth: 1)
+                    )
                 }
 
                 HStack {

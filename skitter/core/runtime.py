@@ -1648,15 +1648,17 @@ Each bullet must be self-contained, explicit, and searchable.
     def _serialize_attachments(self, attachments: list[Attachment]) -> list[dict]:
         serialized: list[dict] = []
         for attachment in attachments:
-            if not attachment.url:
+            if not attachment.url and not attachment.path:
                 continue
-            serialized.append(
-                {
-                    "filename": attachment.filename,
-                    "url": attachment.url,
-                    "content_type": attachment.content_type or "",
-                }
-            )
+            item = {
+                "filename": attachment.filename,
+                "content_type": attachment.content_type or "",
+            }
+            if attachment.url:
+                item["url"] = attachment.url
+            if attachment.path:
+                item["path"] = attachment.path
+            serialized.append(item)
         return serialized
 
     def _build_content_blocks(self, content: str, attachments: list[dict]) -> list[dict]:
@@ -1668,7 +1670,18 @@ Each bullet must be self-contained, explicit, and searchable.
 
         for attachment in attachments:
             url = str(attachment.get("url") or "")
+            path = str(attachment.get("path") or "")
             if not url:
+                if path:
+                    filename = str(attachment.get("filename") or "")
+                    content_type = str(attachment.get("content_type") or "").lower()
+                    label_parts = []
+                    if filename:
+                        label_parts.append(f"Filename: {filename}")
+                    if content_type:
+                        label_parts.append(f"Type: {content_type}")
+                    label = " ".join(label_parts) if label_parts else "Attachment"
+                    blocks.append({"type": "text", "text": f"{label}. Workspace path: {path}"})
                 continue
             filename = str(attachment.get("filename") or "")
             content_type = str(attachment.get("content_type") or "").lower()
@@ -1679,7 +1692,12 @@ Each bullet must be self-contained, explicit, and searchable.
             if content_type:
                 label_parts.append(f"Type: {content_type}")
             label = " ".join(label_parts) if label_parts else "Attachment"
-            blocks.append({"type": "text", "text": f"{label}. URL: {url}"})
+            if path:
+                blocks.append({"type": "text", "text": f"{label}. Workspace path: {path}"})
+            elif not url.startswith("data:"):
+                blocks.append({"type": "text", "text": f"{label}. URL: {url}"})
+            else:
+                blocks.append({"type": "text", "text": label})
             if content_type.startswith("image/") or ext in {".png", ".jpg", ".jpeg", ".gif", ".webp"}:
                 block: dict[str, object] = {"type": "image", "url": url}
                 if content_type:

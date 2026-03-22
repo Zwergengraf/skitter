@@ -124,8 +124,23 @@ struct APIClient {
         }
     }
 
-    func sendMessage(sessionID: String, text: String) async throws -> ChatMessage {
-        let body = MessageCreateBody(session_id: sessionID, text: text, metadata: [:])
+    func sendMessage(
+        sessionID: String,
+        text: String,
+        attachments: [PendingComposerAttachment] = []
+    ) async throws -> ChatMessage {
+        let body = MessageCreateBody(
+            session_id: sessionID,
+            text: text,
+            metadata: [:],
+            attachments: attachments.map {
+                MessageCreateAttachmentBody(
+                    filename: $0.filename,
+                    content_type: $0.contentType,
+                    data_base64: $0.data.base64EncodedString()
+                )
+            }
+        )
         let payload: MessagePayload = try await requestJSON(
             path: "/v1/messages",
             method: "POST",
@@ -492,6 +507,13 @@ private struct MessageCreateBody: Encodable {
     let session_id: String
     let text: String
     let metadata: [String: String]
+    let attachments: [MessageCreateAttachmentBody]
+}
+
+private struct MessageCreateAttachmentBody: Encodable {
+    let filename: String
+    let content_type: String
+    let data_base64: String
 }
 
 private struct AttachmentPayload: Decodable {

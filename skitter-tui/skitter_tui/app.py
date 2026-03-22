@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import mimetypes
 import os
 import socket
 from dataclasses import dataclass
@@ -351,6 +352,7 @@ class SkitterTuiApp(App[None]):
         self._busy = False
         self._stream_stop = asyncio.Event()
         self._last_attachments: list[dict[str, Any]] = []
+        self._pending_attachment_paths: list[Path] = []
         self._seen_message_ids: set[str] = set()
         self._chat_entries: list[ChatEntry] = []
         self._state_path = self._resolve_state_path()
@@ -602,16 +604,19 @@ class SkitterTuiApp(App[None]):
         attachments = self._normalize_attachments(meta.get("attachments"), message_id=message_id)
         content = str(item.get("content") or "").strip()
         if not content and attachments:
-            content = "Received attachments."
+            content = "Uploaded attachments."
         if not content:
             self._seen_message_ids.add(message_id)
             return False
         timestamp = self._format_timestamp(item.get("created_at"))
         if role == "user":
-            if self._replace_optimistic_user(content, timestamp=timestamp):
+            rendered_content = content
+            if attachments:
+                rendered_content = f"{rendered_content}\n\n{self._render_attachments_markdown(attachments, include_indices=True)}"
+            if self._replace_optimistic_user(rendered_content, timestamp=timestamp):
                 self._seen_message_ids.add(message_id)
                 return True
-            self._append_panel("You", content, border_style=self.PANEL_USER_STYLE, timestamp=timestamp)
+            self._append_user(content, attachments=attachments, timestamp=timestamp)
         elif role == "assistant":
             if attachments:
                 self._last_attachments = list(attachments)
@@ -841,7 +846,7 @@ class SkitterTuiApp(App[None]):
     async def on_input_submitted(self, event: Input.Submitted) -> None:
         text = event.value.strip()
         event.input.value = ""
-        if not text:
+        if not text and not self._pending_attachment_paths:
             return
 
         if text.startswith("/"):
@@ -857,7 +862,11 @@ class SkitterTuiApp(App[None]):
             return
 
         self._busy = True
-        self._append_user(text, optimistic=True)
+        self._append_user(
+            text or "Uploaded attachments.",
+            optimistic=True,
+            attachments=self._pending_attachment_preview(),
+        )
         self._show_thinking_indicator()
         self._update_status("Thinking", "sending request")
         self.run_worker(self._send_message(text), name="send", group="send", exclusive=True)
@@ -893,6 +902,8 @@ class SkitterTuiApp(App[None]):
                 "- `/logout` clear access token and disconnect\n"
                 "- `/attachments` list last assistant attachments\n"
                 "- `/download <index> [target_path]` download attachment\n"
+                "- `/attach <path>` attach a local file to the next message\n"
+                "- `/unattach [index|all]` remove queued local attachments\n"
                 "- `/clear` clear local chat view\n"
                 "- `/quit` exit the app"
             )
@@ -902,6 +913,12 @@ class SkitterTuiApp(App[None]):
             return
         if cmd == "/download":
             await self._handle_download_command(arg)
+            return
+        if cmd == "/attach":
+            await self._handle_attach_command(arg)
+            return
+        if cmd == "/unattach":
+            self._handle_unattach_command(arg)
             return
         if cmd == "/session":
             if self._session_id:
@@ -1082,6 +1099,37 @@ class SkitterTuiApp(App[None]):
             return
         self._append_system(f"Saved attachment `{filename}` to `{target.resolve()}`.")
 
+    async def _handle_attach_command(self, arg: str) -> None:
+        if not arg.strip():
+            self._append_system("Usage: `/attach <path>`")
+            return
+        path = Path(arg.strip()).expanduser()
+        if not path.exists() or not path.is_file():
+            self._append_system(f"Attachment path not found: `{path}`")
+            return
+        self._pending_attachment_paths.append(path)
+        self._append_system(self._render_pending_attachment_markdown(include_indices=True))
+
+    def _handle_unattach_command(self, arg: str) -> None:
+        if not self._pending_attachment_paths:
+            self._append_system("No queued attachments.")
+            return
+        target = arg.strip().lower()
+        if not target or target == "all":
+            self._pending_attachment_paths = []
+            self._append_system("Cleared queued attachments.")
+            return
+        try:
+            index = int(target)
+        except ValueError:
+            self._append_system("Usage: `/unattach [index|all]`")
+            return
+        if index < 0 or index >= len(self._pending_attachment_paths):
+            self._append_system(f"Attachment index out of range. Valid: 0..{len(self._pending_attachment_paths)-1}")
+            return
+        removed = self._pending_attachment_paths.pop(index)
+        self._append_system(f"Removed queued attachment `{removed.name}`.")
+
     def _normalize_attachments(self, raw: Any, message_id: str | None = None) -> list[dict[str, str]]:
         normalized: list[dict[str, str]] = []
         if not isinstance(raw, list):
@@ -1121,15 +1169,39 @@ class SkitterTuiApp(App[None]):
                 lines.append(f"{prefix}`{filename}` ({content_type})")
         return "\n".join(lines)
 
+    def _render_pending_attachment_markdown(self, include_indices: bool = False) -> str:
+        lines = ["Queued attachments for the next message:"]
+        for idx, path in enumerate(self._pending_attachment_paths):
+            prefix = f"{idx}. " if include_indices else "- "
+            content_type = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
+            lines.append(f"{prefix}`{path.name}` ({content_type})")
+        return "\n".join(lines)
+
+    def _pending_attachment_preview(self) -> list[dict[str, str]] | None:
+        if not self._pending_attachment_paths:
+            return None
+        return [
+            {
+                "filename": path.name,
+                "content_type": mimetypes.guess_type(path.name)[0] or "application/octet-stream",
+                "download_url": "",
+                "url": "",
+            }
+            for path in self._pending_attachment_paths
+        ]
+
     async def _send_message(self, text: str) -> None:
         if not self._session_id:
             self.post_message(AssistantReply("No active session.", error=True))
             return
         try:
+            queued_paths = list(self._pending_attachment_paths)
             await self.api.send_message(
                 session_id=self._session_id,
                 text=text,
+                attachment_paths=queued_paths,
             )
+            self._pending_attachment_paths = []
             await self._sync_new_messages(self._session_id)
             self.post_message(AssistantReply("", error=False, attachments=[]))
         except Exception as exc:
@@ -1173,12 +1245,23 @@ class SkitterTuiApp(App[None]):
         self._chat_entries.clear()
         self._append_system("Chat view cleared.")
 
-    def _append_user(self, text: str, *, optimistic: bool = False) -> None:
+    def _append_user(
+        self,
+        text: str,
+        *,
+        optimistic: bool = False,
+        attachments: list[dict[str, str]] | None = None,
+        timestamp: str | None = None,
+    ) -> None:
+        final_text = text
+        if attachments:
+            final_text = f"{final_text}\n\n{self._render_attachments_markdown(attachments, include_indices=True)}"
         self._append_panel(
             "You",
-            text,
+            final_text,
             border_style=self.PANEL_USER_STYLE,
             optimistic=optimistic,
+            timestamp=timestamp,
         )
 
     def _replace_optimistic_user(self, text: str, *, timestamp: str) -> bool:

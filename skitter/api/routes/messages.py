@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import base64
+import binascii
+import mimetypes
 import uuid
 from datetime import datetime
 from pathlib import Path
@@ -9,12 +12,14 @@ from fastapi.responses import FileResponse, RedirectResponse
 
 from ..authz import require_session_access, resolve_target_user_id
 from ..deps import get_repo
-from ..schemas import MessageCreate, MessageOut
+from ..schemas import MessageAttachmentCreate, MessageCreate, MessageOut
 from ...core.models import Attachment, MessageEnvelope
 from ...core.workspace import user_workspace_root
 from ...data.repositories import Repository
 
 router = APIRouter(prefix="/v1/messages", tags=["messages"])
+MAX_MESSAGE_ATTACHMENTS = 10
+MAX_ATTACHMENT_BYTES = 10 * 1024 * 1024
 
 
 def _require_approved_user(approved: bool) -> None:
@@ -54,6 +59,78 @@ def _attachments_for_response(message_id: str, items: list[dict]) -> list[dict]:
     return response_items
 
 
+def _sanitize_attachment_name(raw: str, index: int) -> str:
+    candidate = Path(str(raw or "")).name.strip()
+    return candidate or f"attachment-{index}"
+
+
+def _guess_content_type(filename: str, provided: str | None) -> str:
+    value = str(provided or "").strip()
+    if value:
+        return value
+    guessed, _ = mimetypes.guess_type(filename)
+    return guessed or "application/octet-stream"
+
+
+def _store_uploaded_attachments(
+    *,
+    user_id: str,
+    envelope_message_id: str,
+    attachments: list[MessageAttachmentCreate],
+) -> tuple[list[dict], list[Attachment]]:
+    if not attachments:
+        return [], []
+    if len(attachments) > MAX_MESSAGE_ATTACHMENTS:
+        raise HTTPException(status_code=400, detail=f"At most {MAX_MESSAGE_ATTACHMENTS} attachments are allowed.")
+
+    upload_root = user_workspace_root(user_id) / ".uploads" / envelope_message_id
+    upload_root.mkdir(parents=True, exist_ok=True)
+
+    stored_meta: list[dict] = []
+    runtime_attachments: list[Attachment] = []
+    for index, item in enumerate(attachments):
+        filename = _sanitize_attachment_name(item.filename, index)
+        try:
+            payload = base64.b64decode(item.data_base64, validate=True)
+        except (binascii.Error, ValueError) as exc:
+            raise HTTPException(status_code=400, detail=f"Attachment `{filename}` is not valid base64.") from exc
+        if len(payload) > MAX_ATTACHMENT_BYTES:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Attachment `{filename}` exceeds the {MAX_ATTACHMENT_BYTES // (1024 * 1024)} MB limit.",
+            )
+        content_type = _guess_content_type(filename, item.content_type)
+        target = upload_root / filename
+        suffix = 1
+        while target.exists():
+            stem = Path(filename).stem or "attachment"
+            ext = Path(filename).suffix
+            target = upload_root / f"{stem}-{suffix}{ext}"
+            suffix += 1
+        target.write_bytes(payload)
+        absolute_path = str(target.resolve())
+        stored_meta.append(
+            {
+                "filename": target.name,
+                "content_type": content_type,
+                "path": absolute_path,
+            }
+        )
+        data_url = None
+        if content_type.lower().startswith("image/"):
+            encoded = base64.b64encode(payload).decode("ascii")
+            data_url = f"data:{content_type};base64,{encoded}"
+        runtime_attachments.append(
+            Attachment(
+                filename=target.name,
+                content_type=content_type,
+                url=data_url,
+                path=absolute_path,
+            )
+        )
+    return stored_meta, runtime_attachments
+
+
 @router.post("", response_model=MessageOut)
 async def send_message(
     payload: MessageCreate,
@@ -84,6 +161,11 @@ async def send_message(
         text=payload.text,
         origin=origin_hint,
         metadata=payload.metadata,
+    )
+    uploaded_meta, uploaded_runtime_attachments = _store_uploaded_attachments(
+        user_id=session.user_id,
+        envelope_message_id=envelope.message_id,
+        attachments=payload.attachments,
     )
     scope_type = session.scope_type or "private"
     scope_id = session.scope_id or f"private:{session.user_id}"
@@ -119,9 +201,12 @@ async def send_message(
     )
     if answered_prompt is not None:
         metadata["answered_prompt_id"] = answered_prompt.id
-    await repo.add_message(payload.session_id, role="user", content=payload.text, metadata=metadata)
+    if uploaded_meta:
+        metadata["attachments"] = uploaded_meta
+    user_message = await repo.add_message(payload.session_id, role="user", content=payload.text, metadata=metadata)
 
     envelope.metadata.update(metadata)
+    envelope.attachments = uploaded_runtime_attachments
 
     runtime = request.app.state.runtime
     response = await runtime.handle_message(payload.session_id, envelope)

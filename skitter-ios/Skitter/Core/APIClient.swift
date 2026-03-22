@@ -170,6 +170,7 @@ struct APIClient {
         config: APIConfiguration,
         sessionID: String,
         text: String,
+        attachments: [PendingComposerAttachment] = [],
         modelNameOverride: String? = nil,
         origin: String = "ios"
     ) async throws -> ChatMessage {
@@ -183,6 +184,15 @@ struct APIClient {
             "session_id": AnyEncodable(sessionID),
             "text": AnyEncodable(text),
             "metadata": AnyEncodable(metadata),
+            "attachments": AnyEncodable(
+                attachments.map {
+                    [
+                        "filename": AnyEncodable($0.filename),
+                        "content_type": AnyEncodable($0.contentType),
+                        "data_base64": AnyEncodable($0.data.base64EncodedString()),
+                    ]
+                }
+            ),
         ]
         let payload: MessagePayload = try await requestJSON(
             baseURL: config.baseURL,

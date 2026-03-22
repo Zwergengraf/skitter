@@ -1,7 +1,17 @@
 import Foundation
 import AppKit
 import os
+import UniformTypeIdentifiers
 import WhisperKit
+
+private enum MIMETypeResolver {
+    static func mimeType(for url: URL) -> String {
+        if let type = UTType(filenameExtension: url.pathExtension), let mime = type.preferredMIMEType {
+            return mime
+        }
+        return "application/octet-stream"
+    }
+}
 
 struct LocalCommand: Identifiable {
     let id: String
@@ -27,6 +37,7 @@ final class AppState: ObservableObject {
     @Published private(set) var availableModels: [String] = []
     @Published private(set) var sessionID: String?
     @Published private(set) var messages: [ChatMessage] = []
+    @Published private(set) var pendingComposerAttachments: [PendingComposerAttachment] = []
     @Published private(set) var chatOpenSignal: Int = 0
     @Published private(set) var progressStatusText: String = ""
     @Published var errorBanner: String?
@@ -153,6 +164,7 @@ final class AppState: ObservableObject {
         lastModelFetchAt = nil
         sessionID = nil
         messages = []
+        pendingComposerAttachments = []
         localOverlayMessages = []
         pendingToolApprovals = []
         pendingUserPrompts = []
@@ -425,12 +437,48 @@ final class AppState: ObservableObject {
             stopTranscription(clearStatus: true)
         }
         let text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty else { return }
+        guard !text.isEmpty || !pendingComposerAttachments.isEmpty else { return }
         draft = ""
+        if !pendingComposerAttachments.isEmpty {
+            await send(text: text)
+            return
+        }
         if await handleLocalCommandIfNeeded(text) {
             return
         }
         await send(text: text)
+    }
+
+    func pickComposerAttachments() async {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = true
+        panel.prompt = "Attach"
+        let response = panel.runModal()
+        guard response == .OK else { return }
+        do {
+            var next = pendingComposerAttachments
+            for url in panel.urls where url.isFileURL {
+                let data = try Data(contentsOf: url)
+                let contentType = MIMETypeResolver.mimeType(for: url)
+                next.append(
+                    PendingComposerAttachment(
+                        id: UUID().uuidString,
+                        filename: url.lastPathComponent,
+                        contentType: contentType,
+                        data: data
+                    )
+                )
+            }
+            pendingComposerAttachments = next
+        } catch {
+            setError(error)
+        }
+    }
+
+    func removeComposerAttachment(id: String) {
+        pendingComposerAttachments.removeAll { $0.id == id }
     }
 
     private func handleLocalCommandIfNeeded(_ text: String) async -> Bool {
@@ -1196,10 +1244,11 @@ final class AppState: ObservableObject {
         do {
             let id = try await ensureSession(forceNew: false)
             sessionForRecovery = id
+            let queuedAttachments = pendingComposerAttachments
             let userMessage = ChatMessage(
                 id: UUID().uuidString,
                 role: .user,
-                content: text,
+                content: text.isEmpty ? "Uploaded attachments." : text,
                 createdAt: Date(),
                 attachments: []
             )
@@ -1210,7 +1259,8 @@ final class AppState: ObservableObject {
             progressStatusText = "Working... 0s\nLast step: thinking"
             activity = .thinking
             errorBanner = nil
-            _ = try await api.sendMessage(sessionID: id, text: text)
+            _ = try await api.sendMessage(sessionID: id, text: text, attachments: queuedAttachments)
+            pendingComposerAttachments = []
             let syncedMessages = try await api.sessionDetail(sessionID: id)
             applySyncedMessages(syncedMessages)
             isSending = false

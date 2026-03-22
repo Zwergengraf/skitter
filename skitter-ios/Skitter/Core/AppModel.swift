@@ -1,5 +1,6 @@
 import Foundation
 import SwiftUI
+import UniformTypeIdentifiers
 
 @MainActor
 final class AppModel: ObservableObject {
@@ -9,6 +10,7 @@ final class AppModel: ObservableObject {
     @Published private(set) var currentUser: AuthUser?
     @Published private(set) var sessionID: String?
     @Published private(set) var messages: [ChatMessage] = []
+    @Published private(set) var pendingComposerAttachments: [PendingComposerAttachment] = []
     @Published private(set) var pendingApprovals: [ToolRunStatus] = []
     @Published private(set) var pendingPrompts: [PendingUserPrompt] = []
     @Published private(set) var availableModels: [String] = []
@@ -190,6 +192,7 @@ final class AppModel: ObservableObject {
         sessionCost = 0
         unreadCount = 0
         draft = ""
+        pendingComposerAttachments = []
         didPrimeMessageBaseline = false
         errorText = nil
         health = .checking
@@ -200,13 +203,46 @@ final class AppModel: ObservableObject {
 
     func sendCurrentDraft() async {
         let text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty else { return }
+        guard !text.isEmpty || !pendingComposerAttachments.isEmpty else { return }
         draft = ""
         await send(text: text)
     }
 
+    func queueComposerAttachments(urls: [URL]) async {
+        do {
+            var next = pendingComposerAttachments
+            for url in urls where url.isFileURL {
+                let gainedAccess = url.startAccessingSecurityScopedResource()
+                defer {
+                    if gainedAccess {
+                        url.stopAccessingSecurityScopedResource()
+                    }
+                }
+                let data = try Data(contentsOf: url)
+                let contentType =
+                    UTType(filenameExtension: url.pathExtension)?.preferredMIMEType
+                    ?? "application/octet-stream"
+                next.append(
+                    PendingComposerAttachment(
+                        id: UUID().uuidString,
+                        filename: url.lastPathComponent,
+                        contentType: contentType,
+                        data: data
+                    )
+                )
+            }
+            pendingComposerAttachments = next
+        } catch {
+            errorText = error.localizedDescription
+        }
+    }
+
+    func removeComposerAttachment(id: String) {
+        pendingComposerAttachments.removeAll { $0.id == id }
+    }
+
     func send(text: String, modelNameOverride: String? = nil) async {
-        if await handleCommandIfNeeded(text) {
+        if pendingComposerAttachments.isEmpty, await handleCommandIfNeeded(text) {
             return
         }
 
@@ -219,7 +255,11 @@ final class AppModel: ObservableObject {
         var optimisticID: String?
         do {
             let id = try await ensureSession(forceNew: false)
-            let optimistic = ChatMessage.local(role: .user, content: text)
+            let queuedAttachments = pendingComposerAttachments
+            let optimistic = ChatMessage.local(
+                role: .user,
+                content: text.isEmpty ? "Uploaded attachments." : text
+            )
             optimisticID = optimistic.id
             messages.append(optimistic)
             isSending = true
@@ -229,8 +269,10 @@ final class AppModel: ObservableObject {
                 config: config,
                 sessionID: id,
                 text: text,
+                attachments: queuedAttachments,
                 modelNameOverride: modelNameOverride
             )
+            pendingComposerAttachments = []
             await refreshState(showErrors: true)
         } catch {
             if let optimisticID {
