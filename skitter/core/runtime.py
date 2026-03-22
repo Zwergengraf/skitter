@@ -788,7 +788,7 @@ class AgentRuntime:
             kind=f"run.{run_status}",
             level="error" if run_status == "failed" else ("warning" if run_status in {"limited", "waiting_for_user"} else "info"),
             title=f"Agent run {run_status}",
-            message=run_error or cleaned[:240] or f"Run {run_status}.",
+            message=run_error or f"Run {run_status}.",
             session_id=session_id,
             user_id=internal_user_id,
             run_id=run_id,
@@ -797,6 +797,8 @@ class AgentRuntime:
                 "duration_ms": duration_ms,
                 "limit_reason": run_limit_reason,
                 "model": model_name,
+                "response_text": cleaned,
+                "response_preview": cleaned[:240],
             },
         )
         return AgentResponse(
