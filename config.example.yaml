@@ -172,6 +172,12 @@ tools:
   - transfer_file
   - attach_file
   - browser
+  - notify
+  - screenshot
+  - mouse_move
+  - mouse_click
+  - keyboard_type
+  - keyboard_press
   - sub_agent
   - sub_agent_batch
   - job_start

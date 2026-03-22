@@ -31,6 +31,24 @@ Skills define _how_ tools work. This file is for _your_ specifics — the stuff 
 
 ---
 
+## Host Device Notes
+
+- Some executor nodes may expose host-device capabilities in `machine_status.capabilities`.
+- Use `machine_status` before host-device actions if you are unsure what a node supports.
+- Host-device tools are:
+  - `notify`
+  - `screenshot`
+  - `mouse_move`
+  - `mouse_click`
+  - `keyboard_type`
+  - `keyboard_press`
+- These are different from `browser_action`:
+  - `browser_action` controls the browser page inside Playwright
+  - host-device tools control the real executor machine itself
+- Host-device tools are sensitive and usually require approval.
+
+---
+
 ## File Transfer + Attach Notes
 
 - `transfer_file` can move files between executors.

@@ -1,20 +1,24 @@
 from __future__ import annotations
 
 import asyncio
-import os
 import base64
+import ctypes
+import ctypes.util
 import json
 import mimetypes
-from contextlib import asynccontextmanager
-from pathlib import Path
+import os
 import shutil
+import sys
+import time
+from contextlib import asynccontextmanager
+from datetime import datetime
+from pathlib import Path
 from typing import Any, Dict
 from urllib.parse import urlparse
 
 import httpx
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
-from datetime import datetime
 
 try:
     from playwright.async_api import async_playwright, BrowserContext, Page, TimeoutError as PlaywrightTimeoutError
@@ -41,6 +45,156 @@ _playwright = None
 _contexts: dict[str, BrowserContext] = {}
 _pages: dict[str, Page] = {}
 _locks: dict[str, asyncio.Lock] = {}
+_application_services = None
+
+
+class CGPoint(ctypes.Structure):
+    _fields_ = [("x", ctypes.c_double), ("y", ctypes.c_double)]
+
+
+_KCG_HID_EVENT_TAP = 0
+_KCG_EVENT_LEFT_MOUSE_DOWN = 1
+_KCG_EVENT_LEFT_MOUSE_UP = 2
+_KCG_EVENT_RIGHT_MOUSE_DOWN = 3
+_KCG_EVENT_RIGHT_MOUSE_UP = 4
+_KCG_EVENT_MOUSE_MOVED = 5
+_KCG_EVENT_KEY_DOWN = 10
+_KCG_EVENT_KEY_UP = 11
+
+_KCG_MOUSE_BUTTON_LEFT = 0
+_KCG_MOUSE_BUTTON_RIGHT = 1
+_KCG_MOUSE_BUTTON_CENTER = 2
+
+_CG_FLAG_MASK_SHIFT = 1 << 17
+_CG_FLAG_MASK_CONTROL = 1 << 18
+_CG_FLAG_MASK_OPTION = 1 << 19
+_CG_FLAG_MASK_COMMAND = 1 << 20
+_CG_FLAG_MASK_FUNCTION = 1 << 23
+
+_MAC_KEYCODES: dict[str, int] = {
+    "a": 0,
+    "s": 1,
+    "d": 2,
+    "f": 3,
+    "h": 4,
+    "g": 5,
+    "z": 6,
+    "x": 7,
+    "c": 8,
+    "v": 9,
+    "b": 11,
+    "q": 12,
+    "w": 13,
+    "e": 14,
+    "r": 15,
+    "y": 16,
+    "t": 17,
+    "1": 18,
+    "2": 19,
+    "3": 20,
+    "4": 21,
+    "6": 22,
+    "5": 23,
+    "=": 24,
+    "9": 25,
+    "7": 26,
+    "-": 27,
+    "8": 28,
+    "0": 29,
+    "]": 30,
+    "o": 31,
+    "u": 32,
+    "[": 33,
+    "i": 34,
+    "p": 35,
+    "enter": 36,
+    "return": 36,
+    "l": 37,
+    "j": 38,
+    "'": 39,
+    "k": 40,
+    ";": 41,
+    "\\": 42,
+    ",": 43,
+    "/": 44,
+    "n": 45,
+    "m": 46,
+    ".": 47,
+    "tab": 48,
+    "space": 49,
+    "`": 50,
+    "backspace": 51,
+    "delete": 51,
+    "escape": 53,
+    "esc": 53,
+    "command": 55,
+    "cmd": 55,
+    "shift": 56,
+    "caps_lock": 57,
+    "capslock": 57,
+    "option": 58,
+    "alt": 58,
+    "control": 59,
+    "ctrl": 59,
+    "right_shift": 60,
+    "right_option": 61,
+    "right_alt": 61,
+    "right_control": 62,
+    "fn": 63,
+    "function": 63,
+    "f17": 64,
+    "volume_up": 72,
+    "volume_down": 73,
+    "mute": 74,
+    "f18": 79,
+    "f19": 80,
+    "f20": 90,
+    "f5": 96,
+    "f6": 97,
+    "f7": 98,
+    "f3": 99,
+    "f8": 100,
+    "f9": 101,
+    "f11": 103,
+    "f13": 105,
+    "f16": 106,
+    "f14": 107,
+    "f10": 109,
+    "f12": 111,
+    "f15": 113,
+    "help": 114,
+    "home": 115,
+    "page_up": 116,
+    "pageup": 116,
+    "forward_delete": 117,
+    "delete_forward": 117,
+    "f4": 118,
+    "end": 119,
+    "f2": 120,
+    "page_down": 121,
+    "pagedown": 121,
+    "f1": 122,
+    "left": 123,
+    "arrowleft": 123,
+    "right": 124,
+    "arrowright": 124,
+    "down": 125,
+    "arrowdown": 125,
+    "up": 126,
+    "arrowup": 126,
+}
+
+_MAC_MODIFIER_FLAGS: dict[str, int] = {
+    "shift": _CG_FLAG_MASK_SHIFT,
+    "control": _CG_FLAG_MASK_CONTROL,
+    "ctrl": _CG_FLAG_MASK_CONTROL,
+    "option": _CG_FLAG_MASK_OPTION,
+    "alt": _CG_FLAG_MASK_OPTION,
+    "command": _CG_FLAG_MASK_COMMAND,
+    "cmd": _CG_FLAG_MASK_COMMAND,
+    "function": _CG_FLAG_MASK_FUNCTION,
+    "fn": _CG_FLAG_MASK_FUNCTION,
+}
 
 
 def _get_lock(profile_id: str) -> asyncio.Lock:
@@ -67,6 +221,281 @@ def _save_screenshot(workspace_root: Path, session_id: str, png: bytes) -> str:
     path = shots_root / filename
     path.write_bytes(png)
     return str(Path("screenshots") / _safe_session(session_id) / filename)
+
+
+def _new_screenshot_target(workspace_root: Path, session_id: str) -> Path:
+    shots_root = workspace_root / "screenshots" / _safe_session(session_id)
+    shots_root.mkdir(parents=True, exist_ok=True)
+    filename = f"{datetime.utcnow().strftime('%Y%m%d_%H%M%S_%f')}.png"
+    return shots_root / filename
+
+
+async def _run_host_command(*argv: str, timeout_seconds: float = 15.0) -> tuple[int, str, str]:
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            *argv,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=503, detail=f"{argv[0]} is not available on this executor") from exc
+    try:
+        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout_seconds)
+    except asyncio.TimeoutError as exc:
+        proc.kill()
+        raise HTTPException(status_code=504, detail=f"{argv[0]} timed out on this executor") from exc
+    return proc.returncode, stdout.decode("utf-8", errors="replace"), stderr.decode("utf-8", errors="replace")
+
+
+def _load_application_services():
+    global _application_services
+    if _application_services is not None:
+        return _application_services
+    library_path = ctypes.util.find_library("ApplicationServices")
+    if not library_path:
+        raise HTTPException(status_code=503, detail="ApplicationServices framework is not available on this executor")
+    lib = ctypes.cdll.LoadLibrary(library_path)
+    lib.CGEventCreateMouseEvent.restype = ctypes.c_void_p
+    lib.CGEventCreateMouseEvent.argtypes = [ctypes.c_void_p, ctypes.c_uint32, CGPoint, ctypes.c_uint32]
+    lib.CGEventCreateKeyboardEvent.restype = ctypes.c_void_p
+    lib.CGEventCreateKeyboardEvent.argtypes = [ctypes.c_void_p, ctypes.c_uint16, ctypes.c_bool]
+    lib.CGEventKeyboardSetUnicodeString.restype = None
+    lib.CGEventKeyboardSetUnicodeString.argtypes = [ctypes.c_void_p, ctypes.c_ulong, ctypes.POINTER(ctypes.c_uint16)]
+    lib.CGEventSetFlags.restype = None
+    lib.CGEventSetFlags.argtypes = [ctypes.c_void_p, ctypes.c_uint64]
+    lib.CGEventPost.restype = None
+    lib.CGEventPost.argtypes = [ctypes.c_uint32, ctypes.c_void_p]
+    lib.CGWarpMouseCursorPosition.restype = ctypes.c_int32
+    lib.CGWarpMouseCursorPosition.argtypes = [CGPoint]
+    try:
+        lib.AXIsProcessTrusted.restype = ctypes.c_bool
+        lib.AXIsProcessTrusted.argtypes = []
+    except AttributeError:
+        pass
+    try:
+        core_foundation_path = ctypes.util.find_library("CoreFoundation")
+        if core_foundation_path:
+            core_foundation = ctypes.cdll.LoadLibrary(core_foundation_path)
+            core_foundation.CFRelease.restype = None
+            core_foundation.CFRelease.argtypes = [ctypes.c_void_p]
+            lib._CFRelease = core_foundation.CFRelease
+        else:
+            lib._CFRelease = None
+    except Exception:
+        lib._CFRelease = None
+    _application_services = lib
+    return lib
+
+
+def _mac_require_accessibility() -> Any:
+    lib = _load_application_services()
+    checker = getattr(lib, "AXIsProcessTrusted", None)
+    if checker is not None and not checker():
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "Accessibility permission is required on this executor for mouse/keyboard control. "
+                "Enable it in System Settings > Privacy & Security > Accessibility."
+            ),
+        )
+    return lib
+
+
+def _mac_release(lib: Any, ref: int | None) -> None:
+    if not ref:
+        return
+    releaser = getattr(lib, "_CFRelease", None)
+    if releaser is not None:
+        releaser(ref)
+
+
+def _mac_mouse_button(button: str) -> tuple[int, int, int]:
+    normalized = str(button or "left").strip().lower()
+    if normalized == "left":
+        return _KCG_MOUSE_BUTTON_LEFT, _KCG_EVENT_LEFT_MOUSE_DOWN, _KCG_EVENT_LEFT_MOUSE_UP
+    if normalized == "right":
+        return _KCG_MOUSE_BUTTON_RIGHT, _KCG_EVENT_RIGHT_MOUSE_DOWN, _KCG_EVENT_RIGHT_MOUSE_UP
+    raise HTTPException(status_code=400, detail="button must be left or right")
+
+
+def _mac_modifier_flags(modifiers: list[str] | None) -> int:
+    flags = 0
+    for modifier in modifiers or []:
+        normalized = str(modifier or "").strip().lower()
+        if not normalized:
+            continue
+        flag = _MAC_MODIFIER_FLAGS.get(normalized)
+        if flag is None:
+            raise HTTPException(status_code=400, detail=f"Unsupported modifier: {modifier}")
+        flags |= flag
+    return flags
+
+
+def _mac_mouse_move_sync(x: float, y: float) -> dict[str, Any]:
+    lib = _mac_require_accessibility()
+    point = CGPoint(float(x), float(y))
+    event_ref = lib.CGEventCreateMouseEvent(None, _KCG_EVENT_MOUSE_MOVED, point, _KCG_MOUSE_BUTTON_LEFT)
+    try:
+        lib.CGWarpMouseCursorPosition(point)
+        lib.CGEventPost(_KCG_HID_EVENT_TAP, event_ref)
+    finally:
+        _mac_release(lib, event_ref)
+    return {"status": "ok", "x": float(x), "y": float(y)}
+
+
+def _mac_mouse_click_sync(x: float, y: float, button: str, click_count: int) -> dict[str, Any]:
+    lib = _mac_require_accessibility()
+    button_code, down_type, up_type = _mac_mouse_button(button)
+    point = CGPoint(float(x), float(y))
+    lib.CGWarpMouseCursorPosition(point)
+    for _ in range(max(1, int(click_count))):
+        down_ref = lib.CGEventCreateMouseEvent(None, down_type, point, button_code)
+        up_ref = lib.CGEventCreateMouseEvent(None, up_type, point, button_code)
+        try:
+            lib.CGEventPost(_KCG_HID_EVENT_TAP, down_ref)
+            lib.CGEventPost(_KCG_HID_EVENT_TAP, up_ref)
+        finally:
+            _mac_release(lib, down_ref)
+            _mac_release(lib, up_ref)
+        time.sleep(0.03)
+    return {
+        "status": "ok",
+        "x": float(x),
+        "y": float(y),
+        "button": button,
+        "click_count": max(1, int(click_count)),
+    }
+
+
+def _mac_keyboard_type_sync(text: str) -> dict[str, Any]:
+    lib = _mac_require_accessibility()
+    content = str(text or "")
+    if not content:
+        raise HTTPException(status_code=400, detail="text is required")
+    for char in content:
+        chars = (ctypes.c_uint16 * 1)(ord(char))
+        down_ref = lib.CGEventCreateKeyboardEvent(None, 0, True)
+        up_ref = lib.CGEventCreateKeyboardEvent(None, 0, False)
+        try:
+            lib.CGEventKeyboardSetUnicodeString(down_ref, 1, chars)
+            lib.CGEventKeyboardSetUnicodeString(up_ref, 1, chars)
+            lib.CGEventPost(_KCG_HID_EVENT_TAP, down_ref)
+            lib.CGEventPost(_KCG_HID_EVENT_TAP, up_ref)
+        finally:
+            _mac_release(lib, down_ref)
+            _mac_release(lib, up_ref)
+        time.sleep(0.01)
+    return {"status": "ok", "text": content, "chars": len(content)}
+
+
+def _mac_keyboard_press_sync(key: str, modifiers: list[str] | None) -> dict[str, Any]:
+    lib = _mac_require_accessibility()
+    normalized = str(key or "").strip().lower()
+    if not normalized:
+        raise HTTPException(status_code=400, detail="key is required")
+    keycode = _MAC_KEYCODES.get(normalized)
+    if keycode is None:
+        raise HTTPException(status_code=400, detail=f"Unsupported key: {key}")
+    flags = _mac_modifier_flags(modifiers)
+    down_ref = lib.CGEventCreateKeyboardEvent(None, keycode, True)
+    up_ref = lib.CGEventCreateKeyboardEvent(None, keycode, False)
+    try:
+        if flags:
+            lib.CGEventSetFlags(down_ref, flags)
+            lib.CGEventSetFlags(up_ref, flags)
+        lib.CGEventPost(_KCG_HID_EVENT_TAP, down_ref)
+        lib.CGEventPost(_KCG_HID_EVENT_TAP, up_ref)
+    finally:
+        _mac_release(lib, down_ref)
+        _mac_release(lib, up_ref)
+    return {"status": "ok", "key": normalized, "modifiers": list(modifiers or [])}
+
+
+async def _execute_notify(payload: Dict[str, Any]) -> dict[str, Any]:
+    title = str(payload.get("title") or "Skitter").strip() or "Skitter"
+    message = str(payload.get("message") or "").strip()
+    if not message:
+        raise HTTPException(status_code=400, detail="message is required")
+    if sys.platform == "darwin":
+        script = f"display notification {json.dumps(message)} with title {json.dumps(title)}"
+        code, stdout, stderr = await _run_host_command("osascript", "-e", script, timeout_seconds=10.0)
+    elif shutil.which("notify-send"):
+        code, stdout, stderr = await _run_host_command("notify-send", title, message, timeout_seconds=10.0)
+    else:
+        raise HTTPException(status_code=503, detail="Host notifications are not supported on this executor")
+    if code != 0:
+        detail = (stderr or stdout or "notification command failed").strip()
+        raise HTTPException(status_code=503, detail=detail)
+    return {"status": "ok", "title": title, "message": message}
+
+
+async def _execute_screenshot(workspace_root: Path, session_id: str, payload: Dict[str, Any]) -> dict[str, Any]:
+    target = _new_screenshot_target(workspace_root, session_id)
+    if sys.platform == "darwin":
+        code, stdout, stderr = await _run_host_command("screencapture", "-x", str(target), timeout_seconds=20.0)
+    elif shutil.which("gnome-screenshot"):
+        code, stdout, stderr = await _run_host_command("gnome-screenshot", "-f", str(target), timeout_seconds=20.0)
+    elif shutil.which("grim"):
+        code, stdout, stderr = await _run_host_command("grim", str(target), timeout_seconds=20.0)
+    elif shutil.which("scrot"):
+        code, stdout, stderr = await _run_host_command("scrot", str(target), timeout_seconds=20.0)
+    else:
+        raise HTTPException(status_code=503, detail="Host screenshots are not supported on this executor")
+    if code != 0:
+        detail = (stderr or stdout or "screenshot command failed").strip()
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "Screenshot capture failed. On macOS, also make sure Screen Recording permission is enabled "
+                f"for this executor process. Details: {detail}"
+            ),
+        )
+    if not target.exists():
+        raise HTTPException(status_code=500, detail="Screenshot command finished without creating an image")
+    return {
+        "status": "ok",
+        "screenshot_path": str(Path("screenshots") / _safe_session(session_id) / target.name),
+        "content_type": "image/png",
+        "size": target.stat().st_size,
+    }
+
+
+async def _execute_mouse_move(payload: Dict[str, Any]) -> dict[str, Any]:
+    if sys.platform != "darwin":
+        raise HTTPException(status_code=503, detail="Host mouse control is currently supported on macOS nodes only")
+    if payload.get("x") is None or payload.get("y") is None:
+        raise HTTPException(status_code=400, detail="x and y are required")
+    return await asyncio.to_thread(_mac_mouse_move_sync, float(payload["x"]), float(payload["y"]))
+
+
+async def _execute_mouse_click(payload: Dict[str, Any]) -> dict[str, Any]:
+    if sys.platform != "darwin":
+        raise HTTPException(status_code=503, detail="Host mouse control is currently supported on macOS nodes only")
+    if payload.get("x") is None or payload.get("y") is None:
+        raise HTTPException(status_code=400, detail="x and y are required")
+    button = str(payload.get("button") or "left")
+    click_count = int(payload.get("click_count", 1))
+    return await asyncio.to_thread(
+        _mac_mouse_click_sync,
+        float(payload["x"]),
+        float(payload["y"]),
+        button,
+        click_count,
+    )
+
+
+async def _execute_keyboard_type(payload: Dict[str, Any]) -> dict[str, Any]:
+    if sys.platform != "darwin":
+        raise HTTPException(status_code=503, detail="Host keyboard control is currently supported on macOS nodes only")
+    return await asyncio.to_thread(_mac_keyboard_type_sync, str(payload.get("text") or ""))
+
+
+async def _execute_keyboard_press(payload: Dict[str, Any]) -> dict[str, Any]:
+    if sys.platform != "darwin":
+        raise HTTPException(status_code=503, detail="Host keyboard control is currently supported on macOS nodes only")
+    raw_modifiers = payload.get("modifiers")
+    modifiers = [str(item) for item in raw_modifiers] if isinstance(raw_modifiers, list) else []
+    return await asyncio.to_thread(_mac_keyboard_press_sync, str(payload.get("key") or ""), modifiers)
 
 
 def _clear_browser_locks(data_dir: Path) -> None:
@@ -508,6 +937,24 @@ def create_app() -> FastAPI:
                 "content_type": content_type,
                 "size": size,
             }
+
+        if req.tool == "notify":
+            return await _execute_notify(req.payload)
+
+        if req.tool == "screenshot":
+            return await _execute_screenshot(workspace_root, req.session_id, req.payload)
+
+        if req.tool == "mouse_move":
+            return await _execute_mouse_move(req.payload)
+
+        if req.tool == "mouse_click":
+            return await _execute_mouse_click(req.payload)
+
+        if req.tool == "keyboard_type":
+            return await _execute_keyboard_type(req.payload)
+
+        if req.tool == "keyboard_press":
+            return await _execute_keyboard_press(req.payload)
 
         if req.tool == "shell":
             cmd = req.payload.get("cmd")

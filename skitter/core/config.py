@@ -361,7 +361,8 @@ class Settings(BaseSettings):
     tool_approval_tools: str = Field(
         default=(
             "read,write,edit,apply_patch,list,delete,download,transfer_file,attach_file,"
-            "browser,browser_action,sub_agent,sub_agent_batch,job_start,shell,create_secret,mcp_call"
+            "browser,browser_action,notify,screenshot,mouse_move,mouse_click,keyboard_type,keyboard_press,"
+            "sub_agent,sub_agent_batch,job_start,shell,create_secret,mcp_call"
         )
     )
     approval_secrets_required: str = Field(default="always")
