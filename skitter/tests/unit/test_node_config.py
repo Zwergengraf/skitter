@@ -55,6 +55,7 @@ def test_resolve_config_reads_capabilities_tools(tmp_path: Path) -> None:
 
     assert cfg.api_url == "http://localhost:8000"
     assert cfg.enabled_tools == ("read", "shell")
+    assert cfg.notify_enabled is True
 
 
 def test_resolve_config_reads_device_capabilities(tmp_path: Path) -> None:
@@ -120,3 +121,31 @@ def test_tool_enabled_accepts_enabled_device_tools(tmp_path: Path) -> None:
     enabled, hint = _tool_enabled(cfg, "screenshot")
     assert enabled is False
     assert hint == "Update node config capabilities.screenshot to true to allow it."
+
+
+def test_notify_is_enabled_by_default_when_capability_is_omitted(tmp_path: Path) -> None:
+    config_path = tmp_path / "node-config.yaml"
+    config_path.write_text(
+        yaml.safe_dump(
+            {
+                "api_url": "http://localhost:8000",
+                "token": "token-1",
+                "name": "node-1",
+                "workspace_root": str(tmp_path / "workspace"),
+                "capabilities": {
+                    "tools": ["read"],
+                },
+            },
+            sort_keys=False,
+        ),
+        encoding="utf-8",
+    )
+    parser = _build_arg_parser()
+    args = parser.parse_args(["--config", str(config_path)])
+
+    cfg, _ = _resolve_config(args)
+
+    assert cfg.notify_enabled is True
+    assert cfg.screenshot_enabled is False
+    assert cfg.mouse_enabled is False
+    assert cfg.keyboard_enabled is False

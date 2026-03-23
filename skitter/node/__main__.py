@@ -71,7 +71,7 @@ class NodeConfig:
     name: str
     workspace_root: str
     enabled_tools: tuple[str, ...] = DEFAULT_NODE_TOOLS
-    notify_enabled: bool = False
+    notify_enabled: bool = True
     screenshot_enabled: bool = False
     mouse_enabled: bool = False
     keyboard_enabled: bool = False
@@ -205,7 +205,10 @@ def _resolve_config(args: argparse.Namespace) -> tuple[NodeConfig, Path]:
         args.enable_notify,
         default=_coerce_bool(
             os.environ.get("SKITTER_NODE_ENABLE_NOTIFY"),
-            default=_coerce_bool(capabilities_raw.get("notify") if isinstance(capabilities_raw, dict) else None),
+            default=_coerce_bool(
+                capabilities_raw.get("notify") if isinstance(capabilities_raw, dict) else None,
+                default=True,
+            ),
         ),
     )
     screenshot_enabled = _coerce_bool(

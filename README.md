@@ -248,7 +248,7 @@ capabilities:
     - write
     - list
     - shell
-  notify: false
+  notify: true
   screenshot: false
   mouse: false
   keyboard: false
@@ -257,6 +257,7 @@ capabilities:
 - Omit `capabilities.tools` to use full default tool set.
 - If a tool is not enabled, API requests to that node return a clear error for that tool.
 - `notify`, `screenshot`, `mouse`, and `keyboard` are separate host-device capabilities.
+- `notify` is enabled by default on new nodes.
 - `mouse` and `keyboard` control currently work on macOS nodes and require Accessibility permission.
 - `screenshot` on macOS requires Screen Recording permission for the executor process.
 - You can also override from CLI/env:
