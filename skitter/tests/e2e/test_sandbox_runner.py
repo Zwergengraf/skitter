@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 from httpx import ASGITransport, AsyncClient
 
+import skitter.sandbox.runner as runner_module
 from skitter.sandbox.runner import create_app
 
 
@@ -170,3 +171,91 @@ async def test_runner_apply_patch_uses_git_style_strip_level(
     assert body["strip"] == 1
     assert "src/main.py" in body["stdout"]
     assert target.read_text(encoding="utf-8") == "print('new')\n"
+
+
+@pytest.mark.asyncio
+async def test_runner_notify_routes_to_host_notification_helper(
+    runner_workspace: tuple[Path, object],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _, app = runner_workspace
+
+    async def fake_notify(payload: dict) -> dict:
+        assert payload["title"] == "Skitter"
+        assert payload["message"] == "Done"
+        return {"status": "ok", "title": "Skitter", "message": "Done"}
+
+    monkeypatch.setattr(runner_module, "_execute_notify", fake_notify)
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response = await _execute(client, tool="notify", payload={"title": "Skitter", "message": "Done"})
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "ok"
+
+
+@pytest.mark.asyncio
+async def test_runner_screenshot_routes_to_host_screenshot_helper(
+    runner_workspace: tuple[Path, object],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _, app = runner_workspace
+
+    async def fake_screenshot(workspace_root: Path, session_id: str, payload: dict) -> dict:
+        assert workspace_root.name == "workspace"
+        assert session_id == "session-1"
+        assert payload == {}
+        return {"status": "ok", "screenshot_path": "screenshots/session-1/test.png"}
+
+    monkeypatch.setattr(runner_module, "_execute_screenshot", fake_screenshot)
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response = await _execute(client, tool="screenshot", payload={})
+
+    assert response.status_code == 200
+    assert response.json()["screenshot_path"] == "screenshots/session-1/test.png"
+
+
+@pytest.mark.asyncio
+async def test_runner_mouse_and_keyboard_tools_route_to_helpers(
+    runner_workspace: tuple[Path, object],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _, app = runner_workspace
+
+    async def fake_mouse_move(payload: dict) -> dict:
+        assert payload == {"x": 12, "y": 34}
+        return {"status": "ok", "x": 12, "y": 34}
+
+    async def fake_mouse_click(payload: dict) -> dict:
+        assert payload["button"] == "left"
+        return {"status": "ok", "x": 12, "y": 34}
+
+    async def fake_keyboard_type(payload: dict) -> dict:
+        assert payload["text"] == "hello"
+        return {"status": "ok"}
+
+    async def fake_keyboard_press(payload: dict) -> dict:
+        assert payload["key"] == "enter"
+        assert payload["modifiers"] == ["cmd"]
+        return {"status": "ok"}
+
+    monkeypatch.setattr(runner_module, "_execute_mouse_move", fake_mouse_move)
+    monkeypatch.setattr(runner_module, "_execute_mouse_click", fake_mouse_click)
+    monkeypatch.setattr(runner_module, "_execute_keyboard_type", fake_keyboard_type)
+    monkeypatch.setattr(runner_module, "_execute_keyboard_press", fake_keyboard_press)
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        move_resp = await _execute(client, tool="mouse_move", payload={"x": 12, "y": 34})
+        click_resp = await _execute(client, tool="mouse_click", payload={"x": 12, "y": 34, "button": "left"})
+        type_resp = await _execute(client, tool="keyboard_type", payload={"text": "hello"})
+        press_resp = await _execute(
+            client,
+            tool="keyboard_press",
+            payload={"key": "enter", "modifiers": ["cmd"]},
+        )
+
+    assert move_resp.status_code == 200
+    assert click_resp.status_code == 200
+    assert type_resp.status_code == 200
+    assert press_resp.status_code == 200

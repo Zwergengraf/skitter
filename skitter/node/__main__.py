@@ -37,6 +37,15 @@ DEFAULT_NODE_TOOLS: tuple[str, ...] = (
     "browser_action",
 )
 
+DEVICE_CAPABILITY_TOOL_KEYS: dict[str, str] = {
+    "notify": "notify",
+    "screenshot": "screenshot",
+    "mouse_move": "mouse",
+    "mouse_click": "mouse",
+    "keyboard_type": "keyboard",
+    "keyboard_press": "keyboard",
+}
+
 
 def _http_error_detail(response: httpx.Response) -> str:
     try:
@@ -62,6 +71,10 @@ class NodeConfig:
     name: str
     workspace_root: str
     enabled_tools: tuple[str, ...] = DEFAULT_NODE_TOOLS
+    notify_enabled: bool = True
+    screenshot_enabled: bool = False
+    mouse_enabled: bool = False
+    keyboard_enabled: bool = False
     heartbeat_seconds: int = 10
     reconnect_seconds: int = 3
     request_timeout_seconds: int = 300
@@ -120,6 +133,45 @@ def _normalize_tools(raw: Any) -> tuple[str, ...]:
     return tuple(allowed)
 
 
+def _coerce_bool(value: Any, *, default: bool = False) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    text = str(value).strip().lower()
+    if not text:
+        return default
+    if text in {"1", "true", "yes", "on", "enabled"}:
+        return True
+    if text in {"0", "false", "no", "off", "disabled"}:
+        return False
+    return default
+
+
+def _enabled_device_capabilities(config: NodeConfig) -> dict[str, bool]:
+    return {
+        "notify": bool(config.notify_enabled),
+        "screenshot": bool(config.screenshot_enabled),
+        "mouse": bool(config.mouse_enabled),
+        "keyboard": bool(config.keyboard_enabled),
+    }
+
+
+def _tool_enabled(config: NodeConfig, tool: str) -> tuple[bool, str | None]:
+    normalized = str(tool or "").strip().lower()
+    if normalized in set(config.enabled_tools):
+        return True, None
+    capability_key = DEVICE_CAPABILITY_TOOL_KEYS.get(normalized)
+    if capability_key is None:
+        return False, "Update node config capabilities.tools to allow it."
+    enabled = _enabled_device_capabilities(config).get(capability_key, False)
+    if enabled:
+        return True, None
+    return False, f"Update node config capabilities.{capability_key} to true to allow it."
+
+
 def _resolve_config(args: argparse.Namespace) -> tuple[NodeConfig, Path]:
     config_path = Path(args.config).expanduser() if args.config else _default_config_path()
     file_data = _load_yaml(config_path)
@@ -149,12 +201,47 @@ def _resolve_config(args: argparse.Namespace) -> tuple[NodeConfig, Path]:
     file_tools = raw_file_tools if raw_file_tools is not None else file_data.get("tools")
     raw_tools = _coalesce(args.tools, os.environ.get("SKITTER_NODE_TOOLS"))
     enabled_tools = _normalize_tools(raw_tools if raw_tools else file_tools)
+    notify_enabled = _coerce_bool(
+        args.enable_notify,
+        default=_coerce_bool(
+            os.environ.get("SKITTER_NODE_ENABLE_NOTIFY"),
+            default=_coerce_bool(
+                capabilities_raw.get("notify") if isinstance(capabilities_raw, dict) else None,
+                default=True,
+            ),
+        ),
+    )
+    screenshot_enabled = _coerce_bool(
+        args.enable_screenshot,
+        default=_coerce_bool(
+            os.environ.get("SKITTER_NODE_ENABLE_SCREENSHOT"),
+            default=_coerce_bool(capabilities_raw.get("screenshot") if isinstance(capabilities_raw, dict) else None),
+        ),
+    )
+    mouse_enabled = _coerce_bool(
+        args.enable_mouse,
+        default=_coerce_bool(
+            os.environ.get("SKITTER_NODE_ENABLE_MOUSE"),
+            default=_coerce_bool(capabilities_raw.get("mouse") if isinstance(capabilities_raw, dict) else None),
+        ),
+    )
+    keyboard_enabled = _coerce_bool(
+        args.enable_keyboard,
+        default=_coerce_bool(
+            os.environ.get("SKITTER_NODE_ENABLE_KEYBOARD"),
+            default=_coerce_bool(capabilities_raw.get("keyboard") if isinstance(capabilities_raw, dict) else None),
+        ),
+    )
     cfg = NodeConfig(
         api_url=api_url.rstrip("/"),
         token=token,
         name=name,
         workspace_root=workspace_root,
         enabled_tools=enabled_tools,
+        notify_enabled=notify_enabled,
+        screenshot_enabled=screenshot_enabled,
+        mouse_enabled=mouse_enabled,
+        keyboard_enabled=keyboard_enabled,
         heartbeat_seconds=max(2, heartbeat_seconds),
         reconnect_seconds=max(1, reconnect_seconds),
         request_timeout_seconds=max(10, request_timeout_seconds),
@@ -172,6 +259,7 @@ def _resolve_config(args: argparse.Namespace) -> tuple[NodeConfig, Path]:
                 "request_timeout_seconds": cfg.request_timeout_seconds,
                 "capabilities": {
                     "tools": list(cfg.enabled_tools),
+                    **_enabled_device_capabilities(cfg),
                 },
             },
         )
@@ -272,6 +360,7 @@ class NodeClient:
                 "hostname": socket.gethostname(),
                 "capabilities": {
                     "tools": list(self._config.enabled_tools),
+                    **_enabled_device_capabilities(self._config),
                     "workspace_root": self._config.workspace_root,
                 },
             }
@@ -282,10 +371,11 @@ class NodeClient:
         request_id = str(message.get("request_id") or "").strip()
         try:
             tool = str(message.get("tool") or "").strip()
-            if tool.lower() not in set(self._config.enabled_tools):
+            enabled, hint = _tool_enabled(self._config, tool)
+            if not enabled:
                 raise RuntimeError(
                     f"Tool '{tool}' is not enabled on this executor. "
-                    "Update node config capabilities.tools to allow it."
+                    f"{hint or 'Update node config capabilities to allow it.'}"
                 )
             session_id = str(message.get("session_id") or "").strip() or "default"
             payload = message.get("payload") if isinstance(message.get("payload"), dict) else {}
@@ -356,6 +446,10 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         default="",
         help="Comma-separated enabled tools override (e.g. read,write,shell).",
     )
+    parser.add_argument("--enable-notify", default="", help="Enable host notifications (true/false).")
+    parser.add_argument("--enable-screenshot", default="", help="Enable host screenshots (true/false).")
+    parser.add_argument("--enable-mouse", default="", help="Enable host mouse control (true/false).")
+    parser.add_argument("--enable-keyboard", default="", help="Enable host keyboard control (true/false).")
     parser.add_argument("--write-config", action="store_true", help="Persist resolved config to config file")
     return parser
 

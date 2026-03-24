@@ -1336,6 +1336,163 @@ def build_graph(
             return error
         return json.dumps(result)
 
+    @tool("notify")
+    async def notify(
+        title: str,
+        message: str,
+        target_machine: Optional[str] = None,
+    ) -> str:
+        """Show a native desktop notification on a host executor node. Use this only on a node with machine_status.capabilities.notify enabled."""
+        payload = {
+            "title": title,
+            "message": message,
+        }
+        machine = _normalize_target_machine(target_machine)
+        approval_payload = _with_target_machine(payload, machine)
+        budget_message = await _enforce_tool_budget("notify", approval_payload)
+        if budget_message:
+            return budget_message
+        decision = await _maybe_approve("notify", approval_payload, approval_service, policy)
+        if not decision.approved:
+            return _denied_message("notify")
+        result, error = await _execute_sandbox_tool(
+            "notify",
+            decision.tool_run_id,
+            payload,
+            target_machine=machine,
+        )
+        if error:
+            return error
+        return json.dumps(result)
+
+    @tool("screenshot")
+    async def screenshot(target_machine: Optional[str] = None) -> str:
+        """Capture a host screenshot on an executor node. Use this only on a node with machine_status.capabilities.screenshot enabled. The screenshot is saved in the workspace and the path is returned."""
+        payload: dict[str, Any] = {}
+        machine = _normalize_target_machine(target_machine)
+        approval_payload = _with_target_machine(payload, machine)
+        budget_message = await _enforce_tool_budget("screenshot", approval_payload)
+        if budget_message:
+            return budget_message
+        decision = await _maybe_approve("screenshot", approval_payload, approval_service, policy)
+        if not decision.approved:
+            return _denied_message("screenshot")
+        result, error = await _execute_sandbox_tool(
+            "screenshot",
+            decision.tool_run_id,
+            payload,
+            target_machine=machine,
+        )
+        if error:
+            return error
+        return json.dumps(result)
+
+    @tool("mouse_move")
+    async def mouse_move(x: float, y: float, target_machine: Optional[str] = None) -> str:
+        """Move the host mouse pointer to absolute screen coordinates on an executor node. Use this only on a node with machine_status.capabilities.mouse enabled."""
+        payload = {"x": x, "y": y}
+        machine = _normalize_target_machine(target_machine)
+        approval_payload = _with_target_machine(payload, machine)
+        budget_message = await _enforce_tool_budget("mouse_move", approval_payload)
+        if budget_message:
+            return budget_message
+        decision = await _maybe_approve("mouse_move", approval_payload, approval_service, policy)
+        if not decision.approved:
+            return _denied_message("mouse_move")
+        result, error = await _execute_sandbox_tool(
+            "mouse_move",
+            decision.tool_run_id,
+            payload,
+            target_machine=machine,
+        )
+        if error:
+            return error
+        return json.dumps(result)
+
+    @tool("mouse_click")
+    async def mouse_click(
+        x: float,
+        y: float,
+        button: str = "left",
+        click_count: int = 1,
+        target_machine: Optional[str] = None,
+    ) -> str:
+        """Click at absolute screen coordinates on a host executor node. Use this only on a node with machine_status.capabilities.mouse enabled."""
+        payload = {
+            "x": x,
+            "y": y,
+            "button": button,
+            "click_count": click_count,
+        }
+        machine = _normalize_target_machine(target_machine)
+        approval_payload = _with_target_machine(payload, machine)
+        budget_message = await _enforce_tool_budget("mouse_click", approval_payload)
+        if budget_message:
+            return budget_message
+        decision = await _maybe_approve("mouse_click", approval_payload, approval_service, policy)
+        if not decision.approved:
+            return _denied_message("mouse_click")
+        result, error = await _execute_sandbox_tool(
+            "mouse_click",
+            decision.tool_run_id,
+            payload,
+            target_machine=machine,
+        )
+        if error:
+            return error
+        return json.dumps(result)
+
+    @tool("keyboard_type")
+    async def keyboard_type(text: str, target_machine: Optional[str] = None) -> str:
+        """Type text on the host keyboard of an executor node. Use this only on a node with machine_status.capabilities.keyboard enabled."""
+        payload = {"text": text}
+        machine = _normalize_target_machine(target_machine)
+        approval_payload = _with_target_machine(payload, machine)
+        budget_message = await _enforce_tool_budget("keyboard_type", approval_payload)
+        if budget_message:
+            return budget_message
+        decision = await _maybe_approve("keyboard_type", approval_payload, approval_service, policy)
+        if not decision.approved:
+            return _denied_message("keyboard_type")
+        result, error = await _execute_sandbox_tool(
+            "keyboard_type",
+            decision.tool_run_id,
+            payload,
+            target_machine=machine,
+        )
+        if error:
+            return error
+        return json.dumps(result)
+
+    @tool("keyboard_press")
+    async def keyboard_press(
+        key: str,
+        modifiers: Optional[list[str]] = None,
+        target_machine: Optional[str] = None,
+    ) -> str:
+        """Press a key (optionally with modifiers like cmd, ctrl, shift, or alt) on a host executor node. Use this only on a node with machine_status.capabilities.keyboard enabled."""
+        payload = {
+            "key": key,
+            "modifiers": list(modifiers or []),
+        }
+        machine = _normalize_target_machine(target_machine)
+        approval_payload = _with_target_machine(payload, machine)
+        budget_message = await _enforce_tool_budget("keyboard_press", approval_payload)
+        if budget_message:
+            return budget_message
+        decision = await _maybe_approve("keyboard_press", approval_payload, approval_service, policy)
+        if not decision.approved:
+            return _denied_message("keyboard_press")
+        result, error = await _execute_sandbox_tool(
+            "keyboard_press",
+            decision.tool_run_id,
+            payload,
+            target_machine=machine,
+        )
+        if error:
+            return error
+        return json.dumps(result)
+
     @tool("machine_list")
     async def machine_list(include_disabled: bool = False) -> str:
         """List available execution machines for the current user."""
@@ -2144,6 +2301,12 @@ def build_graph(
         browser,
         browser_action,
         shell,
+        notify,
+        screenshot,
+        mouse_move,
+        mouse_click,
+        keyboard_type,
+        keyboard_press,
         machine_list,
         machine_status,
         create_secret,

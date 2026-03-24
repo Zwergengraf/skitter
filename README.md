@@ -231,7 +231,7 @@ uv pip install .
 skitter-node --api-url "http://<api-host>:8000" --token "<token>" --name "<node-name>" --workspace-root "<path>" --write-config
 ```
 
-After the first run, you can start the executor again by simply running `skitter-node`. The config is stored in `$HOME/.config/skitternode/config.yaml`.
+After the first run, you can start the executor again by simply running `skitter-node`. The config is stored in `$HOME/.config/skitter-node/config.yaml`.
 
 4. Node appears online in Executors view once connected.
 
@@ -248,13 +248,25 @@ capabilities:
     - write
     - list
     - shell
+  notify: true
+  screenshot: false
+  mouse: false
+  keyboard: false
 ```
 
 - Omit `capabilities.tools` to use full default tool set.
 - If a tool is not enabled, API requests to that node return a clear error for that tool.
+- `notify`, `screenshot`, `mouse`, and `keyboard` are separate host-device capabilities.
+- `notify` is enabled by default on new nodes.
+- `mouse` and `keyboard` control currently work on macOS nodes and require Accessibility permission.
+- `screenshot` on macOS requires Screen Recording permission for the executor process.
 - You can also override from CLI/env:
   - `--tools read,write,list,shell`
   - `SKITTER_NODE_TOOLS=read,write,list,shell`
+  - `--enable-notify true`
+  - `--enable-screenshot true`
+  - `--enable-mouse true`
+  - `--enable-keyboard true`
 
 ### Manage executors
 
