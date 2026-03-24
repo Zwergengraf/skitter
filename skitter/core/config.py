@@ -159,59 +159,6 @@ def _normalize_model_reference(provider: str, model_name: str) -> str:
     return f"{provider.strip()}/{model_name.strip()}"
 
 
-def _looks_like_legacy_model_config(raw: Any) -> bool:
-    if not isinstance(raw, dict):
-        return False
-    return "provider" not in raw and any(key in raw for key in ("api_base", "api_key"))
-
-
-def _convert_legacy_model_layout(raw_models: list[Any]) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    providers: dict[str, dict[str, Any]] = {}
-    converted_models: list[dict[str, Any]] = []
-
-    for item in raw_models:
-        if not isinstance(item, dict):
-            continue
-        model_name = str(item.get("name") or "").strip()
-        if not model_name:
-            continue
-        api_base = str(item.get("api_base") or "").strip()
-        api_key = str(item.get("api_key") or "")
-        provider_name = str(item.get("provider") or "").strip()
-        if not provider_name:
-            provider_name = model_name
-        provider_key = provider_name.lower()
-        provider = providers.get(provider_key)
-        if provider is None:
-            provider = {
-                "name": provider_name,
-                "api_type": str(item.get("api_type") or "openai").strip().lower() or "openai",
-                "api_base": api_base,
-                "api_key": api_key,
-            }
-            providers[provider_key] = provider
-        else:
-            # Prefer explicit provider details if present in this entry.
-            if api_base:
-                provider["api_base"] = api_base
-            if api_key:
-                provider["api_key"] = api_key
-            if item.get("api_type"):
-                provider["api_type"] = str(item.get("api_type")).strip().lower() or provider.get("api_type", "openai")
-
-        converted_models.append(
-            {
-                "name": model_name,
-                "provider": provider_name,
-                "model_id": item.get("model_id") or item.get("model") or "",
-                "input_cost_per_1m": item.get("input_cost_per_1m", 0.0),
-                "output_cost_per_1m": item.get("output_cost_per_1m", 0.0),
-                "reasoning": item.get("reasoning") if isinstance(item.get("reasoning"), dict) else {},
-            }
-        )
-    return list(providers.values()), converted_models
-
-
 def _normalize_model_selector(value: str | None, models: list[ModelConfig]) -> str:
     if not value:
         return ""
@@ -448,15 +395,6 @@ def _write_yaml_config(path: Path, data: dict[str, Any]) -> None:
 
 def apply_settings_update(values: dict[str, Any]) -> Settings:
     incoming = dict(values)
-    raw_models = incoming.get("models")
-    raw_providers = incoming.get("providers")
-    if isinstance(raw_models, list):
-        if (not isinstance(raw_providers, list) or not raw_providers) and any(
-            _looks_like_legacy_model_config(item) for item in raw_models
-        ):
-            converted_providers, converted_models = _convert_legacy_model_layout(raw_models)
-            incoming["providers"] = converted_providers
-            incoming["models"] = converted_models
 
     base = settings.model_dump()
     merged = {**base, **incoming}
