@@ -431,14 +431,30 @@ async def _execute_notify(payload: Dict[str, Any]) -> dict[str, Any]:
 
 async def _execute_screenshot(workspace_root: Path, session_id: str, payload: Dict[str, Any]) -> dict[str, Any]:
     target = _new_screenshot_target(workspace_root, session_id)
+    include_cursor = bool(payload.get("include_cursor", True))
     if sys.platform == "darwin":
-        code, stdout, stderr = await _run_host_command("screencapture", "-x", str(target), timeout_seconds=20.0)
+        argv = ["screencapture", "-x"]
+        if include_cursor:
+            argv.append("-C")
+        argv.append(str(target))
+        code, stdout, stderr = await _run_host_command(*argv, timeout_seconds=20.0)
     elif shutil.which("gnome-screenshot"):
-        code, stdout, stderr = await _run_host_command("gnome-screenshot", "-f", str(target), timeout_seconds=20.0)
+        argv = ["gnome-screenshot", "-f", str(target)]
+        if include_cursor:
+            argv.insert(1, "-p")
+        code, stdout, stderr = await _run_host_command(*argv, timeout_seconds=20.0)
     elif shutil.which("grim"):
-        code, stdout, stderr = await _run_host_command("grim", str(target), timeout_seconds=20.0)
+        argv = ["grim"]
+        if include_cursor:
+            argv.append("-c")
+        argv.append(str(target))
+        code, stdout, stderr = await _run_host_command(*argv, timeout_seconds=20.0)
     elif shutil.which("scrot"):
-        code, stdout, stderr = await _run_host_command("scrot", str(target), timeout_seconds=20.0)
+        argv = ["scrot"]
+        if include_cursor:
+            argv.append("--pointer")
+        argv.append(str(target))
+        code, stdout, stderr = await _run_host_command(*argv, timeout_seconds=20.0)
     else:
         raise HTTPException(status_code=503, detail="Host screenshots are not supported on this executor")
     if code != 0:
@@ -456,6 +472,7 @@ async def _execute_screenshot(workspace_root: Path, session_id: str, payload: Di
         "status": "ok",
         "screenshot_path": str(Path("screenshots") / _safe_session(session_id) / target.name),
         "content_type": "image/png",
+        "include_cursor": include_cursor,
         "size": target.stat().st_size,
     }
 
