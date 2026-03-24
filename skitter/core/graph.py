@@ -1366,9 +1366,9 @@ def build_graph(
         return json.dumps(result)
 
     @tool("screenshot")
-    async def screenshot(target_machine: Optional[str] = None) -> str:
-        """Capture a host screenshot on an executor node. Use this only on a node with machine_status.capabilities.screenshot enabled. The screenshot is saved in the workspace and the path is returned."""
-        payload: dict[str, Any] = {}
+    async def screenshot(include_cursor: bool = True, target_machine: Optional[str] = None) -> str:
+        """Capture a host screenshot on an executor node. Use this only on a node with machine_status.capabilities.screenshot enabled. The screenshot is saved in the workspace and the path is returned. By default, the mouse cursor is included when the executor platform supports it."""
+        payload: dict[str, Any] = {"include_cursor": bool(include_cursor)}
         machine = _normalize_target_machine(target_machine)
         approval_payload = _with_target_machine(payload, machine)
         budget_message = await _enforce_tool_budget("screenshot", approval_payload)
