@@ -322,7 +322,7 @@ class _SessionDetailRepo:
             summary_attempts=2,
             summary_next_retry_at=datetime.now(UTC),
             summary_last_error="embedding timeout",
-            summary_path="memory/session-summaries/session-1.md",
+            summary_path="memory/session-summaries/2026-03-25.md",
             summary_completed_at=None,
         )
         self.user = SimpleNamespace(id="user-1", display_name="Gabriel", transport_user_id="discord-user")
@@ -610,7 +610,7 @@ def test_session_detail_includes_background_summary_state(admin_api_key: str) ->
     assert payload["summary_status"] == "pending"
     assert payload["summary_attempts"] == 2
     assert payload["summary_last_error"] == "embedding timeout"
-    assert payload["summary_path"] == "memory/session-summaries/session-1.md"
+    assert payload["summary_path"] == "memory/session-summaries/2026-03-25.md"
 
 
 def test_send_message_persists_assistant_prompt_when_runtime_requests_user_input(admin_api_key: str) -> None:
