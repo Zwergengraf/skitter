@@ -218,6 +218,8 @@ async def test_runner_screenshot_routes_to_host_screenshot_helper(
             "screenshot_path": "screenshots/session-1/test.png",
             "width_px": 1440,
             "height_px": 900,
+            "cursor_x": 320,
+            "cursor_y": 240,
         }
 
     monkeypatch.setattr(runner_module, "_execute_screenshot", fake_screenshot)
@@ -229,6 +231,8 @@ async def test_runner_screenshot_routes_to_host_screenshot_helper(
     assert response.json()["screenshot_path"] == "screenshots/session-1/test.png"
     assert response.json()["width_px"] == 1440
     assert response.json()["height_px"] == 900
+    assert response.json()["cursor_x"] == 320
+    assert response.json()["cursor_y"] == 240
 
 
 @pytest.mark.asyncio
