@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import re
+from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import Optional
 
@@ -21,16 +23,48 @@ def normalize_session_summary(summary: object) -> str:
     return normalized.strip() + "\n"
 
 
-def session_summary_relative_path(session_id: str) -> Path:
-    return Path("memory") / "session-summaries" / f"{session_id}.md"
+def current_summary_date() -> date:
+    return datetime.now(UTC).date()
 
 
-def write_session_summary_file(user_id: str, session_id: str, summary: object) -> tuple[Path, str]:
-    path = user_workspace_root(user_id) / session_summary_relative_path(session_id)
+def session_summary_relative_path(target_date: date | None = None) -> Path:
+    resolved_date = target_date or current_summary_date()
+    return Path("memory") / "session-summaries" / f"{resolved_date.isoformat()}.md"
+
+
+def _session_summary_section(session_id: str, summary: object) -> str:
+    return f"# Session Summary ({session_id})\n\n{normalize_session_summary(summary)}"
+
+
+def _replace_or_append_session_summary(existing: str, session_id: str, summary: object) -> str:
+    section = _session_summary_section(session_id, summary).strip()
+    pattern = re.compile(
+        rf"(?ms)^# Session Summary \({re.escape(session_id)}\)\n.*?(?=^# Session Summary \(|\Z)"
+    )
+    cleaned_existing = existing.strip()
+    if not cleaned_existing:
+        return section + "\n"
+    if pattern.search(cleaned_existing):
+        updated = pattern.sub(section + "\n\n", cleaned_existing, count=1).strip()
+        return updated + "\n"
+    return cleaned_existing + "\n\n" + section + "\n"
+
+
+def write_session_summary_file(
+    user_id: str,
+    session_id: str,
+    summary: object,
+    *,
+    target_date: date | None = None,
+) -> tuple[Path, str]:
+    path = user_workspace_root(user_id) / session_summary_relative_path(target_date)
     path.parent.mkdir(parents=True, exist_ok=True)
-    header = f"# Session Summary ({session_id})\n\n"
+    existing = ""
+    if path.exists():
+        existing = path.read_text(encoding="utf-8")
     body = normalize_session_summary(summary)
-    path.write_text(header + body, encoding="utf-8")
+    content = _replace_or_append_session_summary(existing, session_id, summary)
+    path.write_text(content, encoding="utf-8")
     return path, body
 
 

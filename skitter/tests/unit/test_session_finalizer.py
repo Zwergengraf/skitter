@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -93,6 +93,11 @@ class _MemoryStub:
         return True
 
 
+class _EventBusStub:
+    async def emit_admin(self, **kwargs) -> None:
+        _ = kwargs
+
+
 def _patch_repo(monkeypatch: pytest.MonkeyPatch, repo: _FakeRepo) -> None:
     token = object()
     monkeypatch.setattr(finalizer_module, "SessionLocal", lambda: _SessionCtx(token))
@@ -116,10 +121,13 @@ async def test_session_finalizer_completes_summary_and_indexes(
     repo = _FakeRepo(row)
     _patch_repo(monkeypatch, repo)
     monkeypatch.setattr(sessions_module, "user_workspace_root", lambda user_id: tmp_path / user_id)
+    monkeypatch.setattr(finalizer_module, "current_summary_date", lambda: date(2026, 3, 25))
 
     captured: dict[str, str | None] = {"session_id": None, "model_name": None}
 
     class _RuntimeStub:
+        event_bus = _EventBusStub()
+
         async def summarize_session(self, session_id: str, model_name: str | None = None) -> str:
             captured["session_id"] = session_id
             captured["model_name"] = model_name
@@ -134,8 +142,8 @@ async def test_session_finalizer_completes_summary_and_indexes(
     assert captured == {"session_id": "session-1", "model_name": "provider/last"}
     assert row.summary_status == "completed"
     assert row.summary_attempts == 1
-    assert row.summary_path == "memory/session-summaries/session-1.md"
-    summary_file = tmp_path / "user-1" / "memory" / "session-summaries" / "session-1.md"
+    assert row.summary_path == "memory/session-summaries/2026-03-25.md"
+    summary_file = tmp_path / "user-1" / "memory" / "session-summaries" / "2026-03-25.md"
     assert summary_file.read_text(encoding="utf-8") == "# Session Summary (session-1)\n\nsummary text\n"
     assert memory.calls == [("user-1", "session-1", summary_file, True)]
 
@@ -155,6 +163,8 @@ async def test_session_finalizer_retries_with_backoff_and_marks_terminal_failure
     _patch_repo(monkeypatch, repo)
 
     class _RuntimeStub:
+        event_bus = _EventBusStub()
+
         async def summarize_session(self, session_id: str, model_name: str | None = None) -> str:
             _ = session_id, model_name
             raise RuntimeError("llm exploded")
@@ -196,8 +206,11 @@ async def test_session_finalizer_overwrites_summary_file_on_retry(
     repo = _FakeRepo(row)
     _patch_repo(monkeypatch, repo)
     monkeypatch.setattr(sessions_module, "user_workspace_root", lambda user_id: tmp_path / user_id)
+    monkeypatch.setattr(finalizer_module, "current_summary_date", lambda: date(2026, 3, 25))
 
     class _RuntimeStub:
+        event_bus = _EventBusStub()
+
         async def summarize_session(self, session_id: str, model_name: str | None = None) -> str:
             _ = session_id, model_name
             return "stable summary"
@@ -208,7 +221,7 @@ async def test_session_finalizer_overwrites_summary_file_on_retry(
     handled = await service.run_once()
     assert handled is True
     assert row.summary_status == "pending"
-    summary_file = tmp_path / "user-1" / "memory" / "session-summaries" / "session-3.md"
+    summary_file = tmp_path / "user-1" / "memory" / "session-summaries" / "2026-03-25.md"
     assert summary_file.read_text(encoding="utf-8") == "# Session Summary (session-3)\n\nstable summary\n"
 
     row.summary_next_retry_at = datetime.now(UTC) - timedelta(seconds=1)
@@ -217,3 +230,43 @@ async def test_session_finalizer_overwrites_summary_file_on_retry(
     assert row.summary_status == "completed"
     assert summary_file.read_text(encoding="utf-8") == "# Session Summary (session-3)\n\nstable summary\n"
     assert len(memory.calls) == 2
+
+
+@pytest.mark.asyncio
+async def test_session_finalizer_appends_multiple_sessions_into_same_daily_file(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    row = _SessionRow(
+        id="session-4",
+        user_id="user-1",
+        created_at=datetime.now(UTC),
+        summary_status="pending",
+        summary_attempts=0,
+    )
+    repo = _FakeRepo(row)
+    _patch_repo(monkeypatch, repo)
+    monkeypatch.setattr(sessions_module, "user_workspace_root", lambda user_id: tmp_path / user_id)
+    monkeypatch.setattr(finalizer_module, "current_summary_date", lambda: date(2026, 3, 25))
+
+    daily_file = tmp_path / "user-1" / "memory" / "session-summaries" / "2026-03-25.md"
+    daily_file.parent.mkdir(parents=True, exist_ok=True)
+    daily_file.write_text("# Session Summary (session-1)\n\nfirst summary\n", encoding="utf-8")
+
+    class _RuntimeStub:
+        event_bus = _EventBusStub()
+
+        async def summarize_session(self, session_id: str, model_name: str | None = None) -> str:
+            _ = session_id, model_name
+            return "second summary"
+
+    memory = _MemoryStub()
+    service = SessionFinalizerService(_RuntimeStub(), memory_service=memory)
+
+    handled = await service.run_once()
+
+    assert handled is True
+    assert daily_file.read_text(encoding="utf-8") == (
+        "# Session Summary (session-1)\n\nfirst summary\n\n"
+        "# Session Summary (session-4)\n\nsecond summary\n"
+    )

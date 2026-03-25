@@ -93,6 +93,12 @@ class _SessionCtx:
 
 
 class _RuntimeStub:
+    class _EventBusStub:
+        async def emit_admin(self, **kwargs) -> None:
+            _ = kwargs
+
+    event_bus = _EventBusStub()
+
     async def summarize_session(self, session_id: str, model_name: str | None = None) -> str:
         _ = model_name
         _ = session_id
@@ -172,6 +178,12 @@ async def test_start_new_session_queues_background_summary_without_blocking(
     monkeypatch.setattr(sessions_module, "resolve_model_name", lambda _value, purpose: f"{purpose}-model")
 
     class _RuntimeCapture:
+        class _EventBusStub:
+            async def emit_admin(self, **kwargs) -> None:
+                _ = kwargs
+
+        event_bus = _EventBusStub()
+
         async def summarize_session(self, session_id: str, model_name: str | None = None) -> str:
             raise AssertionError("summarize_session should not run inline when starting a new session")
 

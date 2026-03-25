@@ -9,7 +9,7 @@ from pathlib import Path
 from ..data.db import SessionLocal
 from ..data.repositories import Repository
 from .memory_service import MemoryService
-from .sessions import session_summary_relative_path, write_session_summary_file
+from .sessions import current_summary_date, session_summary_relative_path, write_session_summary_file
 
 
 class SessionFinalizerService:
@@ -83,8 +83,9 @@ class SessionFinalizerService:
             data={"model": model_name},
         )
         try:
+            summary_date = current_summary_date()
             summary = await self.runtime.summarize_session(session_id, model_name=model_name)
-            summary_path, _ = write_session_summary_file(user_id, session_id, summary)
+            summary_path, _ = write_session_summary_file(user_id, session_id, summary, target_date=summary_date)
             indexed = await self.memory_service.index_file(user_id, session_id, summary_path, force=True)
             if not indexed:
                 raise RuntimeError("summary embedding/indexing did not produce any memory entries")
@@ -92,7 +93,7 @@ class SessionFinalizerService:
             await self._record_failure(session_id, exc)
             return
 
-        relative_path = session_summary_relative_path(session_id).as_posix()
+        relative_path = session_summary_relative_path(summary_date).as_posix()
         async with SessionLocal() as session:
             repo = Repository(session)
             await repo.complete_session_summary(session_id, summary_path=relative_path)
