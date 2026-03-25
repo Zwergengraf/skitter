@@ -18,6 +18,7 @@ from urllib.parse import urlparse
 
 import httpx
 from fastapi import FastAPI, HTTPException
+from PIL import Image
 from pydantic import BaseModel
 
 try:
@@ -228,6 +229,16 @@ def _new_screenshot_target(workspace_root: Path, session_id: str) -> Path:
     shots_root.mkdir(parents=True, exist_ok=True)
     filename = f"{datetime.utcnow().strftime('%Y%m%d_%H%M%S_%f')}.png"
     return shots_root / filename
+
+
+def _image_pixel_size(path: Path) -> tuple[int, int] | None:
+    try:
+        with Image.open(path) as image:
+            width, height = image.size
+            return int(width), int(height)
+    except OSError:
+        return None
+    return None
 
 
 async def _run_host_command(*argv: str, timeout_seconds: float = 15.0) -> tuple[int, str, str]:
@@ -468,12 +479,17 @@ async def _execute_screenshot(workspace_root: Path, session_id: str, payload: Di
         )
     if not target.exists():
         raise HTTPException(status_code=500, detail="Screenshot command finished without creating an image")
+    pixel_size = _image_pixel_size(target)
+    width_px = pixel_size[0] if pixel_size else None
+    height_px = pixel_size[1] if pixel_size else None
     return {
         "status": "ok",
         "screenshot_path": str(Path("screenshots") / _safe_session(session_id) / target.name),
         "content_type": "image/png",
         "include_cursor": include_cursor,
         "size": target.stat().st_size,
+        "width_px": width_px,
+        "height_px": height_px,
     }
 
 
