@@ -43,6 +43,7 @@ Skills define _how_ tools work. This file is for _your_ specifics — the stuff 
   - `keyboard_type`
   - `keyboard_press`
 - `screenshot` includes the mouse cursor by default when the executor platform supports it.
+- On macOS nodes, `screenshot` also returns the cursor coordinates used at capture time.
 - These are different from `browser_action`:
   - `browser_action` controls the browser page inside Playwright
   - host-device tools control the real executor machine itself

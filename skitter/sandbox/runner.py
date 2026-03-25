@@ -18,6 +18,7 @@ from urllib.parse import urlparse
 
 import httpx
 from fastapi import FastAPI, HTTPException
+from PIL import Image
 from pydantic import BaseModel
 
 try:
@@ -230,6 +231,16 @@ def _new_screenshot_target(workspace_root: Path, session_id: str) -> Path:
     return shots_root / filename
 
 
+def _image_pixel_size(path: Path) -> tuple[int, int] | None:
+    try:
+        with Image.open(path) as image:
+            width, height = image.size
+            return int(width), int(height)
+    except OSError:
+        return None
+    return None
+
+
 async def _run_host_command(*argv: str, timeout_seconds: float = 15.0) -> tuple[int, str, str]:
     try:
         proc = await asyncio.create_subprocess_exec(
@@ -257,6 +268,10 @@ def _load_application_services():
     lib = ctypes.cdll.LoadLibrary(library_path)
     lib.CGEventCreateMouseEvent.restype = ctypes.c_void_p
     lib.CGEventCreateMouseEvent.argtypes = [ctypes.c_void_p, ctypes.c_uint32, CGPoint, ctypes.c_uint32]
+    lib.CGEventCreate.restype = ctypes.c_void_p
+    lib.CGEventCreate.argtypes = [ctypes.c_void_p]
+    lib.CGEventGetLocation.restype = CGPoint
+    lib.CGEventGetLocation.argtypes = [ctypes.c_void_p]
     lib.CGEventCreateKeyboardEvent.restype = ctypes.c_void_p
     lib.CGEventCreateKeyboardEvent.argtypes = [ctypes.c_void_p, ctypes.c_uint16, ctypes.c_bool]
     lib.CGEventKeyboardSetUnicodeString.restype = None
@@ -307,6 +322,18 @@ def _mac_release(lib: Any, ref: int | None) -> None:
     releaser = getattr(lib, "_CFRelease", None)
     if releaser is not None:
         releaser(ref)
+
+
+def _mac_cursor_position() -> tuple[int, int] | None:
+    lib = _load_application_services()
+    event_ref = lib.CGEventCreate(None)
+    if not event_ref:
+        return None
+    try:
+        point = lib.CGEventGetLocation(event_ref)
+        return int(round(point.x)), int(round(point.y))
+    finally:
+        _mac_release(lib, event_ref)
 
 
 def _mac_mouse_button(button: str) -> tuple[int, int, int]:
@@ -432,6 +459,7 @@ async def _execute_notify(payload: Dict[str, Any]) -> dict[str, Any]:
 async def _execute_screenshot(workspace_root: Path, session_id: str, payload: Dict[str, Any]) -> dict[str, Any]:
     target = _new_screenshot_target(workspace_root, session_id)
     include_cursor = bool(payload.get("include_cursor", True))
+    cursor_position: tuple[int, int] | None = _mac_cursor_position() if sys.platform == "darwin" else None
     if sys.platform == "darwin":
         argv = ["screencapture", "-x"]
         if include_cursor:
@@ -468,12 +496,21 @@ async def _execute_screenshot(workspace_root: Path, session_id: str, payload: Di
         )
     if not target.exists():
         raise HTTPException(status_code=500, detail="Screenshot command finished without creating an image")
+    pixel_size = _image_pixel_size(target)
+    width_px = pixel_size[0] if pixel_size else None
+    height_px = pixel_size[1] if pixel_size else None
+    cursor_x = cursor_position[0] if cursor_position else None
+    cursor_y = cursor_position[1] if cursor_position else None
     return {
         "status": "ok",
         "screenshot_path": str(Path("screenshots") / _safe_session(session_id) / target.name),
         "content_type": "image/png",
         "include_cursor": include_cursor,
         "size": target.stat().st_size,
+        "width_px": width_px,
+        "height_px": height_px,
+        "cursor_x": cursor_x,
+        "cursor_y": cursor_y,
     }
 
 

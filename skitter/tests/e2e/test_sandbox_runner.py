@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pytest
 from httpx import ASGITransport, AsyncClient
+from PIL import Image
 
 import skitter.sandbox.runner as runner_module
 from skitter.sandbox.runner import create_app
@@ -74,6 +75,13 @@ async def test_runner_read_image_returns_workspace_local_file_path(
     assert body["status"] == "ok"
     assert body["file_path"] == "avatars/zig.png"
     assert body["content_type"] == "image/png"
+
+
+def test_image_pixel_size_reads_png_dimensions(tmp_path: Path) -> None:
+    target = tmp_path / "tiny.png"
+    Image.new("RGB", (2, 3), color=(255, 0, 0)).save(target, format="PNG")
+
+    assert runner_module._image_pixel_size(target) == (2, 3)
 
 
 @pytest.mark.asyncio
@@ -205,7 +213,14 @@ async def test_runner_screenshot_routes_to_host_screenshot_helper(
         assert workspace_root.name == "workspace"
         assert session_id == "session-1"
         assert payload == {}
-        return {"status": "ok", "screenshot_path": "screenshots/session-1/test.png"}
+        return {
+            "status": "ok",
+            "screenshot_path": "screenshots/session-1/test.png",
+            "width_px": 1440,
+            "height_px": 900,
+            "cursor_x": 320,
+            "cursor_y": 240,
+        }
 
     monkeypatch.setattr(runner_module, "_execute_screenshot", fake_screenshot)
 
@@ -214,6 +229,10 @@ async def test_runner_screenshot_routes_to_host_screenshot_helper(
 
     assert response.status_code == 200
     assert response.json()["screenshot_path"] == "screenshots/session-1/test.png"
+    assert response.json()["width_px"] == 1440
+    assert response.json()["height_px"] == 900
+    assert response.json()["cursor_x"] == 320
+    assert response.json()["cursor_y"] == 240
 
 
 @pytest.mark.asyncio
