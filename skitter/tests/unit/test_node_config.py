@@ -3,10 +3,13 @@ from __future__ import annotations
 from pathlib import Path
 
 import yaml
+import skitter.node.__main__ as node_main
 
 from skitter.node.__main__ import (
     DEVICE_CAPABILITY_TOOL_KEYS,
     DEFAULT_NODE_TOOLS,
+    NodeConfig,
+    _capabilities_payload,
     _build_arg_parser,
     _normalize_tools,
     _resolve_config,
@@ -149,3 +152,74 @@ def test_notify_is_enabled_by_default_when_capability_is_omitted(tmp_path: Path)
     assert cfg.screenshot_enabled is False
     assert cfg.mouse_enabled is False
     assert cfg.keyboard_enabled is False
+
+
+def test_capabilities_payload_reports_device_feature_states(monkeypatch) -> None:
+    cfg = NodeConfig(
+        api_url="http://localhost:8000",
+        token="token-1",
+        name="node-1",
+        workspace_root="workspace",
+        notify_enabled=True,
+        screenshot_enabled=True,
+        mouse_enabled=True,
+        keyboard_enabled=False,
+    )
+
+    monkeypatch.setattr(node_main.sys, "platform", "darwin")
+    monkeypatch.setattr(node_main, "_supports_notify", lambda: True)
+    monkeypatch.setattr(node_main, "_supports_screenshot", lambda: True)
+    monkeypatch.setattr(node_main, "_supports_mouse_keyboard", lambda: True)
+    monkeypatch.setattr(
+        node_main,
+        "_host_permissions",
+        lambda: {
+            "accessibility": {"label": "Accessibility", "status": "missing", "detail": "Enable Accessibility."},
+            "screen_recording": {"label": "Screen Recording", "status": "granted"},
+        },
+    )
+
+    payload = _capabilities_payload(cfg)
+
+    assert payload["notify"] is True
+    assert payload["screenshot"] is True
+    assert payload["mouse"] is True
+    assert payload["keyboard"] is False
+    assert payload["permissions"]["accessibility"]["status"] == "missing"
+    assert payload["device_features"]["notify"]["state"] == "ready"
+    assert payload["device_features"]["screenshot"]["state"] == "ready"
+    assert payload["device_features"]["mouse"]["state"] == "needs_permission"
+    assert payload["device_features"]["mouse"]["permission"] == "accessibility"
+    assert payload["device_features"]["keyboard"]["state"] == "disabled"
+
+
+def test_capabilities_payload_reports_unsupported_platform_helpers(monkeypatch) -> None:
+    cfg = NodeConfig(
+        api_url="http://localhost:8000",
+        token="token-1",
+        name="node-1",
+        workspace_root="workspace",
+        notify_enabled=True,
+        screenshot_enabled=True,
+        mouse_enabled=True,
+        keyboard_enabled=True,
+    )
+
+    monkeypatch.setattr(node_main.sys, "platform", "linux")
+    monkeypatch.setattr(node_main, "_supports_notify", lambda: True)
+    monkeypatch.setattr(node_main, "_supports_screenshot", lambda: True)
+    monkeypatch.setattr(node_main, "_supports_mouse_keyboard", lambda: False)
+    monkeypatch.setattr(
+        node_main,
+        "_host_permissions",
+        lambda: {
+            "accessibility": {"label": "Accessibility", "status": "unsupported"},
+            "screen_recording": {"label": "Screen Recording", "status": "not_required"},
+        },
+    )
+
+    payload = _capabilities_payload(cfg)
+
+    assert payload["device_features"]["screenshot"]["state"] == "ready"
+    assert payload["device_features"]["mouse"]["state"] == "unsupported"
+    assert payload["device_features"]["keyboard"]["state"] == "unsupported"

@@ -96,10 +96,151 @@ type StructuredValueRow = {
   valueType: StructuredValueType;
   value: string;
 };
+type ExecutorPermissionInfo = {
+  label: string;
+  status: string;
+  detail?: string;
+};
+type ExecutorDeviceFeatureInfo = {
+  enabled: boolean;
+  supported: boolean;
+  ready: boolean;
+  state: string;
+  permission?: string;
+  permission_status?: string;
+  detail?: string;
+};
 
 const SESSIONS_PAGE_SIZE = 25;
 const TOOL_RUNS_PAGE_SIZE = 15;
 const SCHEDULED_JOB_MODEL_MAIN = "__main_chain__";
+const EXECUTOR_DEVICE_FEATURE_ORDER = ["notify", "screenshot", "mouse", "keyboard"] as const;
+const EXECUTOR_DEVICE_FEATURE_LABELS: Record<(typeof EXECUTOR_DEVICE_FEATURE_ORDER)[number], string> = {
+  notify: "Notify",
+  screenshot: "Screenshot",
+  mouse: "Mouse",
+  keyboard: "Keyboard",
+};
+const EXECUTOR_PERMISSION_LABELS: Record<string, string> = {
+  accessibility: "Accessibility",
+  screen_recording: "Screen Recording",
+};
+
+const asRecord = (value: unknown): Record<string, unknown> | null => {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return null;
+  }
+  return value as Record<string, unknown>;
+};
+
+const getExecutorPermissions = (executor: ExecutorItem): Record<string, ExecutorPermissionInfo> => {
+  const capabilities = asRecord(executor.capabilities) ?? {};
+  const raw = asRecord(capabilities.permissions);
+  if (!raw) {
+    return {};
+  }
+  const permissions: Record<string, ExecutorPermissionInfo> = {};
+  for (const [key, value] of Object.entries(raw)) {
+    const record = asRecord(value);
+    if (!record) {
+      continue;
+    }
+    permissions[key] = {
+      label: typeof record.label === "string" && record.label.trim() ? record.label : EXECUTOR_PERMISSION_LABELS[key] ?? key,
+      status: typeof record.status === "string" && record.status.trim() ? record.status : "unknown",
+      detail: typeof record.detail === "string" && record.detail.trim() ? record.detail : undefined,
+    };
+  }
+  return permissions;
+};
+
+const getExecutorDeviceFeatures = (executor: ExecutorItem): Record<string, ExecutorDeviceFeatureInfo> => {
+  const capabilities = asRecord(executor.capabilities) ?? {};
+  const raw = asRecord(capabilities.device_features);
+  const features: Record<string, ExecutorDeviceFeatureInfo> = {};
+  for (const key of EXECUTOR_DEVICE_FEATURE_ORDER) {
+    const record = raw ? asRecord(raw[key]) : null;
+    if (record) {
+      features[key] = {
+        enabled: Boolean(record.enabled),
+        supported: record.supported === undefined ? Boolean(record.enabled) : Boolean(record.supported),
+        ready: Boolean(record.ready),
+        state: typeof record.state === "string" && record.state.trim() ? record.state : Boolean(record.ready) ? "ready" : "unknown",
+        permission: typeof record.permission === "string" ? record.permission : undefined,
+        permission_status: typeof record.permission_status === "string" ? record.permission_status : undefined,
+        detail: typeof record.detail === "string" && record.detail.trim() ? record.detail : undefined,
+      };
+      continue;
+    }
+    const enabled = Boolean(capabilities[key]);
+    features[key] = {
+      enabled,
+      supported: enabled,
+      ready: enabled,
+      state: enabled ? "ready" : "disabled",
+    };
+  }
+  return features;
+};
+
+const executorFeatureBadgeVariant = (feature: ExecutorDeviceFeatureInfo): "secondary" | "success" | "warning" | "danger" => {
+  if (feature.state === "ready") {
+    return "success";
+  }
+  if (feature.state === "disabled") {
+    return "secondary";
+  }
+  if (feature.state === "unsupported") {
+    return "danger";
+  }
+  return "warning";
+};
+
+const executorFeatureBadgeLabel = (key: keyof typeof EXECUTOR_DEVICE_FEATURE_LABELS, feature: ExecutorDeviceFeatureInfo): string => {
+  const label = EXECUTOR_DEVICE_FEATURE_LABELS[key];
+  if (feature.state === "ready") {
+    return label;
+  }
+  if (feature.state === "disabled") {
+    return `${label} off`;
+  }
+  if (feature.state === "unsupported") {
+    return `${label} unavailable`;
+  }
+  if (feature.state === "needs_permission") {
+    return `${label} permission`;
+  }
+  return `${label} check`;
+};
+
+const executorPermissionBadgeVariant = (status: string): "secondary" | "success" | "warning" | "danger" => {
+  if (status === "granted") {
+    return "success";
+  }
+  if (status === "missing" || status === "unknown") {
+    return "warning";
+  }
+  if (status === "unsupported") {
+    return "danger";
+  }
+  return "secondary";
+};
+
+const executorPermissionStatusLabel = (status: string): string => {
+  if (status === "granted") {
+    return "Granted";
+  }
+  if (status === "missing") {
+    return "Missing";
+  }
+  if (status === "not_required") {
+    return "Not required";
+  }
+  if (status === "unsupported") {
+    return "Unavailable";
+  }
+  return "Unknown";
+};
 
 const rangeStart = (range: TableRange): number | null => {
   const now = new Date();
@@ -471,6 +612,22 @@ export default function App() {
     api_url: API_BASE,
     workspace_root: "workspace",
   });
+  const selectedExecutorDeviceFeatures = useMemo(
+    () => (selectedExecutor ? getExecutorDeviceFeatures(selectedExecutor) : null),
+    [selectedExecutor]
+  );
+  const selectedExecutorPermissions = useMemo(
+    () => (selectedExecutor ? getExecutorPermissions(selectedExecutor) : null),
+    [selectedExecutor]
+  );
+  const selectedExecutorTools = useMemo(() => {
+    const capabilities = selectedExecutor ? asRecord(selectedExecutor.capabilities) : null;
+    const rawTools = capabilities?.tools;
+    if (!Array.isArray(rawTools)) {
+      return [];
+    }
+    return rawTools.filter((item): item is string => typeof item === "string" && item.trim().length > 0);
+  }, [selectedExecutor]);
   const [configData, setConfigData] = useState<ConfigResponse | null>(null);
   const [configDraft, setConfigDraft] = useState<Record<string, unknown>>({});
   const [configLoading, setConfigLoading] = useState<boolean>(false);
@@ -1251,7 +1408,11 @@ export default function App() {
         `    - http_fetch\n` +
         `    - shell\n` +
         `    - browser\n` +
-        `    - browser_action\n`;
+        `    - browser_action\n` +
+        `  notify: true\n` +
+        `  screenshot: false\n` +
+        `  mouse: false\n` +
+        `  keyboard: false\n`;
 
       setExecutorOnboardingResult({
         executorId: executor.id,
@@ -4773,11 +4934,30 @@ export default function App() {
                               </TableRow>
                             </TableHeader>
                             <TableBody>
-                              {visibleExecutors.map((executor) => (
+                              {visibleExecutors.map((executor) => {
+                                const deviceFeatures = getExecutorDeviceFeatures(executor);
+                                return (
                                 <TableRow key={executor.id}>
                                   <TableCell className="text-xs">
                                     <div className="font-semibold">{executor.name}</div>
                                     <div className="text-mutedForeground">{executor.id}</div>
+                                    <div className="mt-2 flex flex-wrap gap-1">
+                                      {EXECUTOR_DEVICE_FEATURE_ORDER.map((featureKey) => {
+                                        const feature = deviceFeatures[featureKey];
+                                        if (!feature.enabled && feature.state === "disabled") {
+                                          return null;
+                                        }
+                                        return (
+                                          <Badge
+                                            key={featureKey}
+                                            variant={executorFeatureBadgeVariant(feature)}
+                                            className="text-[10px]"
+                                          >
+                                            {executorFeatureBadgeLabel(featureKey, feature)}
+                                          </Badge>
+                                        );
+                                      })}
+                                    </div>
                                   </TableCell>
                                   <TableCell className="text-xs">{executor.kind}</TableCell>
                                   <TableCell className="text-xs">{renderUser(executor.owner_user_id)}</TableCell>
@@ -4810,7 +4990,8 @@ export default function App() {
                                     </Button>
                                   </TableCell>
                                 </TableRow>
-                              ))}
+                                );
+                              })}
                             </TableBody>
                           </Table>
                         ) : (
@@ -5265,6 +5446,109 @@ export default function App() {
                   <div>
                     <p className="mb-1 text-xs uppercase tracking-[0.2em] text-mutedForeground">Hostname</p>
                     <Input value={selectedExecutor.hostname ?? "—"} readOnly />
+                  </div>
+                </div>
+
+                <div className="grid gap-4 lg:grid-cols-2">
+                  <div className="rounded-2xl border border-border bg-muted/20 p-4">
+                    <p className="text-sm font-semibold">Host Features</p>
+                    <div className="mt-3 flex flex-wrap gap-2">
+                      {selectedExecutorDeviceFeatures ? (
+                        EXECUTOR_DEVICE_FEATURE_ORDER.map((featureKey) => {
+                          const feature = selectedExecutorDeviceFeatures[featureKey];
+                          return (
+                            <Badge
+                              key={featureKey}
+                              variant={executorFeatureBadgeVariant(feature)}
+                              className="text-[11px]"
+                            >
+                              {executorFeatureBadgeLabel(featureKey, feature)}
+                            </Badge>
+                          );
+                        })
+                      ) : (
+                        <Badge variant="secondary">No host feature data</Badge>
+                      )}
+                    </div>
+                    {selectedExecutorDeviceFeatures ? (
+                      <div className="mt-4 space-y-3">
+                        {EXECUTOR_DEVICE_FEATURE_ORDER.map((featureKey) => {
+                          const feature = selectedExecutorDeviceFeatures[featureKey];
+                          return (
+                            <div key={featureKey} className="rounded-2xl border border-border/70 bg-card px-3 py-2">
+                              <div className="flex flex-wrap items-center justify-between gap-2">
+                                <p className="text-sm font-medium">{EXECUTOR_DEVICE_FEATURE_LABELS[featureKey]}</p>
+                                <Badge variant={executorFeatureBadgeVariant(feature)}>
+                                  {feature.state === "ready"
+                                    ? "Ready"
+                                    : feature.state === "disabled"
+                                      ? "Disabled"
+                                      : feature.state === "needs_permission"
+                                        ? "Permission needed"
+                                        : feature.state === "unsupported"
+                                          ? "Unavailable"
+                                          : "Check"}
+                                </Badge>
+                              </div>
+                              {feature.detail ? (
+                                <p className="mt-2 text-xs text-mutedForeground">{feature.detail}</p>
+                              ) : null}
+                            </div>
+                          );
+                        })}
+                      </div>
+                    ) : null}
+                  </div>
+
+                  <div className="rounded-2xl border border-border bg-muted/20 p-4">
+                    <p className="text-sm font-semibold">Permissions</p>
+                    <div className="mt-3 flex flex-wrap gap-2">
+                      {selectedExecutorPermissions && Object.keys(selectedExecutorPermissions).length ? (
+                        Object.entries(selectedExecutorPermissions).map(([key, permission]) => (
+                          <Badge key={key} variant={executorPermissionBadgeVariant(permission.status)} className="text-[11px]">
+                            {permission.label}: {executorPermissionStatusLabel(permission.status)}
+                          </Badge>
+                        ))
+                      ) : (
+                        <Badge variant="secondary">Not reported yet</Badge>
+                      )}
+                    </div>
+                    {selectedExecutorPermissions && Object.keys(selectedExecutorPermissions).length ? (
+                      <div className="mt-4 space-y-3">
+                        {Object.entries(selectedExecutorPermissions).map(([key, permission]) => (
+                          <div key={key} className="rounded-2xl border border-border/70 bg-card px-3 py-2">
+                            <div className="flex flex-wrap items-center justify-between gap-2">
+                              <p className="text-sm font-medium">{permission.label}</p>
+                              <Badge variant={executorPermissionBadgeVariant(permission.status)}>
+                                {executorPermissionStatusLabel(permission.status)}
+                              </Badge>
+                            </div>
+                            {permission.detail ? (
+                              <p className="mt-2 text-xs text-mutedForeground">{permission.detail}</p>
+                            ) : null}
+                          </div>
+                        ))}
+                      </div>
+                    ) : (
+                      <p className="mt-4 text-xs text-mutedForeground">
+                        Restart this executor node after upgrading if you want it to report host permission status.
+                      </p>
+                    )}
+                  </div>
+                </div>
+
+                <div className="rounded-2xl border border-border bg-muted/20 p-4">
+                  <p className="text-sm font-semibold">Enabled Tools</p>
+                  <div className="mt-3 flex flex-wrap gap-2">
+                    {selectedExecutorTools.length ? (
+                      selectedExecutorTools.map((toolName) => (
+                        <Badge key={toolName} variant="secondary">
+                          {toolName}
+                        </Badge>
+                      ))
+                    ) : (
+                      <Badge variant="secondary">No tool list reported</Badge>
+                    )}
                   </div>
                 </div>
 

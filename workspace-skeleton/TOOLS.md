@@ -35,6 +35,7 @@ Skills define _how_ tools work. This file is for _your_ specifics — the stuff 
 
 - Some executor nodes may expose host-device capabilities in `machine_status.capabilities`.
 - Use `machine_status` before host-device actions if you are unsure what a node supports.
+- `machine_status.capabilities.permissions` and `machine_status.capabilities.device_features` can tell you whether a node is ready or still missing macOS permissions such as Accessibility or Screen Recording.
 - Host-device tools are:
   - `notify`
   - `screenshot`

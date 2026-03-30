@@ -1,4 +1,5 @@
 import SwiftUI
+import PhotosUI
 import Speech
 import UIKit
 import UniformTypeIdentifiers
@@ -186,7 +187,10 @@ private struct ChatScreen: View {
     @StateObject private var speechController = SpeechCaptureController()
     @StateObject private var speaker = VoicePlaybackController()
     @State private var showsDetails = false
+    @State private var showsAttachmentOptions = false
     @State private var showsFileImporter = false
+    @State private var showsPhotoPicker = false
+    @State private var selectedPhotoItems: [PhotosPickerItem] = []
     @FocusState private var composerIsFocused: Bool
 
     private let bottomAnchorID = "chat-bottom-anchor"
@@ -320,6 +324,25 @@ private struct ChatScreen: View {
         }
         .navigationTitle("Skitter")
         .navigationBarTitleDisplayMode(.inline)
+        .sheet(isPresented: $showsAttachmentOptions) {
+            AttachmentSourceSheet(
+                choosePhotos: {
+                    showsPhotoPicker = true
+                },
+                chooseFiles: {
+                    showsFileImporter = true
+                }
+            )
+            .presentationDetents([.height(238)])
+            .presentationDragIndicator(.visible)
+        }
+        .photosPicker(
+            isPresented: $showsPhotoPicker,
+            selection: $selectedPhotoItems,
+            maxSelectionCount: 12,
+            matching: .any(of: [.images, .videos]),
+            preferredItemEncoding: .current
+        )
         .fileImporter(
             isPresented: $showsFileImporter,
             allowedContentTypes: [.item],
@@ -330,6 +353,14 @@ private struct ChatScreen: View {
                 Task { await model.queueComposerAttachments(urls: urls) }
             case let .failure(error):
                 model.errorText = error.localizedDescription
+            }
+        }
+        .onChange(of: selectedPhotoItems) { _, items in
+            guard !items.isEmpty else { return }
+            let snapshot = items
+            selectedPhotoItems = []
+            Task {
+                await queuePhotoPickerItems(snapshot)
             }
         }
         .toolbar {
@@ -446,7 +477,7 @@ private struct ChatScreen: View {
             }
 
             Button {
-                showsFileImporter = true
+                showsAttachmentOptions = true
             } label: {
                 Image(systemName: "paperclip.circle.fill")
                     .font(.system(size: 28, weight: .medium))
@@ -454,7 +485,7 @@ private struct ChatScreen: View {
             }
             .buttonStyle(.plain)
             .disabled(model.isSending)
-            .accessibilityLabel("Attach files")
+            .accessibilityLabel("Add attachment")
 
             Button {
                 Task {
@@ -611,6 +642,80 @@ private struct ChatScreen: View {
         case .activeTasks:
             return .orange
         }
+    }
+
+    private func queuePhotoPickerItems(_ items: [PhotosPickerItem]) async {
+        do {
+            var attachments: [PendingComposerAttachment] = []
+
+            for (index, item) in items.enumerated() {
+                guard let data = try await item.loadTransferable(type: Data.self), !data.isEmpty else {
+                    continue
+                }
+
+                let type = item.supportedContentTypes.first
+                let contentType = type?.preferredMIMEType ?? fallbackMimeType(for: type)
+                let filename = synthesizedPhotoPickerFilename(for: type, index: index, totalCount: items.count)
+
+                attachments.append(
+                    PendingComposerAttachment(
+                        id: UUID().uuidString,
+                        filename: filename,
+                        contentType: contentType,
+                        data: data
+                    )
+                )
+            }
+
+            await MainActor.run {
+                if attachments.isEmpty {
+                    model.errorText = "No photo or video data could be loaded."
+                    return
+                }
+
+                model.queueComposerAttachments(attachments)
+            }
+        } catch {
+            await MainActor.run {
+                model.errorText = error.localizedDescription
+            }
+        }
+    }
+
+    private func synthesizedPhotoPickerFilename(for type: UTType?, index: Int, totalCount: Int) -> String {
+        let resolvedType = type ?? .data
+        let stem: String
+        let fallbackExtension: String
+
+        if resolvedType.conforms(to: .image) {
+            stem = "photo"
+            fallbackExtension = "jpg"
+        } else if resolvedType.conforms(to: .movie) || resolvedType.conforms(to: .video) {
+            stem = "video"
+            fallbackExtension = "mov"
+        } else {
+            stem = "attachment"
+            fallbackExtension = "bin"
+        }
+
+        let fileExtension = resolvedType.preferredFilenameExtension ?? fallbackExtension
+        if totalCount == 1 {
+            return "\(stem).\(fileExtension)"
+        }
+        return "\(stem)-\(index + 1).\(fileExtension)"
+    }
+
+    private func fallbackMimeType(for type: UTType?) -> String {
+        guard let type else {
+            return "application/octet-stream"
+        }
+        if type.conforms(to: .image) {
+            return "image/jpeg"
+        }
+        if type.conforms(to: .movie) || type.conforms(to: .video) {
+            return "video/quicktime"
+        }
+        return "application/octet-stream"
     }
 
     private func toggleQuickVoice() async {
@@ -2072,6 +2177,81 @@ private struct SpeechVoicePickerSheet: View {
                 }
             }
         }
+    }
+}
+
+private struct AttachmentSourceSheet: View {
+    let choosePhotos: () -> Void
+    let chooseFiles: () -> Void
+
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            Text("Add Attachment")
+                .font(.headline)
+
+            AttachmentSourceButton(
+                title: "Photos & Videos",
+                subtitle: "Choose from your camera roll.",
+                systemImage: "photo.on.rectangle.angled"
+            ) {
+                chooseAndDismiss(choosePhotos)
+            }
+
+            AttachmentSourceButton(
+                title: "Files",
+                subtitle: "Browse documents and other files.",
+                systemImage: "folder"
+            ) {
+                chooseAndDismiss(chooseFiles)
+            }
+
+            Spacer(minLength: 0)
+        }
+        .padding(20)
+    }
+
+    private func chooseAndDismiss(_ action: @escaping () -> Void) {
+        dismiss()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.18, execute: action)
+    }
+}
+
+private struct AttachmentSourceButton: View {
+    let title: String
+    let subtitle: String
+    let systemImage: String
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 14) {
+                Image(systemName: systemImage)
+                    .font(.system(size: 18, weight: .semibold))
+                    .foregroundStyle(Color.accentColor)
+                    .frame(width: 34, height: 34)
+                    .background(Color.accentColor.opacity(0.12), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(title)
+                        .font(.body.weight(.semibold))
+                        .foregroundStyle(.primary)
+                    Text(subtitle)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+
+                Spacer()
+
+                Image(systemName: "chevron.right")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.tertiary)
+            }
+            .padding(14)
+            .background(Color(uiColor: .secondarySystemBackground), in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+        }
+        .buttonStyle(.plain)
     }
 }
 

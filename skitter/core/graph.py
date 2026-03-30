@@ -1522,7 +1522,7 @@ def build_graph(
 
     @tool("machine_status")
     async def machine_status(target_machine: Optional[str] = None) -> str:
-        """Get status and capabilities for a specific machine (or current default)."""
+        """Get status and capabilities for a specific machine (or current default), including any reported host-device feature readiness and permission status."""
         payload: dict[str, Any] = {}
         if target_machine:
             payload["target_machine"] = target_machine

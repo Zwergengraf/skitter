@@ -237,6 +237,11 @@ final class AppModel: ObservableObject {
         }
     }
 
+    func queueComposerAttachments(_ attachments: [PendingComposerAttachment]) {
+        guard !attachments.isEmpty else { return }
+        pendingComposerAttachments.append(contentsOf: attachments)
+    }
+
     func removeComposerAttachment(id: String) {
         pendingComposerAttachments.removeAll { $0.id == id }
     }
