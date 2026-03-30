@@ -15,8 +15,8 @@ mkdir -p "$SOCKET_DIR"
 SOCKET="$SOCKET_DIR/skitter.sock"
 SESSION=skitter-python
 
-tmux -S "$SOCKET" new -d -s "$SESSION" -n shell
-tmux -S "$SOCKET" send-keys -t "$SESSION":0.0 -- 'PYTHON_BASIC_REPL=1 python3 -q' Enter
+{baseDir}/scripts/ensure-session.sh -S "$SOCKET" -s "$SESSION"
+{baseDir}/scripts/send-text.sh -S "$SOCKET" -t "$SESSION":0.0 -- 'PYTHON_BASIC_REPL=1 python3 -q'
 tmux -S "$SOCKET" capture-pane -p -J -t "$SESSION":0.0 -S -200
 ```
 
@@ -44,6 +44,13 @@ To monitor:
 - List sessions on your socket: `{baseDir}/scripts/find-sessions.sh -S "$SOCKET"`.
 - Scan all sockets: `{baseDir}/scripts/find-sessions.sh --all`.
 
+## Recommended workflow
+
+1. Ensure the session exists: `{baseDir}/scripts/ensure-session.sh -S "$SOCKET" -s "$SESSION"`.
+2. Send input safely: `{baseDir}/scripts/send-text.sh -S "$SOCKET" -t "$SESSION":0.0 -- "$cmd"`.
+3. Inspect output: `tmux -S "$SOCKET" capture-pane -p -J -t "$SESSION":0.0 -S -200`.
+4. Wait for a prompt or completion text: `{baseDir}/scripts/wait-for-text.sh -S "$SOCKET" -t "$SESSION":0.0 -p 'pattern'`.
+
 ## Sending input safely
 
 - Prefer literal sends: `tmux -S "$SOCKET" send-keys -t target -l -- "$cmd"`.
@@ -55,13 +62,13 @@ To monitor:
   or use `sleep 1` if sub-second sleeps aren't supported):
 
 ```bash
-tmux -S "$SOCKET" send-keys -t target -l -- "$cmd" && sleep 0.1 && tmux -S "$SOCKET" send-keys -t target Enter
+{baseDir}/scripts/send-text.sh -S "$SOCKET" -t target -- "$cmd"
 ```
 
 ## Watching output
 
 - Capture recent history: `tmux -S "$SOCKET" capture-pane -p -J -t target -S -200`.
-- Wait for prompts: `{baseDir}/scripts/wait-for-text.sh -t session:0.0 -p 'pattern'`.
+- Wait for prompts: `{baseDir}/scripts/wait-for-text.sh -S "$SOCKET" -t session:0.0 -p 'pattern'`.
 - Attaching is OK; detach with `Ctrl+b d`.
 
 ## Spawning processes
@@ -82,15 +89,15 @@ SOCKET="${TMPDIR:-/tmp}/codex-army.sock"
 
 # Create multiple sessions
 for i in 1 2 3 4 5; do
-  tmux -S "$SOCKET" new-session -d -s "agent-$i"
+  {baseDir}/scripts/ensure-session.sh -S "$SOCKET" -s "agent-$i"
 done
 
 # Launch agents in different workdirs
-tmux -S "$SOCKET" send-keys -t agent-1 "cd /tmp/project1 && codex --yolo 'Fix bug X'" Enter
-tmux -S "$SOCKET" send-keys -t agent-2 "cd /tmp/project2 && codex --yolo 'Fix bug Y'" Enter
+{baseDir}/scripts/send-text.sh -S "$SOCKET" -t agent-1 -- "cd /tmp/project1 && codex --yolo 'Fix bug X'"
+{baseDir}/scripts/send-text.sh -S "$SOCKET" -t agent-2 -- "cd /tmp/project2 && codex --yolo 'Fix bug Y'"
 
 # When sending prompts to Claude Code/Codex TUI, split text + Enter with a delay
-tmux -S "$SOCKET" send-keys -t agent-1 -l -- "Please make a small edit to README.md." && sleep 0.1 && tmux -S "$SOCKET" send-keys -t agent-1 Enter
+{baseDir}/scripts/send-text.sh -S "$SOCKET" -t agent-1 -- "Please make a small edit to README.md."
 
 # Poll for completion (check if prompt returned)
 for sess in agent-1 agent-2; do
@@ -123,11 +130,29 @@ tmux -S "$SOCKET" capture-pane -p -t agent-1 -S -500
 `{baseDir}/scripts/wait-for-text.sh` polls a pane for a regex (or fixed string) with a timeout.
 
 ```bash
-{baseDir}/scripts/wait-for-text.sh -t session:0.0 -p 'pattern' [-F] [-T 20] [-i 0.5] [-l 2000]
+{baseDir}/scripts/wait-for-text.sh -S "$SOCKET" -t session:0.0 -p 'pattern' [-F] [-T 20] [-i 0.5] [-l 2000]
 ```
 
+- `-L`/`--socket` optional tmux socket name
+- `-S`/`--socket-path` optional tmux socket path
 - `-t`/`--target` pane target (required)
 - `-p`/`--pattern` regex to match (required); add `-F` for fixed string
 - `-T` timeout seconds (integer, default 15)
 - `-i` poll interval seconds (default 0.5)
 - `-l` history lines to search (integer, default 1000)
+
+## Helper: send-text.sh
+
+`{baseDir}/scripts/send-text.sh` sends literal text, then optionally sends `Enter` after a short delay.
+
+```bash
+{baseDir}/scripts/send-text.sh -S "$SOCKET" -t session:0.0 [--no-enter] [--delay 0.2] -- "message"
+```
+
+## Helper: ensure-session.sh
+
+`{baseDir}/scripts/ensure-session.sh` creates a detached tmux session if missing and otherwise exits cleanly.
+
+```bash
+{baseDir}/scripts/ensure-session.sh -S "$SOCKET" -s "$SESSION" [-n shell]
+```

@@ -10,7 +10,7 @@ List tmux sessions on a socket (default tmux socket if none provided).
 Options:
   -L, --socket       tmux socket name (passed to tmux -L)
   -S, --socket-path  tmux socket path (passed to tmux -S)
-  -A, --all          scan all sockets under TMPDIR/openclaw-tmux-sockets
+  -A, --all          scan all sockets under ${TMPDIR:-/tmp}/tmux-sockets
   -q, --query        case-insensitive substring to filter session names
   -h, --help         show this help
 USAGE
