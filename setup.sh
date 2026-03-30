@@ -35,7 +35,9 @@ Usage: ./setup.sh <command> [args]
 
 Commands:
   install              Create missing config/env files, generate secrets, build and start the core stack.
-  upgrade [target]     Upgrade to current branch, latest tag, or a specific tag; then rebuild/restart.
+  install-cli          Install the skitter-node CLI globally via uv tool from this checkout.
+  install-tui          Install the skitter-tui CLI globally via uv tool from this checkout.
+  upgrade [target]     Upgrade to current branch, latest tag, or a specific tag; refresh installed CLIs if present; then rebuild/restart.
   restart              Restart the running Docker Compose services (useful after config changes).
   logs [service]       Follow Docker Compose logs (default service: api).
   backup [name]        Back up .env, config.yaml, and a PostgreSQL dump into backups/<name>.
@@ -52,6 +54,8 @@ Upgrade targets:
 
 Examples:
   ./setup.sh install
+  ./setup.sh install-cli
+  ./setup.sh install-tui
   ./setup.sh doctor
   ./setup.sh status
   ./setup.sh restart
@@ -76,8 +80,29 @@ require_docker_running() {
   docker info >/dev/null 2>&1 || die "Docker daemon is not running or not reachable."
 }
 
+require_uv() {
+  require_tool uv
+}
+
 compose() {
   docker compose "$@"
+}
+
+uv_tool_bin_dir() {
+  uv tool dir 2>/dev/null
+}
+
+uv_tool_command_path() {
+  local tool_dir
+  tool_dir="$(uv_tool_bin_dir || true)"
+  [ -n "$tool_dir" ] || return 1
+  printf '%s/%s\n' "$tool_dir" "$1"
+}
+
+uv_tool_is_installed() {
+  local command_path
+  command_path="$(uv_tool_command_path "$1" || true)"
+  [ -n "$command_path" ] && [ -x "$command_path" ]
 }
 
 timestamp_now() {
@@ -275,6 +300,59 @@ Next steps:
 EOF
 }
 
+print_uv_tool_path_hint() {
+  local tool_dir
+  tool_dir="$(uv_tool_bin_dir || true)"
+  if [ -z "$tool_dir" ]; then
+    return
+  fi
+  case ":$PATH:" in
+    *":$tool_dir:"*) ;;
+    *)
+      cat <<EOF
+
+If the command is not found yet, add uv's tool directory to your PATH:
+  uv tool update-shell
+
+Current uv tool directory:
+  $tool_dir
+EOF
+      ;;
+  esac
+}
+
+install_uv_tool() {
+  local project_path="$1"
+  local command_name="$2"
+  local label="$3"
+
+  require_uv
+  require_tool python3
+
+  info "Installing $label via uv tool..."
+  uv tool install --force --editable "$project_path"
+  info "$label installed. Command: $command_name"
+  print_uv_tool_path_hint
+}
+
+upgrade_installed_uv_tools() {
+  require_uv
+
+  if uv_tool_is_installed "skitter-node"; then
+    info "Refreshing installed skitter-node CLI..."
+    uv tool install --force --editable "$SCRIPT_DIR"
+  else
+    info "skitter-node CLI not installed via setup; skipping."
+  fi
+
+  if uv_tool_is_installed "skitter-tui"; then
+    info "Refreshing installed skitter-tui CLI..."
+    uv tool install --force --editable "$SCRIPT_DIR/skitter-tui"
+  else
+    info "skitter-tui CLI not installed via setup; skipping."
+  fi
+}
+
 cmd_install() {
   require_tool git
   require_tool docker
@@ -284,9 +362,18 @@ cmd_install() {
   require_docker_running
   ensure_env_file
   ensure_config_file
+  upgrade_installed_uv_tools
   build_images
   start_stack
   print_install_summary
+}
+
+cmd_install_cli() {
+  install_uv_tool "$SCRIPT_DIR" "skitter-node" "skitter-node"
+}
+
+cmd_install_tui() {
+  install_uv_tool "$SCRIPT_DIR/skitter-tui" "skitter-tui" "skitter-tui"
 }
 
 git_is_clean_for_upgrade() {
@@ -556,6 +643,7 @@ cmd_doctor() {
   doctor_check_tool docker
   doctor_check_tool python3
   doctor_check_tool openssl
+  doctor_check_tool uv
 
   if docker compose version >/dev/null 2>&1; then
     doctor_ok "Docker Compose available"
@@ -636,6 +724,14 @@ main() {
     install)
       shift
       cmd_install "$@"
+      ;;
+    install-cli)
+      shift
+      cmd_install_cli "$@"
+      ;;
+    install-tui)
+      shift
+      cmd_install_tui "$@"
       ;;
     upgrade)
       shift

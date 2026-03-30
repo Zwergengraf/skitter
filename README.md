@@ -94,6 +94,8 @@ Other useful commands:
 ./setup.sh uninstall
 ```
 
+If you installed `skitter-node` or `skitter-tui` with `./setup.sh install-cli` or `./setup.sh install-tui`, `./setup.sh upgrade ...` also refreshes those CLI environments automatically.
+
 If you want the manual path instead, keep reading below.
 
 ## Manual Docker Setup
@@ -222,16 +224,20 @@ Selection behavior:
 
 1. Open Admin Web UI → **Executors**.
 2. Click **Add executor node** and create token/command.
-3. Clone the repo, create a virtual environment (`uv` is highly recommended), and run the generated command on the target host (macOS/Linux):
+3. Clone the repo on the target host (macOS/Linux), then install the node CLI:
 
 ```bash
-uv venv venv
-source venv/bin/activate
-uv pip install .
+./setup.sh install-cli
+```
+
+Then run the generated command:
+
+```bash
 skitter-node --api-url "http://<api-host>:8000" --token "<token>" --name "<node-name>" --workspace-root "<path>" --write-config
 ```
 
 After the first run, you can start the executor again by simply running `skitter-node`. The config is stored in `$HOME/.config/skitter-node/config.yaml`.
+If you update the repo later and want to refresh the CLI environment, run `./setup.sh install-cli` again.
 
 4. Node appears online in Executors view once connected.
 
@@ -308,13 +314,12 @@ On first load, the admin UI will ask for the Skitter admin API key and store it 
 ### Standalone TUI
 
 ```bash
-cd skitter-tui
-python -m venv .venv
-source .venv/bin/activate
-pip install -e .
+./setup.sh install-tui
 
 skitter-tui --api-url http://localhost:8000 --access-token <USER_ACCESS_TOKEN>
 ```
+
+If you update the repo later and want to refresh the TUI environment, run `./setup.sh install-tui` again.
 
 If you do not have a token yet, start TUI and use:
 
