@@ -243,8 +243,8 @@ ensure_config_file() {
 }
 
 build_images() {
-  info "Building Docker images..."
-  compose --profile sandbox build
+  info "Building Docker images (including sandbox)..."
+  compose --profile sandbox build api admin-web sandbox
 }
 
 start_stack() {
