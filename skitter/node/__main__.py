@@ -2,10 +2,13 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import ctypes
+import ctypes.util
 import json
 import logging
 import os
 import platform
+import shutil
 import socket
 import sys
 from dataclasses import dataclass
@@ -21,6 +24,9 @@ from ..sandbox.runner import create_app
 
 
 logger = logging.getLogger("skitter.node")
+
+_application_services_permissions: Any | None = None
+_core_graphics_permissions: Any | None = None
 
 
 DEFAULT_NODE_TOOLS: tuple[str, ...] = (
@@ -156,6 +162,238 @@ def _enabled_device_capabilities(config: NodeConfig) -> dict[str, bool]:
         "screenshot": bool(config.screenshot_enabled),
         "mouse": bool(config.mouse_enabled),
         "keyboard": bool(config.keyboard_enabled),
+    }
+
+
+def _permission_info(label: str, status: str, detail: str | None = None) -> dict[str, str]:
+    payload = {"label": label, "status": status}
+    if detail:
+        payload["detail"] = detail
+    return payload
+
+
+def _load_application_services_permissions() -> Any | None:
+    global _application_services_permissions
+    if _application_services_permissions is not None:
+        return _application_services_permissions
+    library_path = ctypes.util.find_library("ApplicationServices")
+    if not library_path:
+        return None
+    try:
+        lib = ctypes.cdll.LoadLibrary(library_path)
+    except OSError:
+        return None
+    checker = getattr(lib, "AXIsProcessTrusted", None)
+    if checker is not None:
+        checker.restype = ctypes.c_bool
+        checker.argtypes = []
+    _application_services_permissions = lib
+    return lib
+
+
+def _load_core_graphics_permissions() -> Any | None:
+    global _core_graphics_permissions
+    if _core_graphics_permissions is not None:
+        return _core_graphics_permissions
+    library_path = ctypes.util.find_library("CoreGraphics") or ctypes.util.find_library("ApplicationServices")
+    if not library_path:
+        return None
+    try:
+        lib = ctypes.cdll.LoadLibrary(library_path)
+    except OSError:
+        return None
+    checker = getattr(lib, "CGPreflightScreenCaptureAccess", None)
+    if checker is not None:
+        checker.restype = ctypes.c_bool
+        checker.argtypes = []
+    _core_graphics_permissions = lib
+    return lib
+
+
+def _accessibility_permission_status() -> dict[str, str]:
+    if sys.platform != "darwin":
+        return _permission_info(
+            "Accessibility",
+            "unsupported",
+            "Accessibility permission reporting is only available on macOS nodes.",
+        )
+    lib = _load_application_services_permissions()
+    if lib is None:
+        return _permission_info(
+            "Accessibility",
+            "unsupported",
+            "ApplicationServices is not available on this executor.",
+        )
+    checker = getattr(lib, "AXIsProcessTrusted", None)
+    if checker is None:
+        return _permission_info(
+            "Accessibility",
+            "unknown",
+            "This macOS version does not expose accessibility trust checks to the node process.",
+        )
+    try:
+        trusted = bool(checker())
+    except Exception as exc:
+        return _permission_info("Accessibility", "unknown", f"Could not check accessibility permission: {exc}")
+    if trusted:
+        return _permission_info("Accessibility", "granted", "Accessibility permission is granted.")
+    return _permission_info(
+        "Accessibility",
+        "missing",
+        "Enable it in System Settings > Privacy & Security > Accessibility.",
+    )
+
+
+def _screen_recording_permission_status() -> dict[str, str]:
+    if sys.platform == "darwin":
+        lib = _load_core_graphics_permissions()
+        if lib is None:
+            return _permission_info(
+                "Screen Recording",
+                "unsupported",
+                "CoreGraphics is not available on this executor.",
+            )
+        checker = getattr(lib, "CGPreflightScreenCaptureAccess", None)
+        if checker is None:
+            return _permission_info(
+                "Screen Recording",
+                "unknown",
+                "This macOS version does not expose screen recording permission checks to the node process.",
+            )
+        try:
+            allowed = bool(checker())
+        except Exception as exc:
+            return _permission_info("Screen Recording", "unknown", f"Could not check screen recording permission: {exc}")
+        if allowed:
+            return _permission_info("Screen Recording", "granted", "Screen Recording permission is granted.")
+        return _permission_info(
+            "Screen Recording",
+            "missing",
+            "Enable it in System Settings > Privacy & Security > Screen Recording.",
+        )
+    return _permission_info(
+        "Screen Recording",
+        "not_required",
+        "No separate screen recording permission is required on this platform.",
+    )
+
+
+def _supports_notify() -> bool:
+    if sys.platform == "darwin":
+        return shutil.which("osascript") is not None
+    return shutil.which("notify-send") is not None
+
+
+def _supports_screenshot() -> bool:
+    if sys.platform == "darwin":
+        return shutil.which("screencapture") is not None
+    return any(shutil.which(command) for command in ("gnome-screenshot", "grim", "scrot"))
+
+
+def _supports_mouse_keyboard() -> bool:
+    if sys.platform != "darwin":
+        return False
+    return _load_application_services_permissions() is not None
+
+
+def _device_feature_state(
+    *,
+    enabled: bool,
+    supported: bool,
+    unsupported_detail: str,
+    permission_key: str | None = None,
+    permission_status: dict[str, dict[str, str]] | None = None,
+) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "enabled": enabled,
+        "supported": supported,
+        "ready": False,
+        "state": "disabled" if not enabled else "unsupported" if not supported else "ready",
+    }
+    if not enabled:
+        payload["detail"] = "Disabled in this node config."
+        return payload
+    if not supported:
+        payload["detail"] = unsupported_detail
+        return payload
+    if permission_key:
+        permission = (permission_status or {}).get(permission_key) or {}
+        permission_state = str(permission.get("status") or "unknown")
+        payload["permission"] = permission_key
+        payload["permission_status"] = permission_state
+        if permission_state in {"granted", "not_required"}:
+            payload["ready"] = True
+            payload["state"] = "ready"
+        elif permission_state == "missing":
+            payload["state"] = "needs_permission"
+            detail = str(permission.get("detail") or "").strip()
+            if detail:
+                payload["detail"] = detail
+        elif permission_state == "unsupported":
+            payload["state"] = "unsupported"
+            payload["detail"] = str(permission.get("detail") or unsupported_detail)
+        else:
+            payload["state"] = "unknown"
+            detail = str(permission.get("detail") or "").strip()
+            if detail:
+                payload["detail"] = detail
+        return payload
+    payload["ready"] = True
+    payload["state"] = "ready"
+    return payload
+
+
+def _host_permissions() -> dict[str, dict[str, str]]:
+    return {
+        "accessibility": _accessibility_permission_status(),
+        "screen_recording": _screen_recording_permission_status(),
+    }
+
+
+def _device_feature_statuses(
+    config: NodeConfig,
+    *,
+    permissions: dict[str, dict[str, str]] | None = None,
+) -> dict[str, dict[str, Any]]:
+    resolved_permissions = permissions or _host_permissions()
+    return {
+        "notify": _device_feature_state(
+            enabled=bool(config.notify_enabled),
+            supported=_supports_notify(),
+            unsupported_detail="Host notifications are not supported on this executor.",
+        ),
+        "screenshot": _device_feature_state(
+            enabled=bool(config.screenshot_enabled),
+            supported=_supports_screenshot(),
+            unsupported_detail="Host screenshots are not supported on this executor.",
+            permission_key="screen_recording" if sys.platform == "darwin" else None,
+            permission_status=resolved_permissions,
+        ),
+        "mouse": _device_feature_state(
+            enabled=bool(config.mouse_enabled),
+            supported=_supports_mouse_keyboard(),
+            unsupported_detail="Host mouse control is currently supported on macOS nodes only.",
+            permission_key="accessibility" if sys.platform == "darwin" else None,
+            permission_status=resolved_permissions,
+        ),
+        "keyboard": _device_feature_state(
+            enabled=bool(config.keyboard_enabled),
+            supported=_supports_mouse_keyboard(),
+            unsupported_detail="Host keyboard control is currently supported on macOS nodes only.",
+            permission_key="accessibility" if sys.platform == "darwin" else None,
+            permission_status=resolved_permissions,
+        ),
+    }
+
+
+def _capabilities_payload(config: NodeConfig) -> dict[str, Any]:
+    permissions = _host_permissions()
+    return {
+        "tools": list(config.enabled_tools),
+        **_enabled_device_capabilities(config),
+        "workspace_root": config.workspace_root,
+        "permissions": permissions,
+        "device_features": _device_feature_statuses(config, permissions=permissions),
     }
 
 
@@ -358,11 +596,7 @@ class NodeClient:
                 "name": self._config.name,
                 "platform": platform.system().lower(),
                 "hostname": socket.gethostname(),
-                "capabilities": {
-                    "tools": list(self._config.enabled_tools),
-                    **_enabled_device_capabilities(self._config),
-                    "workspace_root": self._config.workspace_root,
-                },
+                "capabilities": _capabilities_payload(self._config),
             }
             await self._send_json(websocket, payload)
             await asyncio.sleep(self._config.heartbeat_seconds)
