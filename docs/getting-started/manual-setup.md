@@ -11,6 +11,8 @@ If you want the simplest install/upgrade workflow instead, use:
 Useful companions:
 
 ```bash
+./setup.sh install-cli
+./setup.sh install-tui
 ./setup.sh doctor
 ./setup.sh status
 ./setup.sh restart
@@ -20,6 +22,8 @@ Useful companions:
 ./setup.sh upgrade latest
 ./setup.sh uninstall
 ```
+
+If you installed `skitter-node` or `skitter-tui` with `./setup.sh install-cli` or `./setup.sh install-tui`, `./setup.sh upgrade ...` refreshes those CLI environments too.
 
 ## Prerequisites
 

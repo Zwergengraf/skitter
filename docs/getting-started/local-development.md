@@ -42,10 +42,7 @@ npm run dev
 - TUI:
 
 ```bash
-cd skitter-tui
-python -m venv .venv
-source .venv/bin/activate
-pip install -e .
+./setup.sh install-tui
 skitter-tui --api-url http://localhost:8000
 ```
 
