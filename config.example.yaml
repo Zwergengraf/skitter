@@ -15,6 +15,10 @@ context:
   max_tool_messages: 32
   max_chat_messages: 32
   compact_every_messages: 16
+  session_memory:
+    enabled: true
+    init_tokens: 4000
+    update_tokens: 1500
 limits:
   max_tool_calls: 32
   max_runtime_seconds: 600

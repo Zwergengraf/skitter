@@ -17,6 +17,7 @@ from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, System
 
 from .config import settings
 from .events import EventBus
+from .session_memory import ARCHIVE_SUMMARY_PROMPT
 from .graph import (
     UserPromptRequired,
     build_graph,
@@ -75,6 +76,7 @@ class AgentRuntime:
         self._user_prompt_service = user_prompt_service
         self._scheduler_service = scheduler_service
         self._job_service = job_service
+        self._session_memory_service = None
         self._fixed_graph = graph
         self._graphs: dict[tuple[str, str, str, str, str], object] = {}
         self._tool_client = ToolRunnerClient()
@@ -94,6 +96,9 @@ class AgentRuntime:
     def set_user_prompt_service(self, user_prompt_service) -> None:
         self._user_prompt_service = user_prompt_service
         self._graphs.clear()
+
+    def set_session_memory_service(self, session_memory_service) -> None:
+        self._session_memory_service = session_memory_service
 
     def refresh_model_configuration(self) -> None:
         # Config edits can change model selectors/provider endpoints.
@@ -1498,6 +1503,16 @@ class AgentRuntime:
             await repo.set_session_context_summary(session_id, new_summary, checkpoint)
 
     async def summarize_session(self, session_id: str, model_name: str | None = None) -> str:
+        sidecar_content = None
+        if self._session_memory_service is not None:
+            try:
+                sidecar_content = await self._session_memory_service.refresh_session_memory(
+                    session_id,
+                    model_name=model_name,
+                    force=True,
+                )
+            except Exception:
+                _logger.debug("session memory refresh failed before archive summary", exc_info=True)
         await self._ensure_history(session_id)
         messages = self._history.get(session_id, [])
         if not messages:
@@ -1520,6 +1535,28 @@ class AgentRuntime:
             if previous_checkpoint is not None and dt is not None and dt <= previous_checkpoint:
                 continue
             new_messages.append(msg)
+
+        if sidecar_content:
+            if not list_models():
+                merged = f"{previous_summary}\n{sidecar_content}".strip()
+                return merged or "No messages to summarize."
+            llm = build_llm(model_name=model_name, purpose="main")
+            prompt = [
+                SystemMessage(content=ARCHIVE_SUMMARY_PROMPT),
+                HumanMessage(
+                    content=(
+                        f"Existing archive summary:\n{previous_summary or '(none)'}\n\n"
+                        f"Structured session memory:\n{sidecar_content}\n\n"
+                        "Return the merged archive summary only."
+                    )
+                ),
+            ]
+            result = await llm.ainvoke(prompt)
+            if hasattr(result, "content"):
+                text = self._message_content_to_text(result.content).strip()
+                return text or previous_summary or "No messages to summarize."
+            text = str(result).strip()
+            return text or previous_summary or "No messages to summarize."
 
         if not new_messages and previous_summary:
             return previous_summary

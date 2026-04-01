@@ -11,6 +11,7 @@ from fastapi.responses import JSONResponse
 from ..core.events import EventBus
 from ..core.runtime import AgentRuntime
 from ..core.scheduler import SchedulerService
+from ..core.session_memory import SessionMemoryService
 from ..core.config import settings
 from ..core.llm import invalid_model_selectors, list_models
 from ..core.mcp import mcp_registry
@@ -79,6 +80,8 @@ def create_app() -> FastAPI:
         approval_service=app.state.approval_service,
         user_prompt_service=app.state.user_prompt_service,
     )
+    app.state.session_memory_service = SessionMemoryService(app.state.event_bus)
+    app.state.runtime.set_session_memory_service(app.state.session_memory_service)
     app.state.scheduler_service = SchedulerService(app.state.runtime)
     app.state.runtime.set_scheduler_service(app.state.scheduler_service)
     app.state.job_service = None
@@ -134,6 +137,7 @@ def create_app() -> FastAPI:
     @app.on_event("shutdown")
     async def _stop_mcp_registry() -> None:
         await mcp_registry.shutdown()
+        await app.state.session_memory_service.stop()
 
     app.include_router(sessions.router)
     app.include_router(auth.router)
