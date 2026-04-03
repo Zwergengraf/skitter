@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import pytest
+
 from skitter.transports.discord import (
+    ApprovalView,
     DISCORD_MESSAGE_CHAR_LIMIT,
     _append_status_suffix,
     _build_approval_request_content,
@@ -40,3 +43,12 @@ def test_append_status_suffix_keeps_message_within_discord_limit() -> None:
     assert len(updated) <= DISCORD_MESSAGE_CHAR_LIMIT
     assert updated.endswith(" -> :white_check_mark: Approved")
     assert "..." in updated
+
+
+@pytest.mark.asyncio
+async def test_approval_view_has_approve_and_deny_buttons() -> None:
+    view = ApprovalView("tool-run-1", approval_service=None)
+    labels = [child.label for child in view.children]
+
+    assert "Approve" in labels
+    assert "Deny" in labels

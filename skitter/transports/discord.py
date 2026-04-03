@@ -192,6 +192,19 @@ class ApprovalView(discord.ui.View):
             except discord.HTTPException:
                 pass
 
+    @discord.ui.button(label="Deny", style=discord.ButtonStyle.danger)
+    async def deny(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        if self.approval_service is not None:
+            await self.approval_service.resolve(self.tool_run_id, approved=False, decided_by=str(interaction.user.id))
+        await self._append_status(":no_entry_sign: Denied")
+        try:
+            await interaction.response.defer(thinking=False)
+        except discord.HTTPException:
+            try:
+                await interaction.followup.send("Denied.", delete_after=5)
+            except discord.HTTPException:
+                pass
+
 
 UserPromptResponder = Callable[[str, str, str, str], Awaitable[None]]
 UserPromptClosed = Callable[[str], None]
