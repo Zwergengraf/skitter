@@ -24,6 +24,7 @@ class _SessionRow:
     session_memory_status: str | None = None
     session_memory_checkpoint: datetime | None = None
     session_memory_input_tokens: int | None = None
+    session_memory_message_id: str | None = None
     session_memory_last_error: str | None = None
     session_memory_path: str | None = None
     session_memory_updated_at: datetime | None = None
@@ -31,6 +32,7 @@ class _SessionRow:
 
 @dataclass
 class _MessageRow:
+    id: str
     role: str
     content: str
     created_at: datetime
@@ -74,6 +76,7 @@ class _FakeRepo:
         path: str,
         checkpoint: datetime | None,
         input_tokens: int | None,
+        message_id: str | None,
     ) -> _SessionRow | None:
         assert session_id == self.row.id
         self.row.session_memory_status = "completed"
@@ -81,6 +84,7 @@ class _FakeRepo:
         self.row.session_memory_path = path
         self.row.session_memory_checkpoint = checkpoint
         self.row.session_memory_input_tokens = input_tokens
+        self.row.session_memory_message_id = message_id
         self.row.session_memory_updated_at = datetime.now(UTC)
         return self.row
 
@@ -203,11 +207,13 @@ async def test_session_memory_creates_sidecar_after_init_threshold(
     now = datetime.now(UTC)
     messages = [
         _MessageRow(
+            id="m1",
             role="user",
             content="I want help planning a relaxed Lisbon trip with good walking neighborhoods and gentle weather.",
             created_at=now - timedelta(minutes=2),
         ),
         _MessageRow(
+            id="m2",
             role="assistant",
             content="We can compare Lisbon and Porto, then narrow it down based on weather, pace, and neighborhoods.",
             created_at=now - timedelta(minutes=1),
@@ -237,6 +243,7 @@ async def test_session_memory_creates_sidecar_after_init_threshold(
     assert row.session_memory_path == "memory/session-state/session-1.md"
     assert row.session_memory_checkpoint == messages[-1].created_at
     assert row.session_memory_input_tokens == 5000
+    assert row.session_memory_message_id == "m2"
     prompt = llm.prompts[0][1].content
     assert "current file" in prompt.lower()
     assert "user: I want help planning" in prompt
@@ -251,8 +258,8 @@ async def test_session_memory_skips_when_below_init_threshold(
     row = _SessionRow(id="session-2", user_id="user-1", last_input_tokens=50)
     now = datetime.now(UTC)
     messages = [
-        _MessageRow(role="user", content="Hi", created_at=now - timedelta(minutes=1)),
-        _MessageRow(role="assistant", content="Hello", created_at=now, meta={"run_id": "run-2"}),
+        _MessageRow(id="m1", role="user", content="Hi", created_at=now - timedelta(minutes=1)),
+        _MessageRow(id="m2", role="assistant", content="Hello", created_at=now, meta={"run_id": "run-2"}),
     ]
     repo = _FakeRepo(row, messages)
     token = object()
@@ -288,10 +295,10 @@ async def test_session_memory_updates_existing_sidecar_on_input_token_delta(
         session_memory_status="completed",
     )
     messages = [
-        _MessageRow(role="user", content="Earlier planning context that was already summarized.", created_at=now - timedelta(minutes=6)),
-        _MessageRow(role="assistant", content="Earlier recommendation.", created_at=now - timedelta(minutes=5), meta={"run_id": "run-old"}),
-        _MessageRow(role="user", content="Please narrow it down to Lisbon and tell me the best travel month.", created_at=now - timedelta(minutes=2)),
-        _MessageRow(role="assistant", content="I narrowed it to Lisbon; next we should choose between May and September.", created_at=now - timedelta(minutes=1), meta={"run_id": "run-new"}),
+        _MessageRow(id="m1", role="user", content="Earlier planning context that was already summarized.", created_at=now - timedelta(minutes=6)),
+        _MessageRow(id="m2", role="assistant", content="Earlier recommendation.", created_at=now - timedelta(minutes=5), meta={"run_id": "run-old"}),
+        _MessageRow(id="m3", role="user", content="Please narrow it down to Lisbon and tell me the best travel month.", created_at=now - timedelta(minutes=2)),
+        _MessageRow(id="m4", role="assistant", content="I narrowed it to Lisbon; next we should choose between May and September.", created_at=now - timedelta(minutes=1), meta={"run_id": "run-new"}),
     ]
     repo = _FakeRepo(row, messages, tool_runs=[])
     token = object()
@@ -317,6 +324,7 @@ async def test_session_memory_updates_existing_sidecar_on_input_token_delta(
     assert row.session_memory_status == "completed"
     assert row.session_memory_checkpoint == messages[-1].created_at
     assert row.session_memory_input_tokens == 6000
+    assert row.session_memory_message_id == "m4"
     prompt = llm.prompts[0][1].content
     assert "user: Please narrow it down to Lisbon" in prompt
     assert "Earlier planning context that was already summarized." not in prompt
@@ -338,10 +346,10 @@ async def test_session_memory_skips_update_when_input_token_delta_is_below_thres
         session_memory_status="completed",
     )
     messages = [
-        _MessageRow(role="user", content="Earlier context.", created_at=now - timedelta(minutes=6)),
-        _MessageRow(role="assistant", content="Earlier reply.", created_at=now - timedelta(minutes=5), meta={"run_id": "run-old"}),
-        _MessageRow(role="user", content="A short follow-up.", created_at=now - timedelta(minutes=1)),
-        _MessageRow(role="assistant", content="A short answer.", created_at=now, meta={"run_id": "run-new"}),
+        _MessageRow(id="m1", role="user", content="Earlier context.", created_at=now - timedelta(minutes=6)),
+        _MessageRow(id="m2", role="assistant", content="Earlier reply.", created_at=now - timedelta(minutes=5), meta={"run_id": "run-old"}),
+        _MessageRow(id="m3", role="user", content="A short follow-up.", created_at=now - timedelta(minutes=1)),
+        _MessageRow(id="m4", role="assistant", content="A short answer.", created_at=now, meta={"run_id": "run-new"}),
     ]
     repo = _FakeRepo(row, messages, tool_runs=[])
     token = object()

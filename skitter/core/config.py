@@ -324,8 +324,10 @@ class Settings(BaseSettings):
         default="AGENTS.md,TOOLS.md,IDENTITY.md,USER.md,BOOTSTRAP.md"
     )
     context_max_tool_messages: int = Field(default=10)
-    context_max_chat_messages: int = Field(default=80)
-    context_compact_every_messages: int = Field(default=8)
+    context_max_input_tokens: int = Field(default=16000)
+    context_compact_every_tokens: int = Field(default=4000)
+    context_preserve_recent_messages: int = Field(default=6)
+    context_preserve_recent_tokens: int = Field(default=4000)
     session_memory_enabled: bool = Field(default=True)
     session_memory_init_tokens: int = Field(default=4000)
     session_memory_update_tokens: int = Field(default=1500)

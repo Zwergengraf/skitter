@@ -66,6 +66,40 @@ def _prepare_discord_content(content: str) -> str:
     return _wrap_links_for_discord(content)
 
 
+def _truncate_middle(content: str, max_len: int) -> str:
+    if max_len <= 0:
+        return ""
+    if len(content) <= max_len:
+        return content
+    if max_len <= 3:
+        return "." * max_len
+    head = (max_len - 3) // 2
+    tail = max_len - 3 - head
+    return f"{content[:head]}...{content[-tail:]}"
+
+
+def _build_approval_request_content(tool_name: str, payload: dict) -> str:
+    prefix = f"Agent wants to run `{tool_name}` with input:\n```json\n"
+    suffix = "\n```\nApprove or deny?"
+    formatted = json.dumps(payload, indent=2, ensure_ascii=True)
+    available = DISCORD_MESSAGE_CHAR_LIMIT - len(prefix) - len(suffix)
+    if available <= 0:
+        fallback = f"Agent wants to run `{tool_name}`.\nApprove or deny?"
+        return fallback[:DISCORD_MESSAGE_CHAR_LIMIT]
+    body = _truncate_middle(formatted, available)
+    return f"{prefix}{body}{suffix}"
+
+
+def _append_status_suffix(content: str, status: str) -> str:
+    suffix = f" -> {status}"
+    if len(content) + len(suffix) <= DISCORD_MESSAGE_CHAR_LIMIT:
+        return content + suffix
+    available = DISCORD_MESSAGE_CHAR_LIMIT - len(suffix)
+    if available <= 0:
+        return _truncate_middle(status, DISCORD_MESSAGE_CHAR_LIMIT)
+    return _truncate_middle(content, available) + suffix
+
+
 def _find_last_regex_break(pattern: re.Pattern[str], content: str, min_index: int) -> int:
     last_end = -1
     for match in pattern.finditer(content):
@@ -142,7 +176,7 @@ class ApprovalView(discord.ui.View):
     async def _append_status(self, status: str) -> None:
         if self.message is None:
             return
-        updated = f"{self.message.content} -> {status}"
+        updated = _append_status_suffix(self.message.content or "", status)
         await self.message.edit(content=updated, view=None)
 
     @discord.ui.button(label="Approve", style=discord.ButtonStyle.success)
@@ -460,8 +494,7 @@ class DiscordTransport(TransportAdapter):
         if not isinstance(channel, (discord.DMChannel, discord.TextChannel, discord.Thread)):
             return
         view = ApprovalView(tool_run_id, self._approval_service)
-        formatted = json.dumps(payload, indent=2, ensure_ascii=True)
-        content = f"Agent wants to run `{tool_name}` with input:\n```json\n{formatted}\n```\nApprove or deny?"
+        content = _build_approval_request_content(tool_name, payload)
         message = await channel.send(content, view=view)
         view.message = message
 

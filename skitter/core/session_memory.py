@@ -113,6 +113,27 @@ Output concise Markdown bullets under these headings (include only relevant ones
 Each bullet must be explicit, self-contained, and searchable.
 """.strip()
 
+CONTEXT_COMPACTION_PROMPT = """Create a short continuity summary for an active conversation from a structured session memory file.
+This summary will be injected into the agent context while the most recent raw messages remain preserved separately.
+
+Prioritize:
+- the user's current goal
+- current state and what Skitter is waiting on or doing next
+- durable preferences and constraints
+- important context and decisions
+- open loops that still matter
+- key results only if they are still relevant
+
+Avoid:
+- long chronology
+- verbose worklog detail
+- raw IDs, hashes, timestamps, or transient logs
+- repeating information that is likely already obvious from the preserved recent messages
+
+If an existing continuity summary is provided, merge it with the session memory and return a single updated summary.
+Return concise Markdown bullets or very short sections only.
+""".strip()
+
 
 def current_session_memory_path(user_id: str, session_id: str) -> Path:
     return user_workspace_root(user_id) / session_memory_relative_path(session_id)
@@ -349,6 +370,7 @@ class SessionMemoryService:
             )
             current_path.write_text(updated, encoding="utf-8")
             new_checkpoint = messages[-1].created_at
+            new_message_id = str(getattr(messages[-1], "id", "") or "").strip() or None
             async with SessionLocal() as session:
                 repo = Repository(session)
                 await repo.complete_session_memory_update(
@@ -356,6 +378,7 @@ class SessionMemoryService:
                     path=relative_path,
                     checkpoint=new_checkpoint,
                     input_tokens=current_context_tokens,
+                    message_id=new_message_id,
                 )
             await self.event_bus.emit_admin(
                 kind="session.memory_updated",
@@ -370,6 +393,7 @@ class SessionMemoryService:
                     "current_context_tokens": current_context_tokens,
                     "previous_context_tokens": previous_context_tokens,
                     "context_delta_tokens": context_delta_tokens,
+                    "message_id": new_message_id,
                     "current_tokens": current_tokens,
                     "recent_tokens": recent_tokens,
                 },
