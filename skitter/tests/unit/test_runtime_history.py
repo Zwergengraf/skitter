@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import UTC, datetime
 
 import pytest
@@ -197,6 +198,66 @@ class _SummaryLLM:
         return AIMessage(content="## Decisions\n- Durable merged summary")
 
 
+class _ContextSummaryLLM:
+    def __init__(self, content: str) -> None:
+        self.content = content
+        self.prompts = []
+
+    async def ainvoke(self, prompt):
+        self.prompts.append(prompt)
+        return AIMessage(content=self.content)
+
+
+@dataclass
+class _RuntimeSessionRow:
+    session_memory_message_id: str | None = None
+    session_memory_checkpoint: datetime | None = None
+    context_summary: str | None = None
+    context_summary_checkpoint: datetime | None = None
+    context_summary_input_tokens: int | None = None
+    last_input_tokens: int = 0
+
+
+class _RuntimeRepo:
+    def __init__(self, row: _RuntimeSessionRow) -> None:
+        self.row = row
+        self.saved_summary: str | None = None
+        self.saved_checkpoint: datetime | None = None
+
+    async def get_session(self, _session_id: str) -> _RuntimeSessionRow:
+        return self.row
+
+    async def set_session_context_summary(self, _session_id: str, summary: str, checkpoint: datetime | None, input_tokens: int | None):
+        self.saved_summary = summary
+        self.saved_checkpoint = checkpoint
+        self.row.context_summary = summary
+        self.row.context_summary_checkpoint = checkpoint
+        self.row.context_summary_input_tokens = input_tokens
+        return self.row
+
+
+class _RuntimeSessionCtx:
+    def __init__(self, token: object) -> None:
+        self.token = token
+
+    async def __aenter__(self) -> object:
+        return self.token
+
+    async def __aexit__(self, exc_type, exc, tb) -> None:
+        _ = exc_type, exc, tb
+        return None
+
+
+class _SessionMemoryRefreshStub:
+    def __init__(self, content: str | None) -> None:
+        self.content = content
+        self.calls: list[tuple[str, str | None, bool]] = []
+
+    async def refresh_session_memory(self, session_id: str, *, model_name: str | None = None, force: bool = False):
+        self.calls.append((session_id, model_name, force))
+        return self.content
+
+
 @pytest.mark.asyncio
 async def test_summarize_session_uses_previous_summary_and_skips_tool_chatter(
     monkeypatch,
@@ -255,6 +316,147 @@ async def test_summarize_session_uses_previous_summary_and_skips_tool_chatter(
     assert "mcp_list_tools" not in final_human
     assert "boards.list" not in final_human
     assert "Old message already summarized" not in final_human
+
+
+@pytest.mark.asyncio
+async def test_compact_history_prefers_session_memory_and_preserves_recent_raw_tail(monkeypatch) -> None:
+    runtime = _runtime()
+    row = _RuntimeSessionRow(
+        session_memory_message_id="m5",
+        session_memory_checkpoint=datetime(2026, 3, 2, 9, 4, tzinfo=UTC),
+        last_input_tokens=12000,
+    )
+    repo = _RuntimeRepo(row)
+    token = object()
+    monkeypatch.setattr("skitter.core.runtime.SessionLocal", lambda: _RuntimeSessionCtx(token))
+    monkeypatch.setattr("skitter.core.runtime.Repository", lambda _session: repo)
+    monkeypatch.setattr(settings, "context_max_input_tokens", 10000)
+    monkeypatch.setattr(settings, "context_compact_every_tokens", 1000)
+    monkeypatch.setattr(settings, "context_preserve_recent_messages", 2)
+    monkeypatch.setattr(settings, "context_preserve_recent_tokens", 2)
+    llm = _ContextSummaryLLM("## Current State\n- Waiting for the user's final confirmation.")
+    monkeypatch.setattr("skitter.core.runtime.list_models", lambda: [object()])
+    monkeypatch.setattr("skitter.core.runtime.build_llm", lambda model_name, purpose="main": llm)
+
+    async def _should_not_run(*_args, **_kwargs):
+        raise AssertionError("raw transcript compaction should not run when session memory is available")
+
+    monkeypatch.setattr(runtime, "_summarize_chat_messages", _should_not_run)
+    memory = _SessionMemoryRefreshStub(
+        "# Session Title\n_Title_\n\n# Current State\n_State_\n\nWaiting for the user's final confirmation.\n"
+    )
+    runtime.set_session_memory_service(memory)
+
+    history = [
+        SystemMessage(content="Main system", additional_kwargs={"system_prompt": True}),
+        HumanMessage(content="First request", additional_kwargs={"_db_message_id": "m1", "_db_created_at": datetime(2026, 3, 2, 9, 0, tzinfo=UTC).isoformat()}),
+        AIMessage(content="First reply", additional_kwargs={"_db_message_id": "m2", "_db_created_at": datetime(2026, 3, 2, 9, 1, tzinfo=UTC).isoformat()}),
+        HumanMessage(content="Second request", additional_kwargs={"_db_message_id": "m3", "_db_created_at": datetime(2026, 3, 2, 9, 2, tzinfo=UTC).isoformat()}),
+        AIMessage(content="Second reply", additional_kwargs={"_db_message_id": "m4", "_db_created_at": datetime(2026, 3, 2, 9, 3, tzinfo=UTC).isoformat()}),
+        HumanMessage(content="Third request", additional_kwargs={"_db_message_id": "m5", "_db_created_at": datetime(2026, 3, 2, 9, 4, tzinfo=UTC).isoformat()}),
+    ]
+
+    await runtime._compact_history_for_context("session-compact", history, "provider/main")
+
+    assert memory.calls == [("session-compact", "provider/main", True)]
+    assert isinstance(history[0], SystemMessage)
+    assert isinstance(history[1], SystemMessage)
+    assert history[1].additional_kwargs["summary_source"] == "session_memory"
+    assert history[1].additional_kwargs["summary_checkpoint"] == datetime(2026, 3, 2, 9, 4, tzinfo=UTC).isoformat()
+    assert history[1].content == "## Current State\n- Waiting for the user's final confirmation."
+    assert isinstance(history[2], AIMessage)
+    assert history[2].content == "Second reply"
+    assert isinstance(history[3], HumanMessage)
+    assert history[3].content == "Third request"
+    assert repo.saved_summary == "## Current State\n- Waiting for the user's final confirmation."
+    assert repo.saved_checkpoint == datetime(2026, 3, 2, 9, 4, tzinfo=UTC)
+    assert row.context_summary_input_tokens == 12000
+    final_human = llm.prompts[0][1].content
+    assert "Structured session memory:" in final_human
+    assert "Waiting for the user's final confirmation." in final_human
+
+
+@pytest.mark.asyncio
+async def test_compact_history_falls_back_to_transcript_when_session_memory_boundary_is_missing(monkeypatch) -> None:
+    runtime = _runtime()
+    row = _RuntimeSessionRow(
+        session_memory_message_id=None,
+        session_memory_checkpoint=datetime(2026, 3, 2, 9, 4, tzinfo=UTC),
+        last_input_tokens=12000,
+    )
+    repo = _RuntimeRepo(row)
+    token = object()
+    monkeypatch.setattr("skitter.core.runtime.SessionLocal", lambda: _RuntimeSessionCtx(token))
+    monkeypatch.setattr("skitter.core.runtime.Repository", lambda _session: repo)
+    monkeypatch.setattr(settings, "context_max_input_tokens", 10000)
+    monkeypatch.setattr(settings, "context_compact_every_tokens", 1000)
+    monkeypatch.setattr(settings, "context_preserve_recent_messages", 2)
+    monkeypatch.setattr(settings, "context_preserve_recent_tokens", 2)
+
+    calls: list[tuple[str, list[str], str]] = []
+
+    async def _fallback_summary(previous_summary: str, messages: list, model_name: str) -> str:
+        calls.append((previous_summary, [getattr(msg, "content", "") for msg in messages], model_name))
+        return "Fallback compact summary"
+
+    monkeypatch.setattr(runtime, "_summarize_chat_messages", _fallback_summary)
+    memory = _SessionMemoryRefreshStub("# Current State\n_State_\n\nPossibly stale notes.")
+    runtime.set_session_memory_service(memory)
+
+    history = [
+        SystemMessage(content="Main system", additional_kwargs={"system_prompt": True}),
+        HumanMessage(content="First request", additional_kwargs={"_db_message_id": "m1", "_db_created_at": datetime(2026, 3, 2, 9, 0, tzinfo=UTC).isoformat()}),
+        AIMessage(content="First reply", additional_kwargs={"_db_message_id": "m2", "_db_created_at": datetime(2026, 3, 2, 9, 1, tzinfo=UTC).isoformat()}),
+        HumanMessage(content="Second request", additional_kwargs={"_db_message_id": "m3", "_db_created_at": datetime(2026, 3, 2, 9, 2, tzinfo=UTC).isoformat()}),
+        AIMessage(content="Second reply", additional_kwargs={"_db_message_id": "m4", "_db_created_at": datetime(2026, 3, 2, 9, 3, tzinfo=UTC).isoformat()}),
+        HumanMessage(content="Third request", additional_kwargs={"_db_message_id": "m5", "_db_created_at": datetime(2026, 3, 2, 9, 4, tzinfo=UTC).isoformat()}),
+    ]
+
+    await runtime._compact_history_for_context("session-compact", history, "provider/main")
+
+    assert memory.calls == [("session-compact", "provider/main", True)]
+    assert len(calls) == 1
+    assert calls[0][2] == "provider/main"
+    assert calls[0][1] == ["First request", "First reply", "Second request"]
+    assert history[1].additional_kwargs["summary_source"] == "transcript"
+    assert history[1].content == "Fallback compact summary"
+
+
+@pytest.mark.asyncio
+async def test_compact_history_skips_when_input_token_delta_is_below_threshold(monkeypatch) -> None:
+    runtime = _runtime()
+    row = _RuntimeSessionRow(
+        context_summary="Existing compact summary",
+        context_summary_checkpoint=datetime(2026, 3, 2, 9, 2, tzinfo=UTC),
+        context_summary_input_tokens=11000,
+        last_input_tokens=11800,
+    )
+    repo = _RuntimeRepo(row)
+    token = object()
+    monkeypatch.setattr("skitter.core.runtime.SessionLocal", lambda: _RuntimeSessionCtx(token))
+    monkeypatch.setattr("skitter.core.runtime.Repository", lambda _session: repo)
+    monkeypatch.setattr(settings, "context_max_input_tokens", 10000)
+    monkeypatch.setattr(settings, "context_compact_every_tokens", 1000)
+    monkeypatch.setattr(settings, "context_preserve_recent_messages", 2)
+    monkeypatch.setattr(settings, "context_preserve_recent_tokens", 2)
+
+    history = [
+        SystemMessage(content="Main system", additional_kwargs={"system_prompt": True}),
+        SystemMessage(
+            content="Existing compact summary",
+            additional_kwargs={
+                "conversation_summary": True,
+                "summary_checkpoint": datetime(2026, 3, 2, 9, 2, tzinfo=UTC).isoformat(),
+            },
+        ),
+        HumanMessage(content="Recent request", additional_kwargs={"_db_message_id": "m1", "_db_created_at": datetime(2026, 3, 2, 9, 3, tzinfo=UTC).isoformat()}),
+        AIMessage(content="Recent reply", additional_kwargs={"_db_message_id": "m2", "_db_created_at": datetime(2026, 3, 2, 9, 4, tzinfo=UTC).isoformat()}),
+    ]
+
+    await runtime._compact_history_for_context("session-compact", history, "provider/main")
+
+    assert [type(msg).__name__ for msg in history] == ["SystemMessage", "SystemMessage", "HumanMessage", "AIMessage"]
+    assert repo.saved_summary is None
 
 
 class _PromptGraph:

@@ -200,6 +200,7 @@ class Repository:
         session_id: str,
         summary: str,
         checkpoint: datetime | None,
+        input_tokens: int | None,
     ) -> Optional[Session]:
         result = await self.session.execute(select(Session).where(Session.id == session_id))
         session = result.scalar_one_or_none()
@@ -207,6 +208,51 @@ class Repository:
             return None
         session.context_summary = summary
         session.context_summary_checkpoint = checkpoint
+        session.context_summary_input_tokens = input_tokens
+        await self.session.commit()
+        return session
+
+    async def begin_session_memory_update(self, session_id: str, *, path: str) -> Session | None:
+        result = await self.session.execute(select(Session).where(Session.id == session_id))
+        session = result.scalar_one_or_none()
+        if session is None:
+            return None
+        session.session_memory_status = "running"
+        session.session_memory_last_error = None
+        session.session_memory_path = path
+        await self.session.commit()
+        return session
+
+    async def complete_session_memory_update(
+        self,
+        session_id: str,
+        *,
+        path: str,
+        checkpoint: datetime | None,
+        input_tokens: int | None,
+        message_id: str | None,
+    ) -> Session | None:
+        result = await self.session.execute(select(Session).where(Session.id == session_id))
+        session = result.scalar_one_or_none()
+        if session is None:
+            return None
+        session.session_memory_status = "completed"
+        session.session_memory_last_error = None
+        session.session_memory_path = path
+        session.session_memory_checkpoint = checkpoint
+        session.session_memory_input_tokens = input_tokens
+        session.session_memory_message_id = message_id
+        session.session_memory_updated_at = self._utcnow()
+        await self.session.commit()
+        return session
+
+    async def fail_session_memory_update(self, session_id: str, *, error: str) -> Session | None:
+        result = await self.session.execute(select(Session).where(Session.id == session_id))
+        session = result.scalar_one_or_none()
+        if session is None:
+            return None
+        session.session_memory_status = "failed"
+        session.session_memory_last_error = error
         await self.session.commit()
         return session
 

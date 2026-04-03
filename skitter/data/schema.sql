@@ -76,6 +76,30 @@ ALTER TABLE sessions
     ADD COLUMN IF NOT EXISTS context_summary_checkpoint TIMESTAMPTZ;
 
 ALTER TABLE sessions
+    ADD COLUMN IF NOT EXISTS context_summary_input_tokens INTEGER;
+
+ALTER TABLE sessions
+    ADD COLUMN IF NOT EXISTS session_memory_status TEXT;
+
+ALTER TABLE sessions
+    ADD COLUMN IF NOT EXISTS session_memory_checkpoint TIMESTAMPTZ;
+
+ALTER TABLE sessions
+    ADD COLUMN IF NOT EXISTS session_memory_input_tokens INTEGER;
+
+ALTER TABLE sessions
+    ADD COLUMN IF NOT EXISTS session_memory_message_id TEXT;
+
+ALTER TABLE sessions
+    ADD COLUMN IF NOT EXISTS session_memory_last_error TEXT;
+
+ALTER TABLE sessions
+    ADD COLUMN IF NOT EXISTS session_memory_path TEXT;
+
+ALTER TABLE sessions
+    ADD COLUMN IF NOT EXISTS session_memory_updated_at TIMESTAMPTZ;
+
+ALTER TABLE sessions
     ADD COLUMN IF NOT EXISTS summary_status TEXT;
 
 ALTER TABLE sessions

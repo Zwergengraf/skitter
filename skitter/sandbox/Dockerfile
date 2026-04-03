@@ -20,7 +20,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       > /usr/local/bin/brew && \
     chmod +x /usr/local/bin/brew && \
     rm -rf /var/lib/apt/lists/* && \
-    pip install --break-system-packages fastapi uvicorn httpx pydantic playwright && \
+    pip install --break-system-packages fastapi uvicorn httpx pydantic playwright Pillow && \
     python3 -m playwright install --with-deps chromium
 
 # Install UV from the official image

@@ -254,6 +254,9 @@ async def main() -> None:
                 content=response_text,
                 metadata=metadata,
             )
+        session_memory_service = getattr(app.state, "session_memory_service", None)
+        if session_memory_service is not None:
+            await session_memory_service.maybe_schedule_update(session_id)
 
     async def _submit_prompt_reply(
         prompt_id: str,

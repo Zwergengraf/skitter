@@ -17,6 +17,7 @@ from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, System
 
 from .config import settings
 from .events import EventBus
+from .session_memory import ARCHIVE_SUMMARY_PROMPT, CONTEXT_COMPACTION_PROMPT, rough_token_estimate
 from .graph import (
     UserPromptRequired,
     build_graph,
@@ -75,6 +76,7 @@ class AgentRuntime:
         self._user_prompt_service = user_prompt_service
         self._scheduler_service = scheduler_service
         self._job_service = job_service
+        self._session_memory_service = None
         self._fixed_graph = graph
         self._graphs: dict[tuple[str, str, str, str, str], object] = {}
         self._tool_client = ToolRunnerClient()
@@ -94,6 +96,9 @@ class AgentRuntime:
     def set_user_prompt_service(self, user_prompt_service) -> None:
         self._user_prompt_service = user_prompt_service
         self._graphs.clear()
+
+    def set_session_memory_service(self, session_memory_service) -> None:
+        self._session_memory_service = session_memory_service
 
     def refresh_model_configuration(self) -> None:
         # Config edits can change model selectors/provider endpoints.
@@ -961,6 +966,10 @@ class AgentRuntime:
             return True
         return False
 
+    def _chat_message_token_estimate(self, msg: BaseMessage) -> int:
+        text = self._message_content_to_text(getattr(msg, "content", ""))
+        return rough_token_estimate(text)
+
     def _trim_tool_messages(self, history: list[BaseMessage]) -> None:
         max_tool = max(0, int(settings.context_max_tool_messages))
         if max_tool <= 0:
@@ -1365,6 +1374,13 @@ class AgentRuntime:
         except ValueError:
             return None
 
+    def _message_db_id(self, msg: BaseMessage) -> str | None:
+        meta = getattr(msg, "additional_kwargs", None) or {}
+        if not isinstance(meta, dict):
+            return None
+        raw = str(meta.get("_db_message_id") or "").strip()
+        return raw or None
+
     def _summary_checkpoint(self, msg: BaseMessage) -> datetime | None:
         meta = getattr(msg, "additional_kwargs", None) or {}
         if not isinstance(meta, dict):
@@ -1378,6 +1394,37 @@ class AgentRuntime:
             except ValueError:
                 return None
         return None
+
+    async def _summarize_session_memory_for_context(
+        self,
+        previous_summary: str,
+        sidecar_content: str,
+        model_name: str,
+    ) -> str:
+        cleaned_sidecar = sidecar_content.strip()
+        if not cleaned_sidecar:
+            return previous_summary.strip()
+        if not list_models():
+            merged = f"{previous_summary.strip()}\n{cleaned_sidecar}".strip()
+            return merged[:4000]
+        llm = build_llm(model_name=model_name, purpose="main")
+        prompt = [
+            SystemMessage(content=CONTEXT_COMPACTION_PROMPT),
+            HumanMessage(
+                content=(
+                    f"Existing continuity summary:\n{previous_summary or '(none)'}\n\n"
+                    f"Structured session memory:\n{cleaned_sidecar}\n\n"
+                    "Return the merged continuity summary only."
+                )
+            ),
+        ]
+        try:
+            result = await llm.ainvoke(prompt)
+            text = self._message_content_to_text(getattr(result, "content", ""))
+            return text.strip() or previous_summary.strip()
+        except Exception:
+            merged = f"{previous_summary.strip()}\n{cleaned_sidecar}".strip()
+            return merged[:4000]
 
     async def _summarize_chat_messages(
         self,
@@ -1427,53 +1474,106 @@ class AgentRuntime:
         self._sanitize_tool_sequence(history)
         self._trim_tool_messages(history)
         self._sanitize_tool_sequence(history)
-        max_chat = max(1, int(settings.context_max_chat_messages))
-        compact_every = max(1, int(settings.context_compact_every_messages))
+        async with SessionLocal() as session:
+            repo = Repository(session)
+            session_record = await repo.get_session(session_id)
+        current_context_tokens = max(0, int(getattr(session_record, "last_input_tokens", 0) or 0))
+        compact_threshold = max(1, int(settings.context_max_input_tokens))
+        if current_context_tokens < compact_threshold:
+            return
+        compact_every = max(1, int(settings.context_compact_every_tokens))
+        previous_compact_tokens = max(0, int(getattr(session_record, "context_summary_input_tokens", 0) or 0))
         chat_indices = [idx for idx, msg in enumerate(history) if self._is_chat_message(msg)]
-        overflow_count = len(chat_indices) - max_chat
-        if overflow_count <= 0:
-            return
-        # Avoid summarizing on every turn once the cap is reached.
-        # We summarize only when the overflow has accumulated into a batch.
-        if overflow_count < compact_every:
-            return
-        old_chat_indices = chat_indices[:-max_chat]
-        if not old_chat_indices:
-            return
-
         summary_indices = [
             idx
             for idx, msg in enumerate(history)
             if isinstance(msg, SystemMessage) and msg.additional_kwargs.get("conversation_summary")
         ]
+        has_previous_summary = bool(summary_indices) or bool(getattr(session_record, "context_summary", None))
+        if has_previous_summary and (current_context_tokens - previous_compact_tokens) < compact_every:
+            return
+        preserve_recent_messages = max(1, int(settings.context_preserve_recent_messages))
+        preserve_recent_tokens = max(1, int(settings.context_preserve_recent_tokens))
+        kept_chat_indices: list[int] = []
+        kept_chat_tokens = 0
+        for idx in reversed(chat_indices):
+            kept_chat_indices.append(idx)
+            kept_chat_tokens += self._chat_message_token_estimate(history[idx])
+            if len(kept_chat_indices) >= preserve_recent_messages and kept_chat_tokens >= preserve_recent_tokens:
+                break
+        kept_chat_indices_set = set(kept_chat_indices)
+        old_chat_indices = [idx for idx in chat_indices if idx not in kept_chat_indices_set]
+        if not old_chat_indices:
+            return
         previous_summary = ""
         previous_checkpoint: datetime | None = None
         if summary_indices:
             latest_summary = history[summary_indices[-1]]
             previous_summary = self._message_content_to_text(latest_summary.content)
             previous_checkpoint = self._summary_checkpoint(latest_summary)
-        to_summarize = [history[idx] for idx in old_chat_indices if idx < len(history)]
-        new_slice: list[BaseMessage] = []
-        for msg in to_summarize:
-            dt = self._message_datetime(msg)
-            if previous_checkpoint is not None and dt is not None and dt <= previous_checkpoint:
-                continue
-            new_slice.append(msg)
-        new_summary = await self._summarize_chat_messages(previous_summary, new_slice, model_name)
-        if not new_slice and previous_summary:
-            new_summary = previous_summary
+        new_summary = ""
+        checkpoint = previous_checkpoint
+        remove_chat_indices = list(old_chat_indices)
+        used_session_memory = False
+
+        if self._session_memory_service is not None:
+            try:
+                sidecar_content = await self._session_memory_service.refresh_session_memory(
+                    session_id,
+                    model_name=model_name,
+                    force=True,
+                )
+            except Exception:
+                sidecar_content = None
+                _logger.debug("session memory refresh failed before compaction", exc_info=True)
+            if sidecar_content:
+                async with SessionLocal() as session:
+                    repo = Repository(session)
+                    session_record = await repo.get_session(session_id)
+                sidecar_message_id = str(getattr(session_record, "session_memory_message_id", "") or "").strip()
+                sidecar_checkpoint = getattr(session_record, "session_memory_checkpoint", None)
+                boundary_index = -1
+                if sidecar_message_id:
+                    for idx, msg in enumerate(history):
+                        if self._message_db_id(msg) == sidecar_message_id:
+                            boundary_index = idx
+                covered_old_chat_indices = [idx for idx in old_chat_indices if idx <= boundary_index]
+                if covered_old_chat_indices and sidecar_checkpoint is not None:
+                    new_summary = await self._summarize_session_memory_for_context(
+                        previous_summary,
+                        sidecar_content,
+                        model_name,
+                    )
+                    checkpoint = sidecar_checkpoint
+                    remove_chat_indices = covered_old_chat_indices
+                    used_session_memory = True
+
+        if not used_session_memory:
+            to_summarize = [history[idx] for idx in old_chat_indices if idx < len(history)]
+            new_slice: list[BaseMessage] = []
+            for msg in to_summarize:
+                dt = self._message_datetime(msg)
+                if previous_checkpoint is not None and dt is not None and dt <= previous_checkpoint:
+                    continue
+                new_slice.append(msg)
+            new_summary = await self._summarize_chat_messages(previous_summary, new_slice, model_name)
+            if not new_slice and previous_summary:
+                new_summary = previous_summary
+            if not new_summary and not previous_summary:
+                return
+
+            checkpoint = previous_checkpoint
+            for msg in new_slice:
+                dt = self._message_datetime(msg)
+                if dt is None:
+                    continue
+                if checkpoint is None or dt > checkpoint:
+                    checkpoint = dt
+
         if not new_summary and not previous_summary:
             return
 
-        checkpoint = previous_checkpoint
-        for msg in new_slice:
-            dt = self._message_datetime(msg)
-            if dt is None:
-                continue
-            if checkpoint is None or dt > checkpoint:
-                checkpoint = dt
-
-        remove_indices = sorted(set(old_chat_indices + summary_indices), reverse=True)
+        remove_indices = sorted(set(remove_chat_indices + summary_indices), reverse=True)
         for idx in remove_indices:
             if 0 <= idx < len(history):
                 del history[idx]
@@ -1490,14 +1590,30 @@ class AgentRuntime:
                 additional_kwargs={
                     "conversation_summary": True,
                     "summary_checkpoint": checkpoint.isoformat() if checkpoint else "",
+                    "summary_source": "session_memory" if used_session_memory else "transcript",
                 },
             ),
         )
         async with SessionLocal() as session:
             repo = Repository(session)
-            await repo.set_session_context_summary(session_id, new_summary, checkpoint)
+            await repo.set_session_context_summary(
+                session_id,
+                new_summary,
+                checkpoint,
+                current_context_tokens,
+            )
 
     async def summarize_session(self, session_id: str, model_name: str | None = None) -> str:
+        sidecar_content = None
+        if self._session_memory_service is not None:
+            try:
+                sidecar_content = await self._session_memory_service.refresh_session_memory(
+                    session_id,
+                    model_name=model_name,
+                    force=True,
+                )
+            except Exception:
+                _logger.debug("session memory refresh failed before archive summary", exc_info=True)
         await self._ensure_history(session_id)
         messages = self._history.get(session_id, [])
         if not messages:
@@ -1520,6 +1636,28 @@ class AgentRuntime:
             if previous_checkpoint is not None and dt is not None and dt <= previous_checkpoint:
                 continue
             new_messages.append(msg)
+
+        if sidecar_content:
+            if not list_models():
+                merged = f"{previous_summary}\n{sidecar_content}".strip()
+                return merged or "No messages to summarize."
+            llm = build_llm(model_name=model_name, purpose="main")
+            prompt = [
+                SystemMessage(content=ARCHIVE_SUMMARY_PROMPT),
+                HumanMessage(
+                    content=(
+                        f"Existing archive summary:\n{previous_summary or '(none)'}\n\n"
+                        f"Structured session memory:\n{sidecar_content}\n\n"
+                        "Return the merged archive summary only."
+                    )
+                ),
+            ]
+            result = await llm.ainvoke(prompt)
+            if hasattr(result, "content"):
+                text = self._message_content_to_text(result.content).strip()
+                return text or previous_summary or "No messages to summarize."
+            text = str(result).strip()
+            return text or previous_summary or "No messages to summarize."
 
         if not new_messages and previous_summary:
             return previous_summary

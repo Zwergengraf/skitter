@@ -210,6 +210,7 @@ async def send_message(
 
     runtime = request.app.state.runtime
     response = await runtime.handle_message(payload.session_id, envelope)
+    session_memory_service = getattr(request.app.state, "session_memory_service", None)
     if response.pending_prompt is not None:
         assistant_meta = {
             "response_to": envelope.message_id,
@@ -227,6 +228,11 @@ async def send_message(
             content=response.text,
             metadata=assistant_meta,
         )
+        if session_memory_service is not None:
+            await session_memory_service.maybe_schedule_update(
+                payload.session_id,
+                model_name=getattr(response, "model_name", None),
+            )
         return MessageOut(
             id=assistant_msg.id,
             session_id=assistant_msg.session_id,
@@ -246,6 +252,11 @@ async def send_message(
     assistant_msg = await repo.add_message(
         payload.session_id, role="assistant", content=response.text, metadata=assistant_meta
     )
+    if session_memory_service is not None:
+        await session_memory_service.maybe_schedule_update(
+            payload.session_id,
+            model_name=getattr(response, "model_name", None),
+        )
     response_attachments = _attachments_for_response(assistant_msg.id, serialized_attachments)
     return MessageOut(
         id=assistant_msg.id,
