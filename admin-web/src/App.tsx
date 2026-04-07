@@ -53,6 +53,7 @@ import {
 import type { NavItemId } from "@/components/navigation";
 import type {
   AdminLiveEvent,
+  AgentProfile,
   AgentJobDetail,
   AgentJobListItem,
   ChannelListItem,
@@ -114,6 +115,7 @@ type ExecutorDeviceFeatureInfo = {
 const SESSIONS_PAGE_SIZE = 25;
 const TOOL_RUNS_PAGE_SIZE = 15;
 const SCHEDULED_JOB_MODEL_MAIN = "__main_chain__";
+const SECRET_SCOPE_SHARED = "__shared__";
 const EXECUTOR_DEVICE_FEATURE_ORDER = ["notify", "screenshot", "mouse", "keyboard"] as const;
 const EXECUTOR_DEVICE_FEATURE_LABELS: Record<(typeof EXECUTOR_DEVICE_FEATURE_ORDER)[number], string> = {
   notify: "Notify",
@@ -558,10 +560,12 @@ export default function App() {
   const [secretName, setSecretName] = useState<string>("");
   const [secretValue, setSecretValue] = useState<string>("");
   const [secretSaving, setSecretSaving] = useState<boolean>(false);
+  const [secretProfileId, setSecretProfileId] = useState<string>("");
   const [selectedMemory, setSelectedMemory] = useState<MemoryEntry | null>(null);
   const [memoryDetailContent, setMemoryDetailContent] = useState<string>("");
   const [memoryDetailLoading, setMemoryDetailLoading] = useState<boolean>(false);
   const [memoryUserId, setMemoryUserId] = useState<string>("");
+  const [memoryProfileId, setMemoryProfileId] = useState<string>("");
   const [memoryReindexing, setMemoryReindexing] = useState<boolean>(false);
   const [selectedSessionId, setSelectedSessionId] = useState<string | null>(null);
   const [sessionDetail, setSessionDetail] = useState<SessionDetail | null>(null);
@@ -584,6 +588,17 @@ export default function App() {
   const [usersLoading, setUsersLoading] = useState<boolean>(false);
   const [usersError, setUsersError] = useState<string | null>(null);
   const [userUpdating, setUserUpdating] = useState<Record<string, boolean>>({});
+  const [profilesByUserId, setProfilesByUserId] = useState<Record<string, AgentProfile[]>>({});
+  const [profilesLoadingByUserId, setProfilesLoadingByUserId] = useState<Record<string, boolean>>({});
+  const [profilesErrorByUserId, setProfilesErrorByUserId] = useState<Record<string, string | null>>({});
+  const [profileManagerUserId, setProfileManagerUserId] = useState<string | null>(null);
+  const [profileCreateName, setProfileCreateName] = useState<string>("");
+  const [profileCreateSourceSlug, setProfileCreateSourceSlug] = useState<string>("blank");
+  const [profileCreateMode, setProfileCreateMode] = useState<"blank" | "settings" | "all">("blank");
+  const [profileCreateMakeDefault, setProfileCreateMakeDefault] = useState<boolean>(false);
+  const [profileSaving, setProfileSaving] = useState<boolean>(false);
+  const [profileActionLoading, setProfileActionLoading] = useState<Record<string, boolean>>({});
+  const [profileRenameDrafts, setProfileRenameDrafts] = useState<Record<string, string>>({});
   const [sandboxStatus, setSandboxStatus] = useState<SandboxStatus | null>(null);
   const [executorsData, setExecutorsData] = useState<ExecutorItem[]>([]);
   const [sandboxLoading, setSandboxLoading] = useState<boolean>(false);
@@ -1083,40 +1098,126 @@ export default function App() {
       setMemoryData([]);
       setMemoryError("No users found yet.");
       setMemoryLoading(false);
+      setMemoryProfileId("");
       return;
     }
     if (userId !== memoryUserId) {
       setMemoryUserId(userId);
+      setMemoryProfileId("");
+      setSelectedMemory(null);
+      return;
     }
-    refreshMemory(userId);
-  }, [active, usersData, apiReady]);
+    const loadedProfiles = profilesByUserId[userId];
+    if (!loadedProfiles) {
+      if (profilesLoadingByUserId[userId]) {
+        return;
+      }
+      const profileError = profilesErrorByUserId[userId];
+      if (profileError) {
+        setMemoryData([]);
+        setMemoryLoading(false);
+        setMemoryError(profileError);
+        return;
+      }
+      void refreshProfilesForUser(userId);
+      return;
+    }
+    const availableProfiles = loadedProfiles.filter((profile) => profile.status !== "archived");
+    if (!availableProfiles.length) {
+      setMemoryData([]);
+      setMemoryLoading(false);
+      setMemoryError("No active profiles found for this user.");
+      setMemoryProfileId("");
+      return;
+    }
+    const nextProfileId = availableProfiles.some((profile) => profile.id === memoryProfileId)
+      ? memoryProfileId
+      : preferredProfileIdForUser(userId, availableProfiles);
+    if (nextProfileId !== memoryProfileId) {
+      setMemoryProfileId(nextProfileId);
+      return;
+    }
+    refreshMemory(userId, nextProfileId);
+  }, [
+    active,
+    apiReady,
+    memoryProfileId,
+    memoryUserId,
+    profilesByUserId,
+    profilesErrorByUserId,
+    profilesLoadingByUserId,
+    usersData,
+  ]);
 
   useEffect(() => {
     if (!apiReady || active !== "secrets") {
       return;
     }
-    const userId = secretUserId || usersData[0]?.id;
+    const userId =
+      secretUserId && usersData.some((user) => user.id === secretUserId)
+        ? secretUserId
+        : usersData[0]?.id;
     if (!userId) {
       setSecretsData([]);
       setSecretsError("No users found yet.");
       setSecretsLoading(false);
+      setSecretProfileId("");
       return;
     }
     if (userId !== secretUserId) {
       setSecretUserId(userId);
       setSecretUserLabel(userLabelFor(userId));
+      setSecretProfileId("");
+      return;
+    }
+    const loadedProfiles = profilesByUserId[userId];
+    if (!loadedProfiles) {
+      if (profilesLoadingByUserId[userId]) {
+        return;
+      }
+      const profileError = profilesErrorByUserId[userId];
+      if (profileError) {
+        setSecretsData([]);
+        setSecretsLoading(false);
+        setSecretsError(profileError);
+        return;
+      }
+      void refreshProfilesForUser(userId);
+      return;
+    }
+    const availableProfiles = loadedProfiles.filter((profile) => profile.status !== "archived");
+    const validProfileIds = new Set(availableProfiles.map((profile) => profile.id));
+    const fallbackScopeId = preferredProfileIdForUser(userId, availableProfiles) || SECRET_SCOPE_SHARED;
+    const nextProfileId =
+      !secretProfileId
+        ? fallbackScopeId
+        : secretProfileId === SECRET_SCOPE_SHARED || validProfileIds.has(secretProfileId)
+          ? secretProfileId
+          : fallbackScopeId;
+    if (nextProfileId !== secretProfileId) {
+      setSecretProfileId(nextProfileId);
+      return;
     }
     refreshSecrets(userId);
-  }, [active, usersData, secretUserId, apiReady]);
+  }, [
+    active,
+    apiReady,
+    profilesByUserId,
+    profilesErrorByUserId,
+    profilesLoadingByUserId,
+    secretProfileId,
+    secretUserId,
+    usersData,
+  ]);
 
   useEffect(() => {
-    if (!apiReady || !selectedMemory?.source) {
+    if (!apiReady || !selectedMemory?.source || !memoryProfileId) {
       setMemoryDetailContent("");
       return;
     }
     setMemoryDetailLoading(true);
     api
-      .getMemoryFile(selectedMemory.source, memoryUserId)
+      .getMemoryFile(selectedMemory.source, memoryUserId, memoryProfileId)
       .then((data) => {
         setMemoryDetailContent(data.content);
       })
@@ -1126,17 +1227,21 @@ export default function App() {
       .finally(() => {
         setMemoryDetailLoading(false);
       });
-  }, [selectedMemory, memoryUserId, apiReady]);
+  }, [selectedMemory, memoryProfileId, memoryUserId, apiReady]);
 
   const handleMemoryReindex = async () => {
     if (!memoryUserId) {
       setMemoryError("No user selected for reindex.");
       return;
     }
+    if (!memoryProfileId) {
+      setMemoryError("No profile selected for reindex.");
+      return;
+    }
     setMemoryReindexing(true);
     try {
-      const stats = await api.reindexMemory(memoryUserId);
-      await api.getMemory(memoryUserId).then((data) => setMemoryData(data));
+      const stats = await api.reindexMemory(memoryUserId, memoryProfileId);
+      await api.getMemory(memoryUserId, memoryProfileId).then((data) => setMemoryData(data));
       setMemoryError(`Reindex complete. Indexed: ${stats.indexed}, skipped: ${stats.skipped}, removed: ${stats.removed}.`);
     } catch (error) {
       setMemoryError((error as Error).message);
@@ -1159,6 +1264,7 @@ export default function App() {
     try {
       await api.upsertSecret({
         user_id: secretUserId,
+        agent_profile_id: secretProfileId && secretProfileId !== SECRET_SCOPE_SHARED ? secretProfileId : undefined,
         name: secretName.trim(),
         value: secretValue,
       });
@@ -1172,13 +1278,13 @@ export default function App() {
     }
   };
 
-  const handleSecretDelete = async (name: string) => {
+  const handleSecretDelete = async (name: string, agentProfileId?: string | null) => {
     if (!secretUserId) {
       setSecretsError("No user selected for secrets.");
       return;
     }
     try {
-      await api.deleteSecret(secretUserId, name);
+      await api.deleteSecret(secretUserId, name, agentProfileId ?? undefined);
       refreshSecrets(secretUserId);
     } catch (error) {
       setSecretsError((error as Error).message);
@@ -1337,6 +1443,167 @@ export default function App() {
       .finally(() => {
         setUsersLoading(false);
       });
+  };
+
+  const refreshProfilesForUser = async (userId: string, force = false): Promise<AgentProfile[]> => {
+    const cleanedUserId = userId.trim();
+    if (!cleanedUserId) {
+      return [];
+    }
+    if (!force && (profilesByUserId[cleanedUserId] || profilesLoadingByUserId[cleanedUserId])) {
+      return profilesByUserId[cleanedUserId] ?? [];
+    }
+    setProfilesLoadingByUserId((current) => ({ ...current, [cleanedUserId]: true }));
+    setProfilesErrorByUserId((current) => ({ ...current, [cleanedUserId]: null }));
+    try {
+      const profiles = await api.getProfiles(cleanedUserId, true);
+      setProfilesByUserId((current) => ({ ...current, [cleanedUserId]: profiles }));
+      setProfileRenameDrafts((current) => {
+        const next = { ...current };
+        for (const profile of profiles) {
+          next[profile.id] = profile.name;
+        }
+        return next;
+      });
+      return profiles;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setProfilesErrorByUserId((current) => ({ ...current, [cleanedUserId]: message }));
+      return [];
+    } finally {
+      setProfilesLoadingByUserId((current) => ({ ...current, [cleanedUserId]: false }));
+    }
+  };
+
+  const openProfileManager = (userId: string) => {
+    setProfileManagerUserId(userId);
+    setProfileCreateName("");
+    setProfileCreateSourceSlug("blank");
+    setProfileCreateMode("blank");
+    setProfileCreateMakeDefault(false);
+    void refreshProfilesForUser(userId, true);
+  };
+
+  const closeProfileManager = () => {
+    setProfileManagerUserId(null);
+    setProfileCreateName("");
+    setProfileCreateSourceSlug("blank");
+    setProfileCreateMode("blank");
+    setProfileCreateMakeDefault(false);
+  };
+
+  const handleProfileCreate = async () => {
+    const userId = profileManagerUserId?.trim() ?? "";
+    if (!userId) {
+      return;
+    }
+    const name = profileCreateName.trim();
+    if (!name) {
+      setProfilesErrorByUserId((current) => ({ ...current, [userId]: "Profile name is required." }));
+      return;
+    }
+    setProfileSaving(true);
+    setProfilesErrorByUserId((current) => ({ ...current, [userId]: null }));
+    try {
+      const sourceSlug = profileCreateSourceSlug !== "blank" ? profileCreateSourceSlug : undefined;
+      await api.createProfile({
+        user_id: userId,
+        name,
+        source_profile_slug: sourceSlug,
+        mode: sourceSlug ? profileCreateMode : "blank",
+        make_default: profileCreateMakeDefault,
+      });
+      setProfileCreateName("");
+      setProfileCreateSourceSlug("blank");
+      setProfileCreateMode("blank");
+      setProfileCreateMakeDefault(false);
+      await refreshProfilesForUser(userId, true);
+      refreshUsers();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setProfilesErrorByUserId((current) => ({ ...current, [userId]: message }));
+    } finally {
+      setProfileSaving(false);
+    }
+  };
+
+  const handleProfileRename = async (userId: string, profile: AgentProfile) => {
+    const nextName = (profileRenameDrafts[profile.id] ?? profile.name).trim();
+    if (!nextName) {
+      setProfilesErrorByUserId((current) => ({ ...current, [userId]: "Profile name is required." }));
+      return;
+    }
+    if (nextName === profile.name) {
+      return;
+    }
+    setProfileActionLoading((current) => ({ ...current, [profile.id]: true }));
+    setProfilesErrorByUserId((current) => ({ ...current, [userId]: null }));
+    try {
+      await api.updateProfile(profile.id, { user_id: userId, name: nextName });
+      await refreshProfilesForUser(userId, true);
+      refreshUsers();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setProfilesErrorByUserId((current) => ({ ...current, [userId]: message }));
+    } finally {
+      setProfileActionLoading((current) => ({ ...current, [profile.id]: false }));
+    }
+  };
+
+  const handleProfileSetDefault = async (userId: string, profile: AgentProfile) => {
+    setProfileActionLoading((current) => ({ ...current, [profile.id]: true }));
+    setProfilesErrorByUserId((current) => ({ ...current, [userId]: null }));
+    try {
+      await api.updateProfile(profile.id, { user_id: userId, make_default: true });
+      await refreshProfilesForUser(userId, true);
+      refreshUsers();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setProfilesErrorByUserId((current) => ({ ...current, [userId]: message }));
+    } finally {
+      setProfileActionLoading((current) => ({ ...current, [profile.id]: false }));
+    }
+  };
+
+  const handleProfileArchiveToggle = async (userId: string, profile: AgentProfile, archived: boolean) => {
+    setProfileActionLoading((current) => ({ ...current, [profile.id]: true }));
+    setProfilesErrorByUserId((current) => ({ ...current, [userId]: null }));
+    try {
+      await api.updateProfile(profile.id, { user_id: userId, archived });
+      await refreshProfilesForUser(userId, true);
+      refreshUsers();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setProfilesErrorByUserId((current) => ({ ...current, [userId]: message }));
+    } finally {
+      setProfileActionLoading((current) => ({ ...current, [profile.id]: false }));
+    }
+  };
+
+  const handleProfileDelete = async (userId: string, profile: AgentProfile) => {
+    const confirmed = window.confirm(
+      `Delete archived profile "${profile.name}" permanently?\nThis removes its sessions, memory, secrets, jobs, and workspace files.`
+    );
+    if (!confirmed) {
+      return;
+    }
+    setProfileActionLoading((current) => ({ ...current, [profile.id]: true }));
+    setProfilesErrorByUserId((current) => ({ ...current, [userId]: null }));
+    try {
+      await api.deleteProfile(profile.id);
+      setProfileRenameDrafts((current) => {
+        const next = { ...current };
+        delete next[profile.id];
+        return next;
+      });
+      await refreshProfilesForUser(userId, true);
+      refreshUsers();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setProfilesErrorByUserId((current) => ({ ...current, [userId]: message }));
+    } finally {
+      setProfileActionLoading((current) => ({ ...current, [profile.id]: false }));
+    }
   };
 
   const refreshSandbox = () => {
@@ -1580,16 +1847,21 @@ export default function App() {
       });
   };
 
-  const refreshMemory = (targetUserId?: string) => {
+  const refreshMemory = (targetUserId?: string, targetProfileId?: string) => {
     const resolvedUserId = targetUserId || memoryUserId;
+    const resolvedProfileId = targetProfileId || memoryProfileId;
     if (!resolvedUserId) {
       setMemoryError("No user selected for memory.");
+      return;
+    }
+    if (!resolvedProfileId) {
+      setMemoryError("No profile selected for memory.");
       return;
     }
     setMemoryLoading(true);
     setMemoryError(null);
     api
-      .getMemory(resolvedUserId)
+      .getMemory(resolvedUserId, resolvedProfileId)
       .then((data) => {
         setMemoryData(data);
       })
@@ -1799,6 +2071,61 @@ export default function App() {
     );
   };
 
+  const profilesForUser = (userId: string | null | undefined, includeArchived = true) => {
+    if (!userId) {
+      return [] as AgentProfile[];
+    }
+    const rows = profilesByUserId[userId] ?? [];
+    return includeArchived ? rows : rows.filter((profile) => profile.status !== "archived");
+  };
+
+  const activeProfilesForUser = (userId: string | null | undefined) => profilesForUser(userId, false);
+
+  const preferredProfileIdForUser = (
+    userId: string,
+    candidateProfiles: AgentProfile[] = activeProfilesForUser(userId),
+  ) => {
+    const user = usersData.find((item) => item.id === userId);
+    return (
+      user?.default_profile_id ??
+      candidateProfiles.find((profile) => profile.is_default)?.id ??
+      candidateProfiles[0]?.id ??
+      ""
+    );
+  };
+
+  const profileLabelFor = (
+    userId: string | null | undefined,
+    profileId?: string | null,
+    fallbackSlug?: string | null,
+  ) => {
+    if (profileId && userId) {
+      const match = profilesForUser(userId).find((profile) => profile.id === profileId);
+      if (match) {
+        return match.slug;
+      }
+    }
+    if (fallbackSlug) {
+      return fallbackSlug;
+    }
+    if (userId) {
+      const user = usersData.find(
+        (item) => item.id === userId || item.transport_user_id === userId
+      );
+      if (user?.default_profile_slug) {
+        return user.default_profile_slug;
+      }
+    }
+    return "default";
+  };
+
+  const secretScopeLabel = (userId: string, profileId?: string | null) => {
+    if (!profileId) {
+      return "Shared";
+    }
+    return profileLabelFor(userId, profileId);
+  };
+
   const resolveUserId = (value: string, fallback: string) => {
     if (!value) {
       return fallback;
@@ -1822,6 +2149,31 @@ export default function App() {
     const match = channelsData.find((channel) => channel.label === value || channel.id === value);
     return match?.id ?? value;
   };
+
+  const memoryProfiles = activeProfilesForUser(memoryUserId);
+  const secretProfiles = activeProfilesForUser(secretUserId);
+  const profileManagerUserIdValue = profileManagerUserId ?? "";
+  const profileManagerProfiles = profilesForUser(profileManagerUserId);
+  const profileManagerUserLabel = profileManagerUserId ? userLabelFor(profileManagerUserId) : "";
+  const visibleSecrets = useMemo(() => {
+    const filtered = secretsData.filter((secret) => {
+      if (!secretProfileId) {
+        return false;
+      }
+      if (secretProfileId === SECRET_SCOPE_SHARED) {
+        return !secret.agent_profile_id;
+      }
+      return !secret.agent_profile_id || secret.agent_profile_id === secretProfileId;
+    });
+    return [...filtered].sort((a, b) => {
+      if (a.name === b.name) {
+        return secretScopeLabel(secretUserId, a.agent_profile_id).localeCompare(
+          secretScopeLabel(secretUserId, b.agent_profile_id)
+        );
+      }
+      return a.name.localeCompare(b.name);
+    });
+  }, [secretProfileId, secretUserId, secretsData]);
 
   const toolRunTools = useMemo(() => {
     return Array.from(
@@ -3603,6 +3955,7 @@ export default function App() {
                     <TableRow>
                       <TableHead>Session</TableHead>
                       <TableHead>User</TableHead>
+                      <TableHead>Profile</TableHead>
                       <TableHead>Transport</TableHead>
                       <TableHead>State</TableHead>
                       <TableHead>Context</TableHead>
@@ -3614,13 +3967,13 @@ export default function App() {
                   <TableBody>
                     {sessionsLoading ? (
                       <TableRow>
-                        <TableCell colSpan={8} className="text-center text-sm text-mutedForeground">
+                        <TableCell colSpan={9} className="text-center text-sm text-mutedForeground">
                           Loading sessions...
                         </TableCell>
                       </TableRow>
                     ) : sessionsError ? (
                       <TableRow>
-                        <TableCell colSpan={8} className="text-center text-sm text-mutedForeground">
+                        <TableCell colSpan={9} className="text-center text-sm text-mutedForeground">
                           {sessionsError}
                         </TableCell>
                       </TableRow>
@@ -3633,6 +3986,9 @@ export default function App() {
                         >
                           <TableCell className="font-semibold">{session.id}</TableCell>
                           <TableCell>{renderUser(session.user)}</TableCell>
+                          <TableCell className="text-mutedForeground">
+                            {profileLabelFor(session.user, session.agent_profile_id, session.agent_profile_slug)}
+                          </TableCell>
                           <TableCell className="uppercase text-mutedForeground">
                             {session.transport}
                           </TableCell>
@@ -3665,7 +4021,7 @@ export default function App() {
                       ))
                     ) : (
                       <TableRow>
-                        <TableCell colSpan={8} className="text-center text-sm text-mutedForeground">
+                        <TableCell colSpan={9} className="text-center text-sm text-mutedForeground">
                           {sessionsData.length
                             ? "No sessions found for the selected timeframe."
                             : "No sessions found."}
@@ -4446,40 +4802,83 @@ export default function App() {
                 />
               </CardHeader>
               <CardContent className="space-y-4">
-                <div className="grid gap-2 md:max-w-sm">
-                  <label className="text-xs font-semibold uppercase tracking-[0.2em] text-mutedForeground">
-                    User
-                  </label>
-                  <Select
-                    value={memoryUserId || usersData[0]?.id || "none"}
-                    onValueChange={(value) => {
-                      if (value === "none") {
-                        setMemoryUserId("");
-                        setMemoryData([]);
-                        setMemoryError("No user selected for memory.");
+                <div className="grid gap-4 md:grid-cols-2">
+                  <div className="grid gap-2">
+                    <label className="text-xs font-semibold uppercase tracking-[0.2em] text-mutedForeground">
+                      User
+                    </label>
+                    <Select
+                      value={memoryUserId || usersData[0]?.id || "none"}
+                      onValueChange={(value) => {
+                        if (value === "none") {
+                          setMemoryUserId("");
+                          setMemoryProfileId("");
+                          setMemoryData([]);
+                          setMemoryError("No user selected for memory.");
+                          setSelectedMemory(null);
+                          return;
+                        }
+                        setMemoryUserId(value);
+                        setMemoryProfileId("");
                         setSelectedMemory(null);
-                        return;
-                      }
-                      setMemoryUserId(value);
-                      setSelectedMemory(null);
-                      refreshMemory(value);
-                    }}
-                  >
-                    <SelectTrigger>
-                      <SelectValue placeholder="Select user" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {usersData.length ? (
-                        usersData.map((user) => (
-                          <SelectItem key={user.id} value={user.id}>
-                            {userLabelFor(user.id)}
+                        setMemoryDetailContent("");
+                      }}
+                    >
+                      <SelectTrigger>
+                        <SelectValue placeholder="Select user" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {usersData.length ? (
+                          usersData.map((user) => (
+                            <SelectItem key={user.id} value={user.id}>
+                              {userLabelFor(user.id)}
+                            </SelectItem>
+                          ))
+                        ) : (
+                          <SelectItem value="none">No users available</SelectItem>
+                        )}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <div className="grid gap-2">
+                    <label className="text-xs font-semibold uppercase tracking-[0.2em] text-mutedForeground">
+                      Profile
+                    </label>
+                    <Select
+                      value={memoryProfileId || "loading"}
+                      onValueChange={(value) => {
+                        if (value === "loading") {
+                          return;
+                        }
+                        setMemoryProfileId(value);
+                        setSelectedMemory(null);
+                        setMemoryDetailContent("");
+                      }}
+                      disabled={!memoryUserId || profilesLoadingByUserId[memoryUserId] || !memoryProfiles.length}
+                    >
+                      <SelectTrigger>
+                        <SelectValue placeholder="Select profile" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {memoryProfiles.length ? (
+                          memoryProfiles.map((profile) => (
+                            <SelectItem key={profile.id} value={profile.id}>
+                              {profile.name} · {profile.slug}
+                            </SelectItem>
+                          ))
+                        ) : (
+                          <SelectItem value="loading">
+                            {profilesLoadingByUserId[memoryUserId]
+                              ? "Loading profiles..."
+                              : "No active profiles"}
                           </SelectItem>
-                        ))
-                      ) : (
-                        <SelectItem value="none">No users available</SelectItem>
-                      )}
-                    </SelectContent>
-                  </Select>
+                        )}
+                      </SelectContent>
+                    </Select>
+                    <p className="text-xs text-mutedForeground">
+                      Memory files are isolated per profile workspace.
+                    </p>
+                  </div>
                 </div>
 
                 {memoryLoading ? (
@@ -4564,7 +4963,7 @@ export default function App() {
                 />
               </CardHeader>
               <CardContent className="space-y-6">
-                <div className="grid gap-4 md:grid-cols-2">
+                <div className="grid gap-4 md:grid-cols-3">
                   <div className="grid gap-2">
                     <label className="text-xs font-semibold uppercase tracking-[0.2em] text-mutedForeground">
                       User
@@ -4576,6 +4975,7 @@ export default function App() {
                         const value = event.target.value;
                         setSecretUserLabel(value);
                         setSecretUserId(value ? resolveUserId(value, secretUserId) : "");
+                        setSecretProfileId("");
                       }}
                       placeholder="Select a user"
                     />
@@ -4592,6 +4992,50 @@ export default function App() {
                       {secretUserId
                         ? `Selected: ${userLabelFor(secretUserId)} (${secretUserId})`
                         : "Type to search by name or paste a user id."}
+                    </p>
+                  </div>
+                  <div className="grid gap-2">
+                    <label className="text-xs font-semibold uppercase tracking-[0.2em] text-mutedForeground">
+                      Scope
+                    </label>
+                    <Select
+                      value={secretProfileId || "loading"}
+                      onValueChange={(value) => {
+                        if (value === "loading") {
+                          return;
+                        }
+                        setSecretProfileId(value);
+                      }}
+                      disabled={!secretUserId || profilesLoadingByUserId[secretUserId]}
+                    >
+                      <SelectTrigger>
+                        <SelectValue placeholder="Select scope" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {secretProfiles.length || secretProfileId === SECRET_SCOPE_SHARED ? (
+                          <>
+                            <SelectItem value={SECRET_SCOPE_SHARED}>Shared across all profiles</SelectItem>
+                            {secretProfiles.map((profile) => (
+                              <SelectItem key={profile.id} value={profile.id}>
+                                {profile.name} · {profile.slug}
+                              </SelectItem>
+                            ))}
+                          </>
+                        ) : (
+                          <SelectItem value="loading">
+                            {profilesLoadingByUserId[secretUserId]
+                              ? "Loading profiles..."
+                              : "No profiles available"}
+                          </SelectItem>
+                        )}
+                      </SelectContent>
+                    </Select>
+                    <p className="text-xs text-mutedForeground">
+                      {secretProfileId === SECRET_SCOPE_SHARED
+                        ? "Shared secrets are visible to every profile for this user."
+                        : secretProfileId
+                          ? "Profile secrets override shared values with the same name."
+                          : "Pick a profile or use shared scope."}
                     </p>
                   </div>
                   <div className="grid gap-2">
@@ -4636,20 +5080,24 @@ export default function App() {
                   <div className="rounded-2xl border border-dashed border-border bg-muted/40 px-4 py-6 text-sm text-mutedForeground">
                     Loading secrets...
                   </div>
-                ) : secretsData.length ? (
+                ) : visibleSecrets.length ? (
                   <Table>
                     <TableHeader>
                       <TableRow>
                         <TableHead>Name</TableHead>
+                        <TableHead>Scope</TableHead>
                         <TableHead>Updated</TableHead>
                         <TableHead>Last used</TableHead>
                         <TableHead></TableHead>
                       </TableRow>
                     </TableHeader>
                     <TableBody>
-                      {secretsData.map((secret) => (
-                        <TableRow key={secret.name}>
+                      {visibleSecrets.map((secret) => (
+                        <TableRow key={`${secret.name}:${secret.agent_profile_id ?? "shared"}`}>
                           <TableCell className="font-semibold">{secret.name}</TableCell>
+                          <TableCell className="text-mutedForeground">
+                            {secretScopeLabel(secretUserId, secret.agent_profile_id)}
+                          </TableCell>
                           <TableCell className="text-mutedForeground">
                             {formatRelativeTime(secret.updated_at)}
                           </TableCell>
@@ -4660,7 +5108,7 @@ export default function App() {
                             <Button
                               size="sm"
                               variant="danger"
-                              onClick={() => handleSecretDelete(secret.name)}
+                              onClick={() => handleSecretDelete(secret.name, secret.agent_profile_id)}
                             >
                               Delete
                             </Button>
@@ -4671,7 +5119,11 @@ export default function App() {
                   </Table>
                 ) : (
                   <div className="rounded-2xl border border-dashed border-border bg-muted/40 px-4 py-6 text-sm text-mutedForeground">
-                    No secrets yet.
+                    {secretProfileId === SECRET_SCOPE_SHARED
+                      ? "No shared secrets yet."
+                      : secretProfileId
+                        ? "No secrets are available for this profile yet."
+                        : "No secrets yet."}
                   </div>
                 )}
               </CardContent>
@@ -4685,7 +5137,7 @@ export default function App() {
               <CardHeader>
                 <SectionHeader
                   title="Users"
-                  subtitle="Approve new accounts before they can chat."
+                  subtitle="Approve new accounts and manage the agent profiles they own."
                   actionLabel={usersLoading ? "Refreshing..." : "Refresh"}
                   onAction={usersLoading ? undefined : refreshUsers}
                 />
@@ -4705,6 +5157,7 @@ export default function App() {
                       <TableRow>
                         <TableHead>User</TableHead>
                         <TableHead>Transport ID</TableHead>
+                        <TableHead>Default profile</TableHead>
                         <TableHead>Status</TableHead>
                         <TableHead>Actions</TableHead>
                       </TableRow>
@@ -4716,6 +5169,9 @@ export default function App() {
                           <TableCell className="text-xs text-mutedForeground">
                             {user.transport_user_id}
                           </TableCell>
+                          <TableCell className="text-mutedForeground">
+                            {user.default_profile_slug ?? "default"}
+                          </TableCell>
                           <TableCell>
                             <Badge variant={user.approved ? "success" : "warning"}>
                               {user.approved ? "Approved" : "Pending"}
@@ -4723,6 +5179,13 @@ export default function App() {
                           </TableCell>
                           <TableCell>
                             <div className="flex items-center gap-2">
+                              <Button
+                                size="sm"
+                                variant="outline"
+                                onClick={() => openProfileManager(user.id)}
+                              >
+                                Manage profiles
+                              </Button>
                               {!user.approved ? (
                                 <>
                                   <Button
@@ -6122,6 +6585,9 @@ export default function App() {
                       <p className="mt-1 text-xs text-mutedForeground">
                         Status: {sessionDetail.status}
                       </p>
+                      <p className="mt-1 text-xs text-mutedForeground">
+                        Profile: {profileLabelFor(sessionDetail.user_id, sessionDetail.agent_profile_id, sessionDetail.agent_profile_slug)}
+                      </p>
                     </div>
                     <div className="rounded-2xl border border-border bg-card p-4">
                       <p className="text-xs uppercase tracking-[0.2em] text-mutedForeground">User</p>
@@ -6313,6 +6779,234 @@ export default function App() {
               ) : null}
               <div className="flex justify-end gap-2">
                 <Button variant="outline" onClick={closeSessionDetail}>
+                  Close
+                </Button>
+              </div>
+            </DialogContent>
+          </Dialog>
+        )}
+
+        {profileManagerUserId && (
+          <Dialog open={!!profileManagerUserId} onOpenChange={(open) => !open && closeProfileManager()}>
+            <DialogContent className="max-w-5xl w-[94vw] max-h-[90vh] overflow-hidden">
+              <DialogHeader>
+                <DialogTitle>Manage Profiles</DialogTitle>
+                <DialogDescription>
+                  Create, clone, rename, archive, and set the default profile for {profileManagerUserLabel}.
+                </DialogDescription>
+              </DialogHeader>
+              <div className="grid gap-6 overflow-hidden">
+                <div className="rounded-2xl border border-border bg-muted/30 p-4">
+                  <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+                    <div className="grid gap-2 xl:col-span-2">
+                      <label className="text-xs font-semibold uppercase tracking-[0.2em] text-mutedForeground">
+                        Profile name
+                      </label>
+                      <Input
+                        value={profileCreateName}
+                        onChange={(event) => setProfileCreateName(event.target.value)}
+                        placeholder="Research Assistant"
+                      />
+                    </div>
+                    <div className="grid gap-2">
+                      <label className="text-xs font-semibold uppercase tracking-[0.2em] text-mutedForeground">
+                        Source
+                      </label>
+                      <Select
+                        value={profileCreateSourceSlug}
+                        onValueChange={(value) => {
+                          setProfileCreateSourceSlug(value);
+                          setProfileCreateMode(value === "blank" ? "blank" : profileCreateMode === "blank" ? "settings" : profileCreateMode);
+                        }}
+                      >
+                        <SelectTrigger>
+                          <SelectValue placeholder="Blank" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="blank">Blank profile</SelectItem>
+                          {profileManagerProfiles.map((profile) => (
+                            <SelectItem key={profile.id} value={profile.slug}>
+                              {profile.name} · {profile.slug}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    </div>
+                    <div className="grid gap-2">
+                      <label className="text-xs font-semibold uppercase tracking-[0.2em] text-mutedForeground">
+                        Clone mode
+                      </label>
+                      <Select
+                        value={profileCreateMode}
+                        onValueChange={(value) => setProfileCreateMode(value as "blank" | "settings" | "all")}
+                        disabled={profileCreateSourceSlug === "blank"}
+                      >
+                        <SelectTrigger>
+                          <SelectValue placeholder="Blank" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="blank">Blank</SelectItem>
+                          <SelectItem value="settings">Settings only</SelectItem>
+                          <SelectItem value="all">Everything</SelectItem>
+                        </SelectContent>
+                      </Select>
+                    </div>
+                  </div>
+                  <div className="mt-4 flex flex-wrap items-center justify-between gap-4">
+                    <div className="flex items-center gap-3">
+                      <Switch
+                        checked={profileCreateMakeDefault}
+                        onCheckedChange={setProfileCreateMakeDefault}
+                      />
+                      <div>
+                        <p className="text-sm font-semibold">Make default</p>
+                        <p className="text-xs text-mutedForeground">
+                          New sessions and clients fall back to this profile.
+                        </p>
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        onClick={() => void refreshProfilesForUser(profileManagerUserIdValue, true)}
+                      >
+                        Refresh list
+                      </Button>
+                      <Button onClick={handleProfileCreate} disabled={profileSaving}>
+                        {profileSaving
+                          ? "Saving..."
+                          : profileCreateSourceSlug === "blank"
+                            ? "Create profile"
+                            : "Clone profile"}
+                      </Button>
+                    </div>
+                  </div>
+                </div>
+
+                {profilesErrorByUserId[profileManagerUserIdValue] ? (
+                  <div className="rounded-2xl border border-dashed border-border bg-muted/40 px-4 py-4 text-sm text-mutedForeground">
+                    {profilesErrorByUserId[profileManagerUserIdValue]}
+                  </div>
+                ) : null}
+
+                <ScrollArea className="h-[48vh] rounded-2xl border border-border bg-card p-4">
+                  <div className="space-y-4">
+                    {profilesLoadingByUserId[profileManagerUserIdValue] && !profileManagerProfiles.length ? (
+                      <div className="rounded-2xl border border-dashed border-border bg-muted/40 px-4 py-6 text-sm text-mutedForeground">
+                        Loading profiles...
+                      </div>
+                    ) : profileManagerProfiles.length ? (
+                      profileManagerProfiles.map((profile) => {
+                        const loading = profileActionLoading[profile.id];
+                        return (
+                          <div key={profile.id} className="rounded-2xl border border-border bg-muted/20 p-4">
+                            <div className="flex flex-wrap items-start justify-between gap-3">
+                              <div>
+                                <div className="flex flex-wrap items-center gap-2">
+                                  <p className="text-sm font-semibold">{profile.name}</p>
+                                  <Badge variant="outline">{profile.slug}</Badge>
+                                  {profile.is_default ? <Badge variant="success">Default</Badge> : null}
+                                  <Badge variant={profile.status === "archived" ? "warning" : "secondary"}>
+                                    {profile.status}
+                                  </Badge>
+                                </div>
+                                <p className="mt-2 text-xs text-mutedForeground">
+                                  Created {formatRelativeTime(profile.created_at)} · Updated {formatRelativeTime(profile.updated_at)}
+                                </p>
+                              </div>
+                            </div>
+                            <div className="mt-4 grid gap-4 lg:grid-cols-[minmax(0,1fr)_auto]">
+                              <div className="grid gap-2">
+                                <label className="text-xs font-semibold uppercase tracking-[0.2em] text-mutedForeground">
+                                  Display name
+                                </label>
+                                <Input
+                                  value={profileRenameDrafts[profile.id] ?? profile.name}
+                                  onChange={(event) =>
+                                    setProfileRenameDrafts((current) => ({
+                                      ...current,
+                                      [profile.id]: event.target.value,
+                                    }))
+                                  }
+                                  disabled={loading || profile.status === "archived"}
+                                />
+                              </div>
+                              <div className="flex flex-wrap items-end gap-2">
+                                {profile.status === "archived" ? (
+                                  <>
+                                    <Button
+                                      size="sm"
+                                      variant="outline"
+                                      onClick={() =>
+                                        void handleProfileArchiveToggle(
+                                          profileManagerUserIdValue,
+                                          profile,
+                                          false,
+                                        )
+                                      }
+                                      disabled={loading}
+                                    >
+                                      Restore
+                                    </Button>
+                                    <Button
+                                      size="sm"
+                                      variant="danger"
+                                      onClick={() => void handleProfileDelete(profileManagerUserIdValue, profile)}
+                                      disabled={loading}
+                                    >
+                                      Delete permanently
+                                    </Button>
+                                  </>
+                                ) : (
+                                  <>
+                                    <Button
+                                      size="sm"
+                                      variant="outline"
+                                      onClick={() => void handleProfileRename(profileManagerUserIdValue, profile)}
+                                      disabled={loading}
+                                    >
+                                      {loading ? "Saving..." : "Save name"}
+                                    </Button>
+                                    <Button
+                                      size="sm"
+                                      variant="outline"
+                                      onClick={() => void handleProfileSetDefault(profileManagerUserIdValue, profile)}
+                                      disabled={loading || profile.is_default}
+                                    >
+                                      Set default
+                                    </Button>
+                                    <Button
+                                      size="sm"
+                                      variant="danger"
+                                      onClick={() =>
+                                        void handleProfileArchiveToggle(
+                                          profileManagerUserIdValue,
+                                          profile,
+                                          true,
+                                        )
+                                      }
+                                      disabled={loading || profile.is_default}
+                                    >
+                                      Archive
+                                    </Button>
+                                  </>
+                                )}
+                              </div>
+                            </div>
+                          </div>
+                        );
+                      })
+                    ) : (
+                      <div className="rounded-2xl border border-dashed border-border bg-muted/40 px-4 py-6 text-sm text-mutedForeground">
+                        No profiles found for this user.
+                      </div>
+                    )}
+                  </div>
+                </ScrollArea>
+              </div>
+              <div className="flex justify-end border-t border-border pt-4">
+                <Button variant="outline" onClick={closeProfileManager}>
                   Close
                 </Button>
               </div>

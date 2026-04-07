@@ -282,13 +282,10 @@ class Settings(BaseSettings):
     heartbeat_quiet_hours_start: str = Field(default="23:00")
     heartbeat_quiet_hours_end: str = Field(default="08:00")
 
-    workspace_root: str = Field(default="workspace")
+    workspace_root: str = Field(default="/workspace")
     workspace_skeleton_root: str = Field(default="workspace-skeleton")
     host_workspace_root: str = Field(default="")
-    skills_root: str = Field(default="skills")
-    host_skills_root: str = Field(default="")
 
-    sandbox_base_url: str = Field(default="http://localhost:9080")
     sandbox_api_key: str = Field(default="")
     sandbox_image: str = Field(default="skitter-sandbox")
     sandbox_network: str = Field(default="")

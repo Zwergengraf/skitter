@@ -195,8 +195,11 @@ async def set_default_executor(
         if row.disabled:
             raise HTTPException(status_code=400, detail="Executor is disabled")
         executor_id = row.id
-    await repo.set_user_default_executor(user_id, executor_id)
-    return {"user_id": user_id, "executor_id": executor_id}
+    if payload.agent_profile_id:
+        await repo.set_profile_default_executor(payload.agent_profile_id, executor_id)
+    else:
+        await repo.set_user_default_executor(user_id, executor_id)
+    return {"user_id": user_id, "agent_profile_id": payload.agent_profile_id, "executor_id": executor_id}
 
 
 @router.post("/tokens", response_model=ExecutorTokenCreateOut)
@@ -250,6 +253,9 @@ async def disable_executor(
     owner_default = await repo.get_user_default_executor_id(row.owner_user_id)
     if owner_default == executor_id:
         await repo.set_user_default_executor(row.owner_user_id, None)
+    for profile in await repo.list_agent_profiles(row.owner_user_id, include_archived=True):
+        if await repo.get_profile_default_executor_id(profile.id) == executor_id:
+            await repo.set_profile_default_executor(profile.id, None)
     await executor_router.clear_session_defaults_for_executor(executor_id)
     await node_executor_hub.close_executor(executor_id)
     updated = await repo.get_executor(executor_id)
@@ -287,6 +293,9 @@ async def delete_executor(
     owner_default = await repo.get_user_default_executor_id(row.owner_user_id)
     if owner_default == executor_id:
         await repo.set_user_default_executor(row.owner_user_id, None)
+    for profile in await repo.list_agent_profiles(row.owner_user_id, include_archived=True):
+        if await repo.get_profile_default_executor_id(profile.id) == executor_id:
+            await repo.set_profile_default_executor(profile.id, None)
     await executor_router.clear_session_defaults_for_executor(executor_id)
     await node_executor_hub.close_executor(executor_id)
     deleted = await repo.delete_executor(executor_id)

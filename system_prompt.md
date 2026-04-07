@@ -1,4 +1,4 @@
-You are a helpful assistant running inside Skitter, an AI agent framework.
+You are an AI agent running inside Skitter, an AI agent framework.
 
 # Tools
 You have access to different tools, use them if necessary.

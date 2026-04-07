@@ -8,17 +8,18 @@ from datetime import datetime, UTC, timedelta
 import uvicorn
 
 from .api.app import create_app
-from .api.security import hash_pair_code, make_pair_code
+from .core.command_service import command_service
 from .core.runtime import AgentRuntime
 from .core.graph import build_graph
-from .core.llm import list_models, resolve_model_name
+from .core.llm import resolve_model_name
 from .core.scheduler import SchedulerService
 from .core.heartbeat import HeartbeatService
 from .core.jobs import JobService
 from .core.session_finalizer import SessionFinalizerService
 from .core.conversation_scope import resolve_conversation_scope
-from .core.config import SECRETS_APPROVAL_BYPASS_MAGIC, settings
+from .core.config import settings
 from .core.models import MessageEnvelope, StreamEvent
+from .core.profile_service import profile_service
 from .core.sessions import SessionManager
 from .data.db import SessionLocal
 from .data.repositories import Repository
@@ -88,7 +89,7 @@ async def main() -> None:
     app.state.job_service = job_service
     app.state.session_finalizer_service = session_finalizer_service
     runtime.set_job_service(job_service)
-    session_manager = SessionManager(runtime, settings.workspace_root)
+    session_manager = SessionManager(runtime)
     if sandbox_manager is not None:
         await sandbox_manager.start()
 
@@ -301,24 +302,23 @@ async def main() -> None:
                 return None
             return user.id
 
-    async def _update_user_last_seen(internal_user_id: str, envelope, scope) -> None:
+    async def _update_user_last_seen(internal_user_id: str, profile, envelope, scope) -> None:
         if envelope.origin != "discord":
             return
         async with SessionLocal() as session:
             repo = Repository(session)
-            updates = {
-                "last_seen_at": datetime.now(UTC).isoformat(),
-            }
-            if scope.is_private:
-                updates.update(
-                    {
+            await repo.set_user_meta(internal_user_id, {"last_seen_at": datetime.now(UTC).isoformat()})
+            if scope.is_private and profile is not None:
+                await repo.update_agent_profile(
+                    profile.id,
+                    meta_updates={
                         "last_private_origin": scope.target_origin,
                         "last_private_destination_id": scope.target_destination_id,
                         "last_channel_id": envelope.channel_id,
                         "last_origin": envelope.origin,
-                    }
+                        "last_seen_at": datetime.now(UTC).isoformat(),
+                    },
                 )
-            await repo.set_user_meta(internal_user_id, updates)
 
     async def _publish_session_switch(
         old_session_id: str,
@@ -372,226 +372,45 @@ async def main() -> None:
         transport: DiscordTransport,
         scope,
         internal_user_id: str,
+        profile,
     ) -> bool:
         if envelope.origin != "discord" or not envelope.command:
             return False
-        if envelope.command == "new":
-            old_session_id: str | None = None
-            async with SessionLocal() as session:
-                repo = Repository(session)
-                active = await repo.get_active_session_by_scope(scope.scope_type, scope.scope_id)
-                if active is not None:
-                    old_session_id = active.id
-            _, new_session_id = await session_manager.start_new_session_for_scope(
-                user_id=internal_user_id,
-                scope_type=scope.scope_type,
-                scope_id=scope.scope_id,
-                origin=envelope.origin,
-                channel_id=envelope.channel_id,
-            )
-            if old_session_id and old_session_id != new_session_id:
-                await _publish_session_switch(
-                    old_session_id=old_session_id,
-                    new_session_id=new_session_id,
-                    scope=scope,
-                    initiated_by_origin=envelope.origin,
+        async with SessionLocal() as session:
+            repo = Repository(session)
+            user = await repo.get_user_by_id(internal_user_id)
+            if user is None:
+                return True
+            try:
+                result = await command_service.execute(
+                    repo=repo,
+                    user=user,
+                    runtime=runtime,
+                    scheduler=scheduler,
+                    event_bus=app.state.event_bus,
+                    command=envelope.command,
+                    args=envelope.metadata or {},
+                    origin=envelope.origin,
+                    agent_profile_id=profile.id,
+                    agent_profile_slug=profile.slug,
+                    scope_type=scope.scope_type,
+                    scope_id=scope.scope_id,
+                    surface_id=envelope.channel_id,
+                    persist_surface_profile=True,
                 )
-            await transport.send_message(envelope.channel_id, "Started a new session.")
-            return True
-        if envelope.command == "memory_reindex":
-            stats = await session_manager.reindex_memories(internal_user_id)
-            await transport.send_message(
-                envelope.channel_id,
-                f"Memory reindex complete. Indexed: {stats['indexed']}, skipped: {stats['skipped']}, removed: {stats['removed']}.",
-            )
-            return True
-        if envelope.command == "memory_search":
-            query = str((envelope.metadata or {}).get("query") or "").strip()
-            if not query:
-                envelope.metadata["ephemeral_response"] = "Query is required."
-                envelope.metadata["suppress_ack"] = True
-                return True
-            results = await session_manager.search_memories(internal_user_id, query, top_k=5)
-            envelope.metadata["ephemeral_response"] = _format_memory_search_results(query, results)
-            envelope.metadata["suppress_ack"] = True
-            return True
-        if envelope.command == "schedule_list":
-            jobs = await scheduler.list_jobs(internal_user_id)
-            lines = [
-                f"{j['id']} | {j['name']} | {j['cron']} | model={j.get('model') or '__main_chain__'} | {'on' if j['enabled'] else 'off'}"
-                for j in jobs
-            ]
-            await transport.send_message(envelope.channel_id, "Scheduled jobs:\n" + "\n".join(lines))
-            return True
-        if envelope.command == "tools":
-            tool_list = [item.strip() for item in settings.tool_approval_tools.split(",") if item.strip()]
-            mode = "required" if settings.tool_approval_required else "optional"
-            secrets_mode = (
-                "bypassed (unsafe)"
-                if str(settings.approval_secrets_required or "").strip() == SECRETS_APPROVAL_BYPASS_MAGIC
-                else "forced"
-            )
-            text = (
-                f"Tool approvals are {mode}.\n"
-                f"Secret-ref approvals are {secrets_mode}.\n"
-                f"Configured approval tools ({len(tool_list)}): {', '.join(tool_list) if tool_list else '(none)'}"
-            )
-            await transport.send_message(envelope.channel_id, text)
-            return True
-        if envelope.command == "model":
-            requested = envelope.metadata.get("model_name") if envelope.metadata else None
-            models = list_models()
-            if not models:
-                await transport.send_message(envelope.channel_id, "No models are configured.")
-                return True
-            if not requested:
-                async with SessionLocal() as session:
-                    repo = Repository(session)
-                    active = await repo.get_active_session_by_scope(scope.scope_type, scope.scope_id)
-                current = active.model if active and active.model else None
-                if current is None:
-                    current = resolve_model_name(None, purpose="main")
+            except (LookupError, RuntimeError, ValueError) as exc:
+                if envelope.metadata.get("interaction_response"):
+                    envelope.metadata["ephemeral_response"] = str(exc)
+                    envelope.metadata["suppress_ack"] = True
                 else:
-                    current = resolve_model_name(current, purpose="main")
-                lines = []
-                for item in models:
-                    suffix = " (active)" if current and item.name.lower() == current.lower() else ""
-                    lines.append(f"- {item.name}{suffix}")
-                await transport.send_message(envelope.channel_id, "Available models:\n" + "\n".join(lines))
+                    await transport.send_message(envelope.channel_id, str(exc))
                 return True
-            requested_name = resolve_model_name(str(requested), purpose="main")
-            match = None
-            for item in models:
-                if item.name.lower() == requested_name.lower():
-                    match = item
-                    break
-            if match is None:
-                await transport.send_message(
-                    envelope.channel_id,
-                    f"Unknown model `{requested}`. Use /model to list available models.",
-                )
-                return True
-            async with SessionLocal() as session:
-                repo = Repository(session)
-                active = await repo.get_active_session_by_scope(scope.scope_type, scope.scope_id)
-                if active is None:
-                    active = await repo.create_session(
-                        internal_user_id,
-                        model=match.name,
-                        origin=envelope.origin,
-                        scope_type=scope.scope_type,
-                        scope_id=scope.scope_id,
-                    )
-                else:
-                    await repo.set_session_model(active.id, match.name)
-            runtime.set_session_model(active.id, match.name)
-            await transport.send_message(
-                envelope.channel_id,
-                f"Active model set to `{match.name}`.",
-            )
-            return True
-        if envelope.command == "machine":
-            requested = str((envelope.metadata or {}).get("target_machine") or "").strip()
-            if requested:
-                async with SessionLocal() as session:
-                    repo = Repository(session)
-                    if requested.lower() in {"docker", "docker-default"}:
-                        if settings.executors_auto_docker_default:
-                            row = await repo.get_or_create_docker_executor(internal_user_id)
-                        else:
-                            row = await repo.get_docker_executor_for_user(internal_user_id)
-                    else:
-                        row = await repo.get_executor_for_user(internal_user_id, requested)
-                        if row is None:
-                            row = await repo.get_executor_for_user_by_name(internal_user_id, requested)
-                    if row is None:
-                        await transport.send_message(envelope.channel_id, f"Machine not found: `{requested}`.")
-                        return True
-                    if row.disabled:
-                        await transport.send_message(envelope.channel_id, f"Machine `{row.name}` is disabled.")
-                        return True
-                    await repo.set_user_default_executor(internal_user_id, row.id)
-                    active = await repo.get_active_session_by_scope(scope.scope_type, scope.scope_id)
-                if active is not None:
-                    await executor_router.set_session_default(active.id, row.id)
-                await transport.send_message(envelope.channel_id, f"Default machine set to `{row.name}`.")
-                return True
-
-            async with SessionLocal() as session:
-                repo = Repository(session)
-                if settings.executors_auto_docker_default:
-                    await repo.get_or_create_docker_executor(internal_user_id)
-                rows = await repo.list_executors_for_user(internal_user_id, include_disabled=False)
-                user_default_id = await repo.get_user_default_executor_id(internal_user_id)
-            online_ids = set(await node_executor_hub.online_executor_ids())
-            running_docker = await _running_docker_users()
-            lines = ["Available machines:"]
-            for row in rows:
-                online = (row.id in online_ids) or (row.kind == "docker" and internal_user_id in running_docker)
-                marker = " (default)" if row.id == user_default_id else ""
-                status = "online" if online else "offline"
-                lines.append(f"- {row.name} [{row.kind}] `{row.id}` · {status}{marker}")
-            if len(lines) == 1:
-                lines.append("(none)")
-            lines.append("Use `/machine <name_or_id>` to set the default machine.")
-            await transport.send_message(envelope.channel_id, "\n".join(lines))
-            return True
-        if envelope.command == "pair":
-            code = make_pair_code()
-            expires_at = datetime.now(UTC) + timedelta(minutes=10)
-            async with SessionLocal() as session:
-                repo = Repository(session)
-                await repo.create_pair_code(
-                    hash_pair_code(code),
-                    flow_type="pair",
-                    user_id=internal_user_id,
-                    display_name=None,
-                    created_by_user_id=internal_user_id,
-                    created_via="discord",
-                    expires_at=expires_at,
-                )
-            envelope.metadata["ephemeral_response"] = (
-                f"Pair code: `{code}`\n"
-                f"Expires at: {expires_at.strftime('%Y-%m-%d %H:%M:%S UTC')}\n"
-                "Use this code in the menubar/TUI pairing flow."
-            )
+        if envelope.metadata.get("interaction_response"):
+            envelope.metadata["ephemeral_response"] = result.message or "Command completed."
             envelope.metadata["suppress_ack"] = True
-            return True
-        if envelope.command == "info":
-            async with SessionLocal() as session:
-                repo = Repository(session)
-                active = await repo.get_active_session_by_scope(scope.scope_type, scope.scope_id)
-            if active is None:
-                await transport.send_message(envelope.channel_id, "No active session found.")
-                return True
-            model_name = active.last_model or active.model or resolve_model_name(None, purpose="main")
-            lines = [
-                f"Session: `{active.id}`",
-                f"Model: `{model_name}`",
-                f"Context tokens (last input): {active.last_input_tokens or 0}",
-                f"Last output tokens: {active.last_output_tokens or 0}",
-                f"Last total tokens: {active.last_total_tokens or 0}",
-                f"Total input tokens: {active.input_tokens or 0}",
-                f"Total output tokens: {active.output_tokens or 0}",
-                f"Total tokens: {active.total_tokens or 0}",
-                f"Total cost: ${active.total_cost or 0.0:.4f}",
-            ]
-            await transport.send_message(envelope.channel_id, "\n".join(lines))
-            return True
-        if envelope.command in {"schedule_delete", "schedule_pause", "schedule_resume"}:
-            job_id = envelope.metadata.get("job_id")
-            if not job_id:
-                await transport.send_message(envelope.channel_id, "Job id is required.")
-                return True
-            if envelope.command == "schedule_delete":
-                result = await scheduler.delete_job(job_id)
-            elif envelope.command == "schedule_pause":
-                result = await scheduler.update_job(job_id, enabled=False)
-            else:
-                result = await scheduler.update_job(job_id, enabled=True)
-            await transport.send_message(envelope.channel_id, json.dumps(result))
-            return True
-        return False
+        elif result.message:
+            await transport.send_message(envelope.channel_id, result.message)
+        return True
 
     async def handler(envelope):
         transport = transport_by_origin.get(envelope.origin)
@@ -602,10 +421,23 @@ async def main() -> None:
         if internal_user_id is None:
             return
 
+        async with SessionLocal() as session:
+            repo = Repository(session)
+            profile = await profile_service.current_surface_profile(
+                repo,
+                internal_user_id,
+                origin=envelope.origin,
+                channel_id=envelope.channel_id,
+                agent_profile_id=str(envelope.metadata.get("agent_profile_id") or "").strip() or None,
+                agent_profile_slug=str(envelope.metadata.get("agent_profile_slug") or "").strip() or None,
+            )
+
+        envelope.metadata["agent_profile_id"] = profile.id
+        envelope.metadata["agent_profile_slug"] = profile.slug
         scope = resolve_conversation_scope(
             origin=envelope.origin,
             channel_id=envelope.channel_id,
-            internal_user_id=internal_user_id,
+            internal_user_id=profile.id,
             metadata=envelope.metadata,
         )
         envelope.metadata["internal_user_id"] = internal_user_id
@@ -613,16 +445,18 @@ async def main() -> None:
         envelope.metadata["scope_id"] = scope.scope_id
         envelope.metadata["is_private"] = scope.is_private
 
-        await _update_user_last_seen(internal_user_id, envelope, scope)
+        await _update_user_last_seen(internal_user_id, profile, envelope, scope)
 
         await transport.send_typing(envelope.channel_id)
         if isinstance(transport, DiscordTransport):
-            handled = await _handle_discord_command(envelope, transport, scope, internal_user_id)
+            handled = await _handle_discord_command(envelope, transport, scope, internal_user_id, profile)
             if handled:
                 return
 
         session_id = await session_manager.get_or_create_session_for_scope(
             user_id=internal_user_id,
+            agent_profile_id=profile.id,
+            agent_profile_slug=profile.slug,
             scope_type=scope.scope_type,
             scope_id=scope.scope_id,
             origin=envelope.origin,

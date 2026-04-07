@@ -156,3 +156,39 @@ async def test_resolve_executor_no_default_and_auto_docker_disabled_raises(
             session_id="session-1",
             target_machine=None,
         )
+
+
+@pytest.mark.asyncio
+async def test_execute_docker_requires_sandbox_manager(monkeypatch: pytest.MonkeyPatch) -> None:
+    router = ExecutorRouter(NodeExecutorHub())
+    monkeypatch.setattr(executors_module, "sandbox_manager", None)
+
+    with pytest.raises(RuntimeError, match="sandbox manager is not available"):
+        await router._execute_docker(
+            user_id="user-1",
+            session_id="session-1",
+            tool_name="exec",
+            payload={"command": "pwd"},
+            timeout=5,
+        )
+
+
+@pytest.mark.asyncio
+async def test_execute_docker_propagates_manager_failure(monkeypatch: pytest.MonkeyPatch) -> None:
+    router = ExecutorRouter(NodeExecutorHub())
+
+    class _FailingSandboxManager:
+        async def get_base_url(self, user_id: str, profile_slug: str | None = None) -> str:
+            _ = user_id, profile_slug
+            raise RuntimeError("Docker is not available. Docker executor mode requires managed sandboxes.")
+
+    monkeypatch.setattr(executors_module, "sandbox_manager", _FailingSandboxManager())
+
+    with pytest.raises(RuntimeError, match="Docker executor mode requires managed sandboxes"):
+        await router._execute_docker(
+            user_id="user-1",
+            session_id="session-1",
+            tool_name="exec",
+            payload={"command": "pwd"},
+            timeout=5,
+        )

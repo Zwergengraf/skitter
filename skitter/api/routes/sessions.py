@@ -18,8 +18,8 @@ from ..schemas import (
     SessionUserPromptOut,
 )
 from ...core.llm import list_models, resolve_model_name
-from ...core.config import settings
 from ...core.conversation_scope import private_scope_id
+from ...core.profile_service import profile_service
 from ...core.models import StreamEvent
 from ...core.sessions import SessionManager
 from ...data.repositories import Repository
@@ -35,6 +35,15 @@ def _require_approved_user(approved: bool) -> None:
         )
 
 
+async def _session_profile(repo: Repository, session) -> object | None:
+    profile_id = str(getattr(session, "agent_profile_id", "") or "").strip()
+    if profile_id:
+        profile = await repo.get_agent_profile(profile_id)
+        if profile is not None:
+            return profile
+    return await repo.get_default_agent_profile(session.user_id)
+
+
 @router.get("", response_model=list[SessionListItem])
 async def list_sessions(
     request: Request,
@@ -44,21 +53,26 @@ async def list_sessions(
 ) -> list[SessionListItem]:
     require_admin(request)
     sessions = await repo.list_sessions(limit=limit, status=status)
-    return [
-        SessionListItem(
-            id=session.id,
-            user=transport_user_id,
-            transport=session.origin or "unknown",
-            status=session.status,
-            scope_type=session.scope_type or "private",
-            scope_id=session.scope_id or "",
-            last_active_at=last_active_at,
-            total_tokens=session.total_tokens or 0,
-            total_cost=session.total_cost or 0.0,
-            last_input_tokens=session.last_input_tokens or 0,
+    items: list[SessionListItem] = []
+    for session, transport_user_id, last_active_at in sessions:
+        profile = await _session_profile(repo, session)
+        items.append(
+            SessionListItem(
+                id=session.id,
+                user=transport_user_id,
+                transport=session.origin or "unknown",
+                agent_profile_id=getattr(session, "agent_profile_id", None),
+                agent_profile_slug=getattr(profile, "slug", None),
+                status=session.status,
+                scope_type=session.scope_type or "private",
+                scope_id=session.scope_id or "",
+                last_active_at=last_active_at,
+                total_tokens=session.total_tokens or 0,
+                total_cost=session.total_cost or 0.0,
+                last_input_tokens=session.last_input_tokens or 0,
+            )
         )
-        for session, transport_user_id, last_active_at in sessions
-    ]
+    return items
 
 
 @router.post("", response_model=SessionOut)
@@ -75,27 +89,36 @@ async def create_session(
         raise HTTPException(status_code=404, detail="User not found")
     _require_approved_user(user.approved)
     origin = (payload.origin or "web").strip() or "web"
+    profile = await profile_service.resolve_profile(
+        repo,
+        user.id,
+        agent_profile_id=payload.agent_profile_id,
+        agent_profile_slug=payload.agent_profile_slug,
+        origin=origin,
+    )
     scope_type = (payload.scope_type or "private").strip() or "private"
     scope_id = (payload.scope_id or "").strip()
     if not scope_id and scope_type == "private":
-        scope_id = private_scope_id(user.id)
+        scope_id = private_scope_id(profile.id)
     if not scope_id:
         scope_id = f"{scope_type}:{user.id}"
     session = None
     previous_active_id: str | None = None
     if not payload.reuse_active:
-        previous = await repo.get_active_session_by_scope(scope_type, scope_id)
+        previous = await repo.get_active_session_by_scope(scope_type, scope_id, agent_profile_id=profile.id)
         if previous is not None:
             previous_active_id = previous.id
     if payload.reuse_active:
-        session = await repo.get_active_session_by_scope(scope_type, scope_id)
+        session = await repo.get_active_session_by_scope(scope_type, scope_id, agent_profile_id=profile.id)
     if session is None:
         if not payload.reuse_active:
             runtime = getattr(request.app.state, "runtime", None)
             if runtime is not None:
-                manager = SessionManager(runtime, settings.workspace_root)
+                manager = SessionManager(runtime)
                 _, new_session_id = await manager.start_new_session_for_scope(
                     user_id=user.id,
+                    agent_profile_id=profile.id,
+                    agent_profile_slug=profile.slug,
                     scope_type=scope_type,
                     scope_id=scope_id,
                     origin=origin,
@@ -104,6 +127,7 @@ async def create_session(
         if session is None:
             session = await repo.create_session(
                 user.id,
+                agent_profile_id=profile.id,
                 origin=origin,
                 scope_type=scope_type,
                 scope_id=scope_id,
@@ -138,6 +162,8 @@ async def create_session(
     return SessionOut(
         id=session.id,
         user_id=session.user_id,
+        agent_profile_id=getattr(session, "agent_profile_id", None),
+        agent_profile_slug=profile.slug,
         created_at=session.created_at,
         status=session.status,
         scope_type=session.scope_type or "private",
@@ -159,9 +185,12 @@ async def create_session(
 @router.get("/{session_id}", response_model=SessionOut)
 async def get_session(session_id: str, request: Request, repo: Repository = Depends(get_repo)) -> SessionOut:
     session = await require_session_access(request, repo, session_id)
+    profile = await _session_profile(repo, session)
     return SessionOut(
         id=session.id,
         user_id=session.user_id,
+        agent_profile_id=getattr(session, "agent_profile_id", None),
+        agent_profile_slug=getattr(profile, "slug", None),
         created_at=session.created_at,
         status=session.status,
         scope_type=session.scope_type or "private",
@@ -184,6 +213,7 @@ async def get_session(session_id: str, request: Request, repo: Repository = Depe
 async def get_session_detail(session_id: str, request: Request, repo: Repository = Depends(get_repo)) -> SessionDetailOut:
     session = await require_session_access(request, repo, session_id)
     user = await repo.get_user_by_id(session.user_id)
+    profile = await _session_profile(repo, session)
     messages = await repo.list_messages(session_id)
     tool_runs = await repo.list_tool_runs_by_session(session_id)
     pending_user_prompts = await repo.list_pending_user_prompts(session_id=session_id, limit=20)
@@ -191,6 +221,8 @@ async def get_session_detail(session_id: str, request: Request, repo: Repository
     return SessionDetailOut(
         id=session.id,
         user_id=session.user_id,
+        agent_profile_id=getattr(session, "agent_profile_id", None),
+        agent_profile_slug=getattr(profile, "slug", None),
         user=(user.display_name or user.transport_user_id) if user else session.user_id,
         status=session.status,
         scope_type=session.scope_type or "private",

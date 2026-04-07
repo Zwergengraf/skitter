@@ -23,17 +23,22 @@ async def list_users(
     require_admin(request)
     await repo.delete_stale_pending_users(PENDING_REQUEST_TTL_MINUTES)
     users = await repo.list_users(limit=limit)
-    return [
-        UserListItem(
-            id=user.id,
-            transport_user_id=user.transport_user_id,
-            display_name=user.display_name or (user.meta or {}).get("display_name"),
-            username=(user.meta or {}).get("username"),
-            avatar_url=(user.meta or {}).get("avatar_url"),
-            approved=user.approved,
+    items: list[UserListItem] = []
+    for user in users:
+        default_profile = await repo.get_default_agent_profile(user.id)
+        items.append(
+            UserListItem(
+                id=user.id,
+                transport_user_id=user.transport_user_id,
+                display_name=user.display_name or (user.meta or {}).get("display_name"),
+                username=(user.meta or {}).get("username"),
+                avatar_url=(user.meta or {}).get("avatar_url"),
+                approved=user.approved,
+                default_profile_id=getattr(default_profile, "id", None),
+                default_profile_slug=getattr(default_profile, "slug", None),
+            )
         )
-        for user in users
-    ]
+    return items
 
 
 @router.patch("/{user_id}")

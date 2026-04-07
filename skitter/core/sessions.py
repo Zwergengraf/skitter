@@ -10,7 +10,8 @@ from ..data.repositories import Repository
 from .memory_service import MemoryService
 from .runtime import AgentRuntime
 from .llm import resolve_model_name
-from .workspace import ensure_user_workspace, user_workspace_root
+from .profiles import private_profile_scope_id
+from .workspace import ensure_profile_workspace, user_workspace_root
 
 
 def normalize_session_summary(summary: object) -> str:
@@ -55,9 +56,10 @@ def write_session_summary_file(
     session_id: str,
     summary: object,
     *,
+    profile_slug: str | None = None,
     target_date: date | None = None,
 ) -> tuple[Path, str]:
-    path = user_workspace_root(user_id) / session_summary_relative_path(target_date)
+    path = user_workspace_root(user_id, profile_slug) / session_summary_relative_path(target_date)
     path.parent.mkdir(parents=True, exist_ok=True)
     existing = ""
     if path.exists():
@@ -69,17 +71,25 @@ def write_session_summary_file(
 
 
 class SessionManager:
-    def __init__(self, runtime: AgentRuntime, workspace_root: str, memory_service: MemoryService | None = None) -> None:
+    def __init__(self, runtime: AgentRuntime, memory_service: MemoryService | None = None) -> None:
         self.runtime = runtime
-        self.workspace_root = Path(workspace_root)
         self._scope_session: dict[str, str] = {}
         self.memory_service = memory_service or MemoryService()
 
-    async def get_or_create_session(self, user_id: str, channel_id: str) -> str:
+    async def get_or_create_session(
+        self,
+        user_id: str,
+        channel_id: str,
+        *,
+        agent_profile_id: str,
+        agent_profile_slug: str,
+    ) -> str:
         return await self.get_or_create_session_for_scope(
             user_id=user_id,
+            agent_profile_id=agent_profile_id,
+            agent_profile_slug=agent_profile_slug,
             scope_type="private",
-            scope_id=f"private:{user_id}",
+            scope_id=private_profile_scope_id(agent_profile_id),
             origin="discord",
             cache_key=channel_id,
         )
@@ -87,14 +97,16 @@ class SessionManager:
     async def get_or_create_session_for_scope(
         self,
         user_id: str,
+        agent_profile_id: str,
+        agent_profile_slug: str,
         scope_type: str,
         scope_id: str,
         origin: str,
         cache_key: str | None = None,
     ) -> str:
-        key = cache_key or scope_id
+        key = f"{agent_profile_id}:{cache_key or scope_id}"
         cached = self._scope_session.get(key)
-        ensure_user_workspace(user_id)
+        ensure_profile_workspace(user_id, agent_profile_slug)
         async with SessionLocal() as session:
             repo = Repository(session)
             if cached:
@@ -103,35 +115,44 @@ class SessionManager:
                     cached_session is not None
                     and cached_session.status == "active"
                     and cached_session.user_id == user_id
+                    and (cached_session.agent_profile_id or "") == agent_profile_id
                     and (cached_session.scope_type or "private") == scope_type
                     and (cached_session.scope_id or "") == scope_id
                 ):
-                    self._scope_session[scope_id] = cached_session.id
+                    self._scope_session[f"{agent_profile_id}:{scope_id}"] = cached_session.id
                     return cached_session.id
                 self._scope_session.pop(key, None)
-                if key != scope_id:
-                    self._scope_session.pop(scope_id, None)
-            active = await repo.get_active_session_by_scope(scope_type, scope_id)
+                if key != f"{agent_profile_id}:{scope_id}":
+                    self._scope_session.pop(f"{agent_profile_id}:{scope_id}", None)
+            active = await repo.get_active_session_by_scope(scope_type, scope_id, agent_profile_id=agent_profile_id)
             if active is None:
                 model_name = resolve_model_name(None, purpose="main")
                 active = await repo.create_session(
                     user_id,
+                    agent_profile_id=agent_profile_id,
                     model=model_name,
                     origin=origin,
                     scope_type=scope_type,
                     scope_id=scope_id,
                 )
         self._scope_session[key] = active.id
-        self._scope_session[scope_id] = active.id
+        self._scope_session[f"{agent_profile_id}:{scope_id}"] = active.id
         return active.id
 
     async def start_new_session(
-        self, user_id: str, channel_id: str
+        self,
+        user_id: str,
+        channel_id: str,
+        *,
+        agent_profile_id: str,
+        agent_profile_slug: str,
     ) -> tuple[Optional[Path], str]:
         return await self.start_new_session_for_scope(
             user_id=user_id,
+            agent_profile_id=agent_profile_id,
+            agent_profile_slug=agent_profile_slug,
             scope_type="private",
-            scope_id=f"private:{user_id}",
+            scope_id=private_profile_scope_id(agent_profile_id),
             origin="discord",
             channel_id=channel_id,
         )
@@ -139,13 +160,17 @@ class SessionManager:
     async def start_new_session_for_origin(
         self,
         user_id: str,
+        agent_profile_id: str,
+        agent_profile_slug: str,
         origin: str,
         channel_id: str | None = None,
     ) -> tuple[Optional[Path], str]:
         return await self.start_new_session_for_scope(
             user_id=user_id,
+            agent_profile_id=agent_profile_id,
+            agent_profile_slug=agent_profile_slug,
             scope_type="private",
-            scope_id=f"private:{user_id}",
+            scope_id=private_profile_scope_id(agent_profile_id),
             origin=origin,
             channel_id=channel_id,
         )
@@ -153,15 +178,17 @@ class SessionManager:
     async def start_new_session_for_scope(
         self,
         user_id: str,
+        agent_profile_id: str,
+        agent_profile_slug: str,
         scope_type: str,
         scope_id: str,
         origin: str,
         channel_id: str | None = None,
     ) -> tuple[Optional[Path], str]:
-        ensure_user_workspace(user_id)
+        ensure_profile_workspace(user_id, agent_profile_slug)
         async with SessionLocal() as session:
             repo = Repository(session)
-            active = await repo.get_active_session_by_scope(scope_type, scope_id)
+            active = await repo.get_active_session_by_scope(scope_type, scope_id, agent_profile_id=agent_profile_id)
             if active is not None:
                 await repo.end_session(active.id, status="ended")
                 if scope_type == "private":
@@ -179,14 +206,15 @@ class SessionManager:
             model_name = resolve_model_name(None, purpose="main")
             new_session = await repo.create_session(
                 user_id,
+                agent_profile_id=agent_profile_id,
                 model=model_name,
                 origin=origin,
                 scope_type=scope_type,
                 scope_id=scope_id,
             )
         if channel_id:
-            self._scope_session[channel_id] = new_session.id
-        self._scope_session[scope_id] = new_session.id
+            self._scope_session[f"{agent_profile_id}:{channel_id}"] = new_session.id
+        self._scope_session[f"{agent_profile_id}:{scope_id}"] = new_session.id
         await self.runtime.event_bus.emit_admin(
             kind="session.started",
             level="info",
@@ -199,9 +227,16 @@ class SessionManager:
         )
         return None, new_session.id
 
-    async def reindex_memories(self, user_id: str) -> dict:
-        memory_root = user_workspace_root(user_id) / "memory"
-        return await self.memory_service.reindex_all(user_id, memory_root)
+    async def reindex_memories(self, user_id: str, *, agent_profile_id: str, agent_profile_slug: str) -> dict:
+        memory_root = user_workspace_root(user_id, agent_profile_slug) / "memory"
+        return await self.memory_service.reindex_all(user_id, memory_root, agent_profile_id=agent_profile_id)
 
-    async def search_memories(self, user_id: str, query: str, top_k: int = 5) -> list[dict]:
-        return await self.memory_service.search(user_id, query, top_k)
+    async def search_memories(
+        self,
+        user_id: str,
+        query: str,
+        *,
+        agent_profile_id: str,
+        top_k: int = 5,
+    ) -> list[dict]:
+        return await self.memory_service.search(user_id, query, top_k, agent_profile_id=agent_profile_id)

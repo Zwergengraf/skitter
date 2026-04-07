@@ -21,9 +21,23 @@ class User(Base):
     id: Mapped[str] = mapped_column(String, primary_key=True)
     transport_user_id: Mapped[str] = mapped_column(String, index=True)
     display_name: Mapped[str | None] = mapped_column(String, nullable=True)
+    default_profile_id: Mapped[str | None] = mapped_column(String, index=True, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     meta: Mapped[dict] = mapped_column(JSON, default=dict)
     approved: Mapped[bool] = mapped_column(default=False)
+
+
+class AgentProfile(Base):
+    __tablename__ = "agent_profiles"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    user_id: Mapped[str] = mapped_column(String, index=True)
+    slug: Mapped[str] = mapped_column(String, index=True)
+    name: Mapped[str] = mapped_column(String)
+    status: Mapped[str] = mapped_column(String, default="active")
+    meta: Mapped[dict] = mapped_column(JSON, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
 class Session(Base):
@@ -31,6 +45,7 @@ class Session(Base):
 
     id: Mapped[str] = mapped_column(String, primary_key=True)
     user_id: Mapped[str] = mapped_column(String, index=True)
+    agent_profile_id: Mapped[str | None] = mapped_column(String, index=True, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     status: Mapped[str] = mapped_column(String, default="active")
     scope_type: Mapped[str] = mapped_column(String, default="private")
@@ -82,6 +97,7 @@ class LlmUsage(Base):
     id: Mapped[str] = mapped_column(String, primary_key=True)
     session_id: Mapped[str] = mapped_column(String, index=True)
     user_id: Mapped[str] = mapped_column(String, index=True)
+    agent_profile_id: Mapped[str | None] = mapped_column(String, index=True, nullable=True)
     model: Mapped[str] = mapped_column(String)
     input_tokens: Mapped[int] = mapped_column(Integer, default=0)
     output_tokens: Mapped[int] = mapped_column(Integer, default=0)
@@ -129,6 +145,7 @@ class RunTrace(Base):
     id: Mapped[str] = mapped_column(String, primary_key=True)
     session_id: Mapped[str] = mapped_column(String, index=True)
     user_id: Mapped[str] = mapped_column(String, index=True)
+    agent_profile_id: Mapped[str | None] = mapped_column(String, index=True, nullable=True)
     message_id: Mapped[str] = mapped_column(String, index=True)
     origin: Mapped[str] = mapped_column(String, default="unknown")
     status: Mapped[str] = mapped_column(String, default="running")
@@ -164,6 +181,7 @@ class MemoryEntry(Base):
 
     id: Mapped[str] = mapped_column(String, primary_key=True)
     user_id: Mapped[str] = mapped_column(String, index=True)
+    agent_profile_id: Mapped[str | None] = mapped_column(String, index=True, nullable=True)
     embedding: Mapped[list[float]] = mapped_column(Vector(), nullable=False)
     summary: Mapped[str] = mapped_column(Text)
     tags: Mapped[list] = mapped_column(JSON, default=list)
@@ -175,11 +193,26 @@ class Secret(Base):
 
     id: Mapped[str] = mapped_column(String, primary_key=True)
     user_id: Mapped[str] = mapped_column(String, index=True)
+    agent_profile_id: Mapped[str | None] = mapped_column(String, index=True, nullable=True)
     name: Mapped[str] = mapped_column(String, index=True)
     value_encrypted: Mapped[str] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     last_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class SurfaceProfileOverride(Base):
+    __tablename__ = "surface_profile_overrides"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    user_id: Mapped[str] = mapped_column(String, index=True)
+    agent_profile_id: Mapped[str] = mapped_column(String, index=True)
+    origin: Mapped[str] = mapped_column(String, index=True)
+    surface_kind: Mapped[str] = mapped_column(String, index=True)
+    surface_id: Mapped[str] = mapped_column(String, index=True)
+    meta: Mapped[dict] = mapped_column(JSON, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
 class AuthToken(Base):
@@ -235,6 +268,7 @@ class ScheduledJob(Base):
 
     id: Mapped[str] = mapped_column(String, primary_key=True)
     user_id: Mapped[str] = mapped_column(String, index=True)
+    agent_profile_id: Mapped[str | None] = mapped_column(String, index=True, nullable=True)
     channel_id: Mapped[str] = mapped_column(String)
     target_scope_type: Mapped[str] = mapped_column(String, default="private")
     target_scope_id: Mapped[str] = mapped_column(String, default="")
@@ -272,6 +306,7 @@ class AgentJob(Base):
 
     id: Mapped[str] = mapped_column(String, primary_key=True)
     user_id: Mapped[str] = mapped_column(String, index=True)
+    agent_profile_id: Mapped[str | None] = mapped_column(String, index=True, nullable=True)
     session_id: Mapped[str | None] = mapped_column(String, index=True, nullable=True)
     kind: Mapped[str] = mapped_column(String, default="sub_agent")
     name: Mapped[str] = mapped_column(String, default="Background job")

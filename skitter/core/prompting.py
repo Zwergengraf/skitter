@@ -44,11 +44,11 @@ def _render_context_template(content: str, user_id: str) -> str:
     return rendered
 
 
-def build_context_block(user_id: str) -> str | None:
+def build_context_block(user_id: str, profile_slug: str | None = None) -> str | None:
     files = _parse_context_files()
     if not files:
         return None
-    root = user_workspace_root(user_id)
+    root = user_workspace_root(user_id, profile_slug)
     sections = []
     for filename in files:
         path = root / filename
@@ -66,9 +66,9 @@ def build_context_block(user_id: str) -> str | None:
     return "\n\n".join(sections)
 
 
-def build_skills_index(user_id: str) -> str | None:
+def build_skills_index(user_id: str, profile_slug: str | None = None) -> str | None:
     registry = SkillRegistry()
-    skills = registry.list_skills(user_id)
+    skills = registry.list_skills(user_id, profile_slug=profile_slug)
     if not skills:
         return None
     lines = [
@@ -123,11 +123,11 @@ def build_mcp_index() -> str | None:
     return "\n".join(lines)
 
 
-def build_system_prompt(user_id: str) -> str:
+def build_system_prompt(user_id: str, profile_slug: str | None = None) -> str:
     # Important: Only include the BOOTSTRAP.md content if it's present.
     # This allows for one-time setup instructions without affecting the prompt on subsequent runs.
     # The BOOTSTRAP.md can be used to set up the agent's identity, initial goals, or any other necessary context that should only be provided once.
-    bootstrap_file = user_workspace_root(user_id) / "BOOTSTRAP.md"
+    bootstrap_file = user_workspace_root(user_id, profile_slug) / "BOOTSTRAP.md"
     if bootstrap_file.exists():
         try:
             content = bootstrap_file.read_text(encoding="utf-8").strip()
@@ -138,13 +138,13 @@ def build_system_prompt(user_id: str) -> str:
 
     base = load_base_prompt().strip()
     parts = [base]
-    skills_index = build_skills_index(user_id)
+    skills_index = build_skills_index(user_id, profile_slug)
     if skills_index:
         parts.append(skills_index)
     mcp_index = build_mcp_index()
     if mcp_index:
         parts.append(mcp_index)
-    context = build_context_block(user_id)
+    context = build_context_block(user_id, profile_slug)
     if context:
         parts.append(context)
     return "\n\n".join(part for part in parts if part).strip()

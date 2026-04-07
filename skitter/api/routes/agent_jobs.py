@@ -15,6 +15,7 @@ def _to_job_list_item(job) -> AgentJobListItem:
     return AgentJobListItem(
         id=job.id,
         user_id=job.user_id,
+        agent_profile_id=getattr(job, "agent_profile_id", None),
         session_id=job.session_id,
         kind=job.kind,
         name=job.name,
@@ -45,10 +46,16 @@ async def list_agent_jobs(
     repo: Repository = Depends(get_repo),
     status: str | None = Query(default=None),
     user_id: str | None = Query(default=None),
+    agent_profile_id: str | None = Query(default=None),
     limit: int = Query(default=100, ge=1, le=500),
 ) -> list[AgentJobListItem]:
     require_admin(request)
-    rows = await repo.list_agent_jobs_all(limit=limit, status=status, user_id=user_id)
+    rows = await repo.list_agent_jobs_all(
+        limit=limit,
+        status=status,
+        user_id=user_id,
+        agent_profile_id=agent_profile_id,
+    )
     return [_to_job_list_item(job) for job in rows]
 
 

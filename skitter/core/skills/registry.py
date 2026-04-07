@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 from typing import List, Optional
 
 from .loader import SkillDetail, SkillLoader, SkillMetadata
@@ -15,16 +16,16 @@ class SkillRecord(SkillMetadata):
 
 
 class SkillRegistry:
-    def list_skills(self, user_id: Optional[str] = None) -> List[SkillRecord]:
+    def list_skills(self, user_id: Optional[str] = None, profile_slug: str | None = None) -> List[SkillRecord]:
         if not user_id:
             return []
-        user_root = user_workspace_root(user_id) / "skills"
+        user_root = user_workspace_root(user_id, profile_slug) / "skills"
         return self._load_from_root(user_root, origin="user")
 
-    def load_skill(self, name: str, user_id: Optional[str] = None) -> Optional[SkillDetail]:
+    def load_skill(self, name: str, user_id: Optional[str] = None, profile_slug: str | None = None) -> Optional[SkillDetail]:
         if not user_id:
             return None
-        user_root = user_workspace_root(user_id) / "skills"
+        user_root = user_workspace_root(user_id, profile_slug) / "skills"
         return SkillLoader(user_root).load_skill(name)
 
     def _load_from_root(self, root: Path, origin: str) -> List[SkillRecord]:

@@ -18,15 +18,66 @@ ALTER TABLE users
 ALTER TABLE users
     ADD COLUMN IF NOT EXISTS display_name TEXT;
 
+ALTER TABLE users
+    ADD COLUMN IF NOT EXISTS default_profile_id TEXT;
+
+CREATE TABLE IF NOT EXISTS agent_profiles (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL,
+    slug TEXT NOT NULL,
+    name TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'active',
+    meta JSONB NOT NULL DEFAULT '{}'::jsonb,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS agent_profiles_user_idx
+    ON agent_profiles (user_id);
+
+CREATE UNIQUE INDEX IF NOT EXISTS agent_profiles_user_slug_idx
+    ON agent_profiles (user_id, lower(slug));
+
+INSERT INTO agent_profiles (id, user_id, slug, name, status, meta, created_at, updated_at)
+SELECT
+    'profile-default:' || users.id,
+    users.id,
+    'default',
+    'Default',
+    'active',
+    '{}'::jsonb,
+    NOW(),
+    NOW()
+FROM users
+WHERE NOT EXISTS (
+    SELECT 1
+    FROM agent_profiles
+    WHERE agent_profiles.user_id = users.id
+      AND lower(agent_profiles.slug) = 'default'
+);
+
+UPDATE users
+SET default_profile_id = 'profile-default:' || users.id
+WHERE (default_profile_id IS NULL OR default_profile_id = '')
+  AND EXISTS (
+    SELECT 1
+    FROM agent_profiles
+    WHERE agent_profiles.id = 'profile-default:' || users.id
+  );
+
 CREATE TABLE IF NOT EXISTS sessions (
     id TEXT PRIMARY KEY,
     user_id TEXT NOT NULL,
+    agent_profile_id TEXT,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     status TEXT NOT NULL DEFAULT 'active',
     scope_type TEXT NOT NULL DEFAULT 'private',
     scope_id TEXT NOT NULL DEFAULT '',
     model TEXT
 );
+
+ALTER TABLE sessions
+    ADD COLUMN IF NOT EXISTS agent_profile_id TEXT;
 
 ALTER TABLE sessions
     ADD COLUMN IF NOT EXISTS model TEXT;
@@ -53,12 +104,23 @@ END
 WHERE scope_type IS NULL OR scope_type = '';
 
 UPDATE sessions
+SET agent_profile_id = COALESCE(agent_profile_id, users.default_profile_id)
+FROM users
+WHERE users.id = sessions.user_id
+  AND (sessions.agent_profile_id IS NULL OR sessions.agent_profile_id = '');
+
+UPDATE sessions
 SET scope_id = CASE
-    WHEN scope_type = 'private' THEN 'private:' || user_id
+    WHEN scope_type = 'private' THEN 'private:' || COALESCE(agent_profile_id, user_id)
     WHEN scope_type = 'system' THEN 'system:' || status || ':' || id
     ELSE 'legacy:' || id
 END
 WHERE scope_id IS NULL OR scope_id = '';
+
+UPDATE sessions
+SET scope_id = 'private:' || COALESCE(agent_profile_id, user_id)
+WHERE scope_type = 'private'
+  AND scope_id = 'private:' || user_id;
 
 ALTER TABLE sessions
     ALTER COLUMN scope_type SET DEFAULT 'private';
@@ -160,6 +222,7 @@ CREATE TABLE IF NOT EXISTS llm_usage (
     id TEXT PRIMARY KEY,
     session_id TEXT NOT NULL,
     user_id TEXT NOT NULL,
+    agent_profile_id TEXT,
     model TEXT NOT NULL,
     input_tokens INTEGER NOT NULL DEFAULT 0,
     output_tokens INTEGER NOT NULL DEFAULT 0,
@@ -167,6 +230,9 @@ CREATE TABLE IF NOT EXISTS llm_usage (
     cost DOUBLE PRECISION NOT NULL DEFAULT 0,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+
+ALTER TABLE llm_usage
+    ADD COLUMN IF NOT EXISTS agent_profile_id TEXT;
 
 CREATE TABLE IF NOT EXISTS tool_runs (
     id TEXT PRIMARY KEY,
@@ -296,6 +362,7 @@ CREATE TABLE IF NOT EXISTS run_traces (
     id TEXT PRIMARY KEY,
     session_id TEXT NOT NULL,
     user_id TEXT NOT NULL,
+    agent_profile_id TEXT,
     message_id TEXT NOT NULL,
     origin TEXT NOT NULL DEFAULT 'unknown',
     status TEXT NOT NULL DEFAULT 'running',
@@ -314,6 +381,9 @@ CREATE TABLE IF NOT EXISTS run_traces (
     finished_at TIMESTAMPTZ,
     duration_ms INTEGER
 );
+
+ALTER TABLE run_traces
+    ADD COLUMN IF NOT EXISTS agent_profile_id TEXT;
 
 CREATE INDEX IF NOT EXISTS run_traces_session_started_idx
     ON run_traces (session_id, started_at DESC);
@@ -339,11 +409,15 @@ CREATE INDEX IF NOT EXISTS run_trace_events_run_created_idx
 CREATE TABLE IF NOT EXISTS memory_entries (
     id TEXT PRIMARY KEY,
     user_id TEXT NOT NULL,
+    agent_profile_id TEXT,
     embedding vector NOT NULL,
     summary TEXT NOT NULL,
     tags JSONB NOT NULL DEFAULT '[]'::jsonb,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+
+ALTER TABLE memory_entries
+    ADD COLUMN IF NOT EXISTS agent_profile_id TEXT;
 
 CREATE INDEX IF NOT EXISTS memory_entries_user_id_idx
     ON memory_entries (user_id);
@@ -374,6 +448,7 @@ END $$;
 CREATE TABLE IF NOT EXISTS secrets (
     id TEXT PRIMARY KEY,
     user_id TEXT NOT NULL,
+    agent_profile_id TEXT,
     name TEXT NOT NULL,
     value_encrypted TEXT NOT NULL,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -381,16 +456,22 @@ CREATE TABLE IF NOT EXISTS secrets (
     last_used_at TIMESTAMPTZ
 );
 
+ALTER TABLE secrets
+    ADD COLUMN IF NOT EXISTS agent_profile_id TEXT;
+
 DO $$
 BEGIN
-    IF NOT EXISTS (
+    IF EXISTS (
         SELECT 1
         FROM pg_constraint
         WHERE conname = 'secrets_user_id_name_key'
     ) THEN
-        ALTER TABLE secrets ADD CONSTRAINT secrets_user_id_name_key UNIQUE (user_id, name);
+        ALTER TABLE secrets DROP CONSTRAINT secrets_user_id_name_key;
     END IF;
 END $$;
+
+CREATE UNIQUE INDEX IF NOT EXISTS secrets_user_profile_name_idx
+    ON secrets (user_id, COALESCE(agent_profile_id, ''), name);
 
 CREATE TABLE IF NOT EXISTS auth_tokens (
     id TEXT PRIMARY KEY,
@@ -446,9 +527,28 @@ CREATE TABLE IF NOT EXISTS channels (
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
+CREATE TABLE IF NOT EXISTS surface_profile_overrides (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL,
+    agent_profile_id TEXT NOT NULL,
+    origin TEXT NOT NULL,
+    surface_kind TEXT NOT NULL,
+    surface_id TEXT NOT NULL,
+    meta JSONB NOT NULL DEFAULT '{}'::jsonb,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS surface_profile_overrides_unique_idx
+    ON surface_profile_overrides (user_id, origin, surface_kind, surface_id);
+
+CREATE INDEX IF NOT EXISTS surface_profile_overrides_profile_idx
+    ON surface_profile_overrides (agent_profile_id);
+
 CREATE TABLE IF NOT EXISTS scheduled_jobs (
     id TEXT PRIMARY KEY,
     user_id TEXT NOT NULL,
+    agent_profile_id TEXT,
     channel_id TEXT NOT NULL,
     target_scope_type TEXT NOT NULL DEFAULT 'private',
     target_scope_id TEXT NOT NULL DEFAULT '',
@@ -468,6 +568,9 @@ CREATE TABLE IF NOT EXISTS scheduled_jobs (
 );
 
 ALTER TABLE scheduled_jobs
+    ADD COLUMN IF NOT EXISTS agent_profile_id TEXT;
+
+ALTER TABLE scheduled_jobs
     ADD COLUMN IF NOT EXISTS target_scope_type TEXT;
 
 ALTER TABLE scheduled_jobs
@@ -483,12 +586,23 @@ ALTER TABLE scheduled_jobs
     ADD COLUMN IF NOT EXISTS model TEXT;
 
 UPDATE scheduled_jobs
+SET agent_profile_id = COALESCE(agent_profile_id, users.default_profile_id)
+FROM users
+WHERE users.id = scheduled_jobs.user_id
+  AND (scheduled_jobs.agent_profile_id IS NULL OR scheduled_jobs.agent_profile_id = '');
+
+UPDATE scheduled_jobs
 SET target_scope_type = 'private'
 WHERE target_scope_type IS NULL OR target_scope_type = '';
 
 UPDATE scheduled_jobs
-SET target_scope_id = 'private:' || user_id
+SET target_scope_id = 'private:' || COALESCE(agent_profile_id, user_id)
 WHERE target_scope_id IS NULL OR target_scope_id = '';
+
+UPDATE scheduled_jobs
+SET target_scope_id = 'private:' || COALESCE(agent_profile_id, user_id)
+WHERE target_scope_type = 'private'
+  AND target_scope_id = 'private:' || user_id;
 
 UPDATE scheduled_jobs
 SET target_origin = COALESCE(target_origin, 'discord')
@@ -529,6 +643,7 @@ CREATE TABLE IF NOT EXISTS scheduled_runs (
 CREATE TABLE IF NOT EXISTS agent_jobs (
     id TEXT PRIMARY KEY,
     user_id TEXT NOT NULL,
+    agent_profile_id TEXT,
     session_id TEXT,
     kind TEXT NOT NULL DEFAULT 'sub_agent',
     name TEXT NOT NULL DEFAULT 'Background job',
@@ -554,6 +669,9 @@ CREATE TABLE IF NOT EXISTS agent_jobs (
     delivered_at TIMESTAMPTZ,
     delivery_error TEXT
 );
+
+ALTER TABLE agent_jobs
+    ADD COLUMN IF NOT EXISTS agent_profile_id TEXT;
 
 ALTER TABLE agent_jobs
     ADD COLUMN IF NOT EXISTS session_id TEXT;
@@ -628,15 +746,69 @@ ALTER TABLE agent_jobs
     ADD COLUMN IF NOT EXISTS delivery_error TEXT;
 
 UPDATE agent_jobs
+SET agent_profile_id = COALESCE(agent_profile_id, users.default_profile_id)
+FROM users
+WHERE users.id = agent_jobs.user_id
+  AND (agent_jobs.agent_profile_id IS NULL OR agent_jobs.agent_profile_id = '');
+
+UPDATE agent_jobs
 SET target_scope_type = 'private'
 WHERE target_scope_type IS NULL OR target_scope_type = '';
 
 UPDATE agent_jobs
-SET target_scope_id = 'private:' || user_id
+SET target_scope_id = 'private:' || COALESCE(agent_profile_id, user_id)
 WHERE target_scope_id IS NULL OR target_scope_id = '';
+
+UPDATE agent_jobs
+SET target_scope_id = 'private:' || COALESCE(agent_profile_id, user_id)
+WHERE target_scope_type = 'private'
+  AND target_scope_id = 'private:' || user_id;
 
 CREATE INDEX IF NOT EXISTS agent_jobs_user_created_idx
     ON agent_jobs (user_id, created_at DESC);
 
 CREATE INDEX IF NOT EXISTS agent_jobs_status_created_idx
     ON agent_jobs (status, created_at ASC);
+
+CREATE INDEX IF NOT EXISTS sessions_agent_profile_idx
+    ON sessions (agent_profile_id);
+
+CREATE INDEX IF NOT EXISTS llm_usage_agent_profile_idx
+    ON llm_usage (agent_profile_id);
+
+CREATE INDEX IF NOT EXISTS run_traces_agent_profile_idx
+    ON run_traces (agent_profile_id);
+
+CREATE INDEX IF NOT EXISTS memory_entries_agent_profile_idx
+    ON memory_entries (agent_profile_id);
+
+CREATE INDEX IF NOT EXISTS secrets_agent_profile_idx
+    ON secrets (agent_profile_id);
+
+CREATE INDEX IF NOT EXISTS scheduled_jobs_agent_profile_idx
+    ON scheduled_jobs (agent_profile_id);
+
+CREATE INDEX IF NOT EXISTS agent_jobs_agent_profile_idx
+    ON agent_jobs (agent_profile_id);
+
+UPDATE llm_usage
+SET agent_profile_id = COALESCE(llm_usage.agent_profile_id, sessions.agent_profile_id)
+FROM sessions
+WHERE sessions.id = llm_usage.session_id
+  AND (llm_usage.agent_profile_id IS NULL OR llm_usage.agent_profile_id = '');
+
+UPDATE run_traces
+SET agent_profile_id = COALESCE(run_traces.agent_profile_id, sessions.agent_profile_id)
+FROM sessions
+WHERE sessions.id = run_traces.session_id
+  AND (run_traces.agent_profile_id IS NULL OR run_traces.agent_profile_id = '');
+
+UPDATE memory_entries
+SET agent_profile_id = COALESCE(memory_entries.agent_profile_id, users.default_profile_id)
+FROM users
+WHERE users.id = memory_entries.user_id
+  AND (memory_entries.agent_profile_id IS NULL OR memory_entries.agent_profile_id = '');
+
+UPDATE secrets
+SET agent_profile_id = NULL
+WHERE agent_profile_id = '';

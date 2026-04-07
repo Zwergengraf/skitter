@@ -402,6 +402,7 @@ struct ChatView: View {
                 .foregroundStyle(Color.accentColor)
             Text("Skitter")
                 .font(.subheadline.weight(.semibold))
+            profileMenu
             Spacer(minLength: 8)
             Button {
                 state.toggleChatPinned()
@@ -424,6 +425,56 @@ struct ChatView: View {
         .padding(.vertical, 4)
         .frame(minHeight: 30, maxHeight: 30)
         .background(.ultraThinMaterial)
+    }
+
+    private var profileMenu: some View {
+        Menu {
+            if state.availableProfiles.isEmpty {
+                Text("No profiles loaded")
+            } else {
+                ForEach(state.availableProfiles) { profile in
+                    Button {
+                        Task { await state.useProfile(slug: profile.slug) }
+                    } label: {
+                        HStack {
+                            Text(profile.name)
+                            Spacer()
+                            if profile.slug == state.activeProfileSlug {
+                                Image(systemName: "checkmark")
+                            } else if profile.isDefault && state.selectedProfileSlug.isEmpty {
+                                Image(systemName: "arrow.uturn.backward.circle")
+                            }
+                        }
+                    }
+                }
+            }
+            if !state.selectedProfileSlug.isEmpty {
+                Divider()
+                Button("Use Server Default") {
+                    Task { await state.useProfile(slug: nil) }
+                }
+            }
+            Divider()
+            Button("Refresh Profiles") {
+                Task { await state.refreshProfiles() }
+            }
+        } label: {
+            HStack(spacing: 6) {
+                Image(systemName: "person.crop.circle")
+                    .font(.system(size: 11, weight: .semibold))
+                Text(state.activeProfileMenuTitle)
+                    .font(.caption.weight(.medium))
+                    .lineLimit(1)
+            }
+            .padding(.horizontal, 8)
+            .padding(.vertical, 4)
+            .background(
+                Capsule()
+                    .fill(Color.secondary.opacity(colorScheme == .dark ? 0.22 : 0.10))
+            )
+        }
+        .menuStyle(.borderlessButton)
+        .fixedSize()
     }
 
     @ViewBuilder

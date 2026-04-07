@@ -8,6 +8,7 @@ final class AppModel: ObservableObject {
     @Published private(set) var health: HealthState = .checking
     @Published private(set) var activity: ActivityState = .idle
     @Published private(set) var currentUser: AuthUser?
+    @Published private(set) var profiles: [AgentProfile] = []
     @Published private(set) var sessionID: String?
     @Published private(set) var messages: [ChatMessage] = []
     @Published private(set) var pendingComposerAttachments: [PendingComposerAttachment] = []
@@ -53,6 +54,35 @@ final class AppModel: ObservableObject {
 
     var latestAssistantMessage: ChatMessage? {
         messages.last(where: { $0.role == .assistant })
+    }
+
+    var selectedProfileSlug: String {
+        settings.selectedProfileSlug.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    var effectiveProfileSlug: String? {
+        let selected = selectedProfileSlug
+        if !selected.isEmpty {
+            return selected
+        }
+        let fallback = currentUser?.defaultProfileSlug?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if !fallback.isEmpty {
+            return fallback
+        }
+        return profiles.first(where: \.isDefault)?.slug ?? profiles.first?.slug
+    }
+
+    var activeProfile: AgentProfile? {
+        guard let slug = effectiveProfileSlug, !slug.isEmpty else {
+            return profiles.first(where: \.isDefault) ?? profiles.first
+        }
+        return profiles.first(where: { $0.slug == slug })
+            ?? profiles.first(where: \.isDefault)
+            ?? profiles.first
+    }
+
+    var activeProfileTitle: String {
+        activeProfile?.name ?? effectiveProfileSlug ?? "Profile"
     }
 
     func start() async {
@@ -181,6 +211,7 @@ final class AppModel: ObservableObject {
     func logout() async {
         settings.eraseAuth()
         currentUser = nil
+        profiles = []
         sessionID = nil
         messages = []
         pendingApprovals = []
@@ -199,6 +230,16 @@ final class AppModel: ObservableObject {
         activity = .idle
         authenticationState = .signedOut
         updateBadgeCount()
+    }
+
+    func useProfile(slug: String?) async {
+        let cleaned = slug?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let current = selectedProfileSlug
+        if cleaned == current || (cleaned.isEmpty && current.isEmpty) {
+            return
+        }
+        settings.selectedProfileSlug = cleaned
+        await applyProfileSelectionChange()
     }
 
     func sendCurrentDraft() async {
@@ -293,7 +334,11 @@ final class AppModel: ObservableObject {
     func createNewSession() async {
         guard let config = apiConfiguration else { return }
         do {
-            _ = try await apiClient.executeCommand(config: config, command: "new")
+            _ = try await apiClient.executeCommand(
+                config: config,
+                command: "new",
+                agentProfileSlug: effectiveProfileSlug
+            )
             sessionID = nil
             messages = []
             pendingApprovals = []
@@ -323,6 +368,19 @@ final class AppModel: ObservableObject {
         }
 
         do {
+            let user = try await apiClient.authMe(config: config)
+            currentUser = user
+            let fetchedProfiles = try await apiClient.listProfiles(config: config)
+            profiles = fetchedProfiles.sorted { lhs, rhs in
+                if lhs.isDefault != rhs.isDefault {
+                    return lhs.isDefault && !rhs.isDefault
+                }
+                return lhs.name.localizedCaseInsensitiveCompare(rhs.name) == .orderedAscending
+            }
+            if !selectedProfileSlug.isEmpty && !profiles.contains(where: { $0.slug == selectedProfileSlug && $0.status != "archived" }) {
+                settings.selectedProfileSlug = ""
+                sessionID = nil
+            }
             let id = try await ensureSession(forceNew: false)
             async let snapshot = apiClient.sessionSnapshot(config: config, sessionID: id)
             async let detail = apiClient.sessionDetail(config: config, sessionID: id)
@@ -333,10 +391,6 @@ final class AppModel: ObservableObject {
             let detailValue = try await detail
             let approvalValue = try await approvals
             let promptValue = try await prompts
-            if currentUser == nil {
-                let user = try await apiClient.authMe(config: config)
-                currentUser = user
-            }
 
             apply(snapshot: snapshotValue, messages: detailValue, approvals: approvalValue, prompts: promptValue)
             if shouldRefreshModels() {
@@ -460,7 +514,12 @@ final class AppModel: ObservableObject {
         if !forceNew, let sessionID {
             return sessionID
         }
-        let id = try await apiClient.createOrResumeSession(config: config, reuseActive: !forceNew, origin: "ios")
+        let id = try await apiClient.createOrResumeSession(
+            config: config,
+            reuseActive: !forceNew,
+            origin: "ios",
+            agentProfileSlug: effectiveProfileSlug
+        )
         if sessionID != id {
             self.sessionID = id
             didPrimeMessageBaseline = false
@@ -521,14 +580,33 @@ final class AppModel: ObservableObject {
             if !argument.isEmpty {
                 args["target_machine"] = argument
             }
+        case "profile":
+            args["raw"] = argument
         default:
             break
         }
 
         do {
-            let result = try await apiClient.executeCommand(config: config, command: command, args: args)
+            let result = try await apiClient.executeCommand(
+                config: config,
+                command: command,
+                args: args,
+                agentProfileSlug: effectiveProfileSlug
+            )
             appendSystemMessage(result.message.isEmpty ? "Command completed." : result.message)
             if command == "new" {
+                sessionID = nil
+                messages = []
+                pendingApprovals = []
+                pendingPrompts = []
+                didPrimeMessageBaseline = false
+            } else if command == "profile",
+                      let data = result.data,
+                      data["apply_client_selection"]?.boolValue == true,
+                      let nextSlug = data["agent_profile_slug"]?.stringValue,
+                      !nextSlug.isEmpty
+            {
+                settings.selectedProfileSlug = nextSlug
                 sessionID = nil
                 messages = []
                 pendingApprovals = []
@@ -614,5 +692,16 @@ final class AppModel: ObservableObject {
                 try? await Task.sleep(nanoseconds: UInt64(interval * 1_000_000_000))
             }
         }
+    }
+
+    private func applyProfileSelectionChange() async {
+        sessionID = nil
+        messages = []
+        pendingApprovals = []
+        pendingPrompts = []
+        didPrimeMessageBaseline = false
+        unreadCount = 0
+        updateBadgeCount()
+        await refreshState(showErrors: true)
     }
 }

@@ -26,6 +26,12 @@ from .graph import (
 )
 from .config import settings
 from .llm import resolve_model_name
+from .profile_context import (
+    reset_current_agent_profile_id,
+    reset_current_agent_profile_slug,
+    set_current_agent_profile_id,
+    set_current_agent_profile_slug,
+)
 from .prompting import build_system_prompt
 from .subagents import SubAgentService, SubAgentTaskSpec
 
@@ -85,6 +91,7 @@ class JobService:
         self,
         *,
         user_id: str,
+        agent_profile_id: str | None,
         session_id: str,
         name: str,
         task: str,
@@ -110,6 +117,7 @@ class JobService:
             repo = Repository(session)
             job = await repo.create_agent_job(
                 user_id=user_id,
+                agent_profile_id=agent_profile_id,
                 session_id=session_id,
                 kind="sub_agent",
                 name=name,
@@ -131,10 +139,22 @@ class JobService:
                 return None
             return job
 
-    async def list_jobs(self, user_id: str, limit: int = 20, status: str | None = None):
+    async def list_jobs(
+        self,
+        user_id: str,
+        *,
+        agent_profile_id: str | None = None,
+        limit: int = 20,
+        status: str | None = None,
+    ):
         async with SessionLocal() as session:
             repo = Repository(session)
-            return await repo.list_agent_jobs(user_id, limit=limit, status=status)
+            return await repo.list_agent_jobs(
+                user_id,
+                agent_profile_id=agent_profile_id,
+                limit=limit,
+                status=status,
+            )
 
     async def cancel_job(self, user_id: str, job_id: str):
         async with SessionLocal() as session:
@@ -207,10 +227,15 @@ class JobService:
     async def _ensure_target_session(self, job, model_name: str) -> str:
         async with SessionLocal() as session:
             repo = Repository(session)
-            target = await repo.get_active_session_by_scope(job.target_scope_type, job.target_scope_id)
+            target = await repo.get_active_session_by_scope(
+                job.target_scope_type,
+                job.target_scope_id,
+                agent_profile_id=getattr(job, "agent_profile_id", None),
+            )
             if target is None:
                 target = await repo.create_session(
                     job.user_id,
+                    agent_profile_id=getattr(job, "agent_profile_id", None),
                     status="active",
                     model=model_name,
                     origin=job.target_origin or "job",
@@ -246,6 +271,12 @@ class JobService:
             model_name = resolve_model_name(job.model, purpose="main")
             target_session_id = await self._ensure_target_session(job, model_name)
             execution_session_id = job.session_id or target_session_id
+            profile_slug: str | None = None
+            if getattr(job, "agent_profile_id", None):
+                async with SessionLocal() as session:
+                    repo = Repository(session)
+                    profile = await repo.get_agent_profile(job.agent_profile_id)
+                    profile_slug = getattr(profile, "slug", None)
             payload = dict(job.payload or {})
             task = str(payload.get("task") or "").strip()
             spec = SubAgentTaskSpec(
@@ -265,19 +296,25 @@ class JobService:
                 "run_id": set_current_run_id(run_id),
                 "message_id": set_current_message_id(message_id),
                 "scope_type": set_current_scope_type(job.target_scope_type or "private"),
-                "scope_id": set_current_scope_id(job.target_scope_id or f"private:{job.user_id}"),
+                "scope_id": set_current_scope_id(
+                    job.target_scope_id or f"private:{getattr(job, 'agent_profile_id', '') or job.user_id}"
+                ),
+                "profile_id": set_current_agent_profile_id(str(getattr(job, "agent_profile_id", "") or "")),
+                "profile_slug": set_current_agent_profile_slug(profile_slug or ""),
             }
             try:
                 result = await self._subagents.run_one(
                     user_id=job.user_id,
                     session_id=execution_session_id,
                     model_name=model_name,
-                    system_prompt=build_system_prompt(job.user_id),
+                    system_prompt=build_system_prompt(job.user_id, profile_slug),
                     spec=spec,
                     max_runtime_seconds=int(limits.get("max_runtime_seconds") or settings.job_limits_max_runtime_seconds),
                     limits_override=limits,
                 )
             finally:
+                reset_current_agent_profile_slug(context_tokens["profile_slug"])
+                reset_current_agent_profile_id(context_tokens["profile_id"])
                 reset_current_scope_id(context_tokens["scope_id"])
                 reset_current_scope_type(context_tokens["scope_type"])
                 reset_current_origin(context_tokens["origin"])

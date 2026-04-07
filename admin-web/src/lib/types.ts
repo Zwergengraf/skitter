@@ -57,6 +57,8 @@ export interface SessionListItem {
   id: string;
   user: string;
   transport: string;
+  agent_profile_id?: string | null;
+  agent_profile_slug?: string | null;
   status: string;
   last_active_at: string | null;
   total_tokens: number;
@@ -87,6 +89,8 @@ export interface SessionDetail {
   id: string;
   user_id: string;
   user: string;
+  agent_profile_id?: string | null;
+  agent_profile_slug?: string | null;
   status: string;
   created_at: string;
   last_active_at?: string | null;
@@ -234,6 +238,18 @@ export interface UserListItem {
   username?: string | null;
   avatar_url?: string | null;
   approved: boolean;
+  default_profile_id?: string | null;
+  default_profile_slug?: string | null;
+}
+
+export interface AgentProfile {
+  id: string;
+  slug: string;
+  name: string;
+  status: string;
+  is_default: boolean;
+  created_at: string;
+  updated_at: string;
 }
 
 export interface ChannelListItem {
@@ -350,6 +366,7 @@ export interface ConfigResponse {
 
 export interface SecretItem {
   name: string;
+  agent_profile_id?: string | null;
   created_at: string;
   updated_at: string;
   last_used_at?: string | null;

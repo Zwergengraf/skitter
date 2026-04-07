@@ -17,6 +17,14 @@ from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, System
 
 from .config import settings
 from .events import EventBus
+from .profile_context import (
+    current_agent_profile_id,
+    current_agent_profile_slug,
+    reset_current_agent_profile_id,
+    reset_current_agent_profile_slug,
+    set_current_agent_profile_id,
+    set_current_agent_profile_slug,
+)
 from .session_memory import ARCHIVE_SUMMARY_PROMPT, CONTEXT_COMPACTION_PROMPT, rough_token_estimate
 from .graph import (
     UserPromptRequired,
@@ -129,12 +137,16 @@ class AgentRuntime:
         run_id: str,
     ) -> tuple[str, str, str, dict[str, object]]:
         internal_user_id = str(envelope.metadata.get("internal_user_id", envelope.user_id))
+        agent_profile_id = str(envelope.metadata.get("agent_profile_id") or "").strip()
+        agent_profile_slug = str(envelope.metadata.get("agent_profile_slug") or "").strip()
         scope_type = str(envelope.metadata.get("scope_type") or "private")
         scope_id = str(envelope.metadata.get("scope_id") or f"private:{internal_user_id}")
         tokens: dict[str, object] = {
             "session": set_current_session_id(session_id),
             "channel": set_current_channel_id(envelope.channel_id),
             "user": set_current_user_id(internal_user_id),
+            "profile_id": set_current_agent_profile_id(agent_profile_id),
+            "profile_slug": set_current_agent_profile_slug(agent_profile_slug),
             "origin": set_current_origin(envelope.origin),
             "run_id": set_current_run_id(run_id),
             "message_id": set_current_message_id(envelope.message_id),
@@ -147,6 +159,8 @@ class AgentRuntime:
         reset_current_scope_id(tokens["scope_id"])
         reset_current_scope_type(tokens["scope_type"])
         reset_current_origin(tokens["origin"])
+        reset_current_agent_profile_slug(tokens["profile_slug"])
+        reset_current_agent_profile_id(tokens["profile_id"])
         reset_current_user_id(tokens["user"])
         reset_current_message_id(tokens["message_id"])
         reset_current_run_id(tokens["run_id"])
@@ -839,6 +853,7 @@ class AgentRuntime:
                     run_id=run_id,
                     session_id=session_id,
                     user_id=user_id,
+                    agent_profile_id=current_agent_profile_id().strip() or None,
                     message_id=message_id,
                     origin=origin,
                     model=model,
@@ -1816,7 +1831,7 @@ Each bullet must be self-contained, explicit, and searchable.
         self._history[session_id] = history
 
     def _ensure_system_prompt(self, history: list[BaseMessage], user_id: str) -> None:
-        prompt = build_system_prompt(user_id)
+        prompt = build_system_prompt(user_id, current_agent_profile_slug().strip() or None)
         history[:] = [
             msg
             for msg in history
@@ -1987,6 +2002,10 @@ Each bullet must be self-contained, explicit, and searchable.
         _add(await executor_router.get_session_default(session_id))
         async with SessionLocal() as session:
             repo = Repository(session)
+            session_row = await repo.get_session(session_id)
+            agent_profile_id = str(getattr(session_row, "agent_profile_id", "") or "").strip() or None
+            if agent_profile_id:
+                _add(await repo.get_profile_default_executor_id(agent_profile_id))
             _add(await repo.get_user_default_executor_id(user_id))
             rows = await repo.list_executors_for_user(user_id, include_disabled=False)
             for row in rows:
@@ -2216,7 +2235,7 @@ Each bullet must be self-contained, explicit, and searchable.
             return attachments
         from .workspace import user_workspace_root
 
-        workspace_root = user_workspace_root(user_id).resolve()
+        workspace_root = user_workspace_root(user_id, current_agent_profile_slug().strip() or None).resolve()
         out_dir = workspace_root / ".attachments"
         try:
             out_dir.mkdir(parents=True, exist_ok=True)
@@ -2282,7 +2301,7 @@ Each bullet must be self-contained, explicit, and searchable.
 
         from .workspace import user_workspace_root
 
-        workspace = user_workspace_root(user_id).resolve()
+        workspace = user_workspace_root(user_id, current_agent_profile_slug().strip() or None).resolve()
         as_path = Path(candidate_path)
         if as_path.is_absolute():
             candidate = workspace / Path(str(as_path).lstrip("/"))

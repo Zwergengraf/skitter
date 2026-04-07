@@ -146,10 +146,9 @@ heartbeat:
   quiet_hours_start: "23:00"
   quiet_hours_end: "08:00"
 workspace:
-  root: workspace
+  root: /workspace
   skeleton_root: workspace-skeleton
   host_root: ''
-  skills_root: skills
 sandbox:
   base_url: http://localhost:9080
   api_key: ''

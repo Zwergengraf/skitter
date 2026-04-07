@@ -36,6 +36,7 @@ from .routes import (
     messages,
     models,
     overview,
+    profiles,
     runs,
     sandbox,
     schedules,
@@ -155,6 +156,7 @@ def create_app() -> FastAPI:
     app.include_router(memory.router)
     app.include_router(mcp.router)
     app.include_router(overview.router)
+    app.include_router(profiles.router)
     app.include_router(schedules.router)
     app.include_router(users.router)
     app.include_router(channels.router)

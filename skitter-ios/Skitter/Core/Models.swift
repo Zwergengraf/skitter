@@ -108,6 +108,7 @@ struct LocalCommand: Identifiable, Hashable {
         LocalCommand(id: "tools", name: "/tools", usage: "/tools", description: "Show tool approval settings"),
         LocalCommand(id: "model", name: "/model", usage: "/model [provider/model]", description: "List or set the active model"),
         LocalCommand(id: "machine", name: "/machine", usage: "/machine [name_or_id]", description: "List or set the default machine"),
+        LocalCommand(id: "profile", name: "/profile", usage: "/profile [action]", description: "Show or switch agent profiles"),
         LocalCommand(id: "pair", name: "/pair", usage: "/pair", description: "Create a pair code"),
         LocalCommand(id: "info", name: "/info", usage: "/info", description: "Show session usage info"),
     ]
@@ -189,11 +190,26 @@ indirect enum JSONValue: Equatable, Decodable {
         }
         return nil
     }
+
+    var boolValue: Bool? {
+        if case let .bool(value) = self {
+            return value
+        }
+        return nil
+    }
 }
 
 struct APIConfiguration {
     let baseURL: String
     let token: String
+}
+
+struct AgentProfile: Identifiable, Equatable, Hashable {
+    let id: String
+    let slug: String
+    let name: String
+    let status: String
+    let isDefault: Bool
 }
 
 struct MessageAttachment: Identifiable, Equatable, Hashable {
@@ -285,6 +301,8 @@ struct AuthUser: Equatable {
     let id: String
     let displayName: String
     let approved: Bool
+    let defaultProfileID: String?
+    let defaultProfileSlug: String?
 }
 
 struct ToolRunStatus: Identifiable, Equatable {
@@ -388,9 +406,29 @@ struct AuthUserPayload: Decodable {
     let id: String
     let display_name: String
     let approved: Bool
+    let default_profile_id: String?
+    let default_profile_slug: String?
 
     func toDomain() -> AuthUser {
-        AuthUser(id: id, displayName: display_name, approved: approved)
+        AuthUser(
+            id: id,
+            displayName: display_name,
+            approved: approved,
+            defaultProfileID: default_profile_id,
+            defaultProfileSlug: default_profile_slug
+        )
+    }
+}
+
+struct AgentProfilePayload: Decodable {
+    let id: String
+    let slug: String
+    let name: String
+    let status: String
+    let is_default: Bool
+
+    func toDomain() -> AgentProfile {
+        AgentProfile(id: id, slug: slug, name: name, status: status, isDefault: is_default)
     }
 }
 

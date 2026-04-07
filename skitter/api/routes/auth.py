@@ -31,12 +31,14 @@ from ...data.repositories import Repository
 router = APIRouter(prefix="/v1/auth", tags=["auth"])
 
 
-def _user_out(user) -> AuthUserOut:
+def _user_out(user, default_profile=None) -> AuthUserOut:
     display = (user.display_name or (user.meta or {}).get("display_name") or user.transport_user_id or "User").strip()
     return AuthUserOut(
         id=user.id,
         display_name=display,
         approved=bool(user.approved),
+        default_profile_id=getattr(default_profile, "id", None) or getattr(user, "default_profile_id", None),
+        default_profile_slug=getattr(default_profile, "slug", None),
     )
 
 
@@ -59,6 +61,7 @@ async def _issue_token(
 ) -> AuthTokenOut:
     raw_token = make_client_token()
     hashed = hash_secret(raw_token)
+    default_profile = await repo.get_default_agent_profile(user.id)
     await repo.create_auth_token(
         user_id=user.id,
         token_hash=hashed,
@@ -68,7 +71,7 @@ async def _issue_token(
         created_via=created_via,
         expires_at=None,
     )
-    return AuthTokenOut(token=raw_token, user=_user_out(user))
+    return AuthTokenOut(token=raw_token, user=_user_out(user, default_profile))
 
 
 @router.post("/bootstrap", response_model=AuthTokenOut)
@@ -136,7 +139,8 @@ async def auth_me(
     user = await repo.get_user_by_id(target_user_id)
     if user is None:
         raise HTTPException(status_code=404, detail="User not found.")
-    return _user_out(user)
+    default_profile = await repo.get_default_agent_profile(user.id)
+    return _user_out(user, default_profile)
 
 
 @router.post("/pair-codes", response_model=AuthPairCodeOut)

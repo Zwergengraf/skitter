@@ -27,6 +27,17 @@ class AuthUser:
     id: str
     display_name: str
     approved: bool
+    default_profile_id: str | None = None
+    default_profile_slug: str | None = None
+
+
+@dataclass(slots=True)
+class AgentProfile:
+    id: str
+    slug: str
+    name: str
+    status: str
+    is_default: bool
 
 
 @dataclass(slots=True)
@@ -145,6 +156,8 @@ class SkitterApiClient:
         command: str,
         args: dict[str, Any] | None = None,
         origin: str = "tui",
+        agent_profile_id: str | None = None,
+        agent_profile_slug: str | None = None,
     ) -> CommandResult:
         response = await self._request(
             "POST",
@@ -153,6 +166,8 @@ class SkitterApiClient:
                 "command": command,
                 "args": args or {},
                 "origin": origin,
+                "agent_profile_id": agent_profile_id,
+                "agent_profile_slug": agent_profile_slug,
             },
             requires_auth=True,
         )
@@ -170,11 +185,18 @@ class SkitterApiClient:
         *,
         origin: str = "tui",
         reuse_active: bool = True,
+        agent_profile_id: str | None = None,
+        agent_profile_slug: str | None = None,
     ) -> str:
         response = await self._request(
             "POST",
             "/v1/sessions",
-            json={"origin": origin, "reuse_active": reuse_active},
+            json={
+                "origin": origin,
+                "reuse_active": reuse_active,
+                "agent_profile_id": agent_profile_id,
+                "agent_profile_slug": agent_profile_slug,
+            },
             requires_auth=True,
         )
         payload = response.json()
@@ -220,6 +242,30 @@ class SkitterApiClient:
         if not isinstance(body, dict):
             raise ApiError("Invalid /v1/sessions/{id}/detail response payload")
         return body
+
+    async def list_profiles(self) -> list[AgentProfile]:
+        response = await self._request("GET", "/v1/profiles", requires_auth=True)
+        payload = response.json()
+        if not isinstance(payload, list):
+            raise ApiError("Invalid /v1/profiles response payload")
+        items: list[AgentProfile] = []
+        for item in payload:
+            if not isinstance(item, dict):
+                continue
+            profile_id = str(item.get("id") or "").strip()
+            slug = str(item.get("slug") or "").strip()
+            if not profile_id or not slug:
+                continue
+            items.append(
+                AgentProfile(
+                    id=profile_id,
+                    slug=slug,
+                    name=str(item.get("name") or slug),
+                    status=str(item.get("status") or "active"),
+                    is_default=bool(item.get("is_default", False)),
+                )
+            )
+        return items
 
     async def list_pending_tool_runs(self, *, session_id: str, limit: int = 200) -> list[ToolRun]:
         response = await self._request(
@@ -401,9 +447,17 @@ class SkitterApiClient:
         user_id = str(payload.get("id") or "").strip()
         display_name = str(payload.get("display_name") or "").strip() or user_id
         approved = bool(payload.get("approved"))
+        default_profile_id = str(payload.get("default_profile_id") or "").strip() or None
+        default_profile_slug = str(payload.get("default_profile_slug") or "").strip() or None
         if not user_id:
             raise ApiError("Missing user id in auth response")
-        return AuthUser(id=user_id, display_name=display_name, approved=approved)
+        return AuthUser(
+            id=user_id,
+            display_name=display_name,
+            approved=approved,
+            default_profile_id=default_profile_id,
+            default_profile_slug=default_profile_slug,
+        )
 
     @staticmethod
     def _raise(response: httpx.Response) -> None:

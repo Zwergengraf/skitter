@@ -5,6 +5,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from ..authz import require_admin
 from ..deps import get_repo
 from ..schemas import ScheduledJobCreate, ScheduledJobOut, ScheduledJobUpdate
+from ...core.profile_service import profile_service
 from ...data.db import SessionLocal
 from ...data.repositories import Repository
 from ...data.models import ScheduledJob, SCHEDULED_JOB_MODEL_MAIN
@@ -16,6 +17,7 @@ def _to_scheduled_job_out(job: ScheduledJob) -> ScheduledJobOut:
     return ScheduledJobOut(
         id=job.id,
         user_id=job.user_id,
+        agent_profile_id=getattr(job, "agent_profile_id", None),
         channel_id=job.channel_id,
         target_scope_type=job.target_scope_type or "private",
         target_scope_id=job.target_scope_id or f"private:{job.user_id}",
@@ -40,13 +42,14 @@ async def list_schedules(
     request: Request,
     repo: Repository = Depends(get_repo),
     user_id: str | None = Query(default=None),
+    agent_profile_id: str | None = Query(default=None),
     limit: int = Query(default=100, ge=1, le=500),
 ) -> list[ScheduledJobOut]:
     require_admin(request)
     if user_id:
-        jobs = await repo.list_scheduled_jobs(user_id)
+        jobs = await repo.list_scheduled_jobs(user_id, agent_profile_id=agent_profile_id)
     else:
-        jobs = await repo.list_scheduled_jobs_all()
+        jobs = await repo.list_scheduled_jobs_all(agent_profile_id=agent_profile_id)
     jobs = jobs[:limit]
     return [_to_scheduled_job_out(job) for job in jobs]
 
@@ -55,21 +58,31 @@ async def list_schedules(
 async def create_schedule(
     payload: ScheduledJobCreate,
     request: Request,
+    repo: Repository = Depends(get_repo),
 ) -> ScheduledJobOut:
     require_admin(request)
     scheduler = request.app.state.scheduler_service
+    user = await repo.get_user_by_id(payload.user_id)
+    if user is None:
+        raise HTTPException(status_code=404, detail="User not found")
+    profile = await profile_service.resolve_profile(
+        repo,
+        user.id,
+        agent_profile_id=payload.agent_profile_id,
+    )
     schedule_expr = payload.schedule_expr
     if payload.schedule_type == "date":
         schedule_expr = f"DATE:{payload.schedule_expr}"
     result = await scheduler.create_job(
         user_id=payload.user_id,
+        agent_profile_id=profile.id,
         channel_id=payload.channel_id,
         name=payload.name,
         prompt=payload.prompt,
         model=payload.model,
         cron=schedule_expr,
         target_scope_type="private",
-        target_scope_id=f"private:{payload.user_id}",
+        target_scope_id=f"private:{profile.id}",
         target_origin="discord",
         target_destination_id=payload.channel_id,
     )

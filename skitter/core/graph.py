@@ -20,6 +20,7 @@ from langchain.tools import tool
 from .config import SECRETS_APPROVAL_BYPASS_MAGIC, settings
 from .llm import build_llm
 from .llm import list_models, resolve_model_name
+from .profile_context import current_agent_profile_id, current_agent_profile_slug
 from .prompting import build_system_prompt
 from .subagents import SubAgentResult, SubAgentService, SubAgentTaskSpec
 from .run_limits import RunCancelledError, get_current_run_limits
@@ -250,7 +251,7 @@ def build_graph(
     def _resolve_workspace_path(user_id: str, raw_path: str) -> Path | None:
         if not raw_path:
             return None
-        workspace = user_workspace_root(user_id)
+        workspace = user_workspace_root(user_id, current_agent_profile_slug().strip() or None)
         normalized = str(raw_path).strip()
         if normalized.startswith("sandbox:/workspace/"):
             normalized = str(Path("/workspace") / Path(normalized.removeprefix("sandbox:/workspace/")))
@@ -309,7 +310,7 @@ def build_graph(
         return merged
 
     def _workspace_relative_path(path: Path) -> str:
-        workspace = user_workspace_root(_user_id()).resolve()
+        workspace = user_workspace_root(_user_id(), current_agent_profile_slug().strip() or None).resolve()
         try:
             rel = path.resolve(strict=False).relative_to(workspace)
         except ValueError:
@@ -501,8 +502,10 @@ def build_graph(
     async def _resolve_machine_row(repo: Repository, target_machine: str | None):
         target = (target_machine or "").strip()
         if not target:
+            active_profile_id = current_agent_profile_id().strip()
             target = (
                 await executor_router.get_session_default(_session_id())
+                or (await repo.get_profile_default_executor_id(active_profile_id) if active_profile_id else None)
                 or await repo.get_user_default_executor_id(_user_id())
             )
         if not target and settings.executors_auto_docker_default:
@@ -1289,7 +1292,11 @@ def build_graph(
             async with SessionLocal() as session:
                 repo = Repository(session)
                 for name in secrets:
-                    secret = await repo.get_secret(_user_id(), name)
+                    secret = await repo.get_secret(
+                        _user_id(),
+                        name,
+                        agent_profile_id=current_agent_profile_id().strip() or None,
+                    )
                     if secret is None:
                         missing.append(name)
                         continue
@@ -1506,7 +1513,11 @@ def build_graph(
             if settings.executors_auto_docker_default:
                 await repo.get_or_create_docker_executor(_user_id())
             rows = await repo.list_executors_for_user(_user_id(), include_disabled=bool(include_disabled))
-            user_default_id = await repo.get_user_default_executor_id(_user_id())
+            user_default_id = (
+                await repo.get_profile_default_executor_id(current_agent_profile_id().strip() or "")
+                if current_agent_profile_id().strip()
+                else None
+            ) or await repo.get_user_default_executor_id(_user_id())
         session_default_id = await executor_router.get_session_default(_session_id())
         machines = [
             await _serialize_machine(
@@ -1536,7 +1547,11 @@ def build_graph(
             if row is None or row.disabled:
                 await _complete_tool_run(tool_run_id, "failed", {"error": "machine not found"})
                 return "machine_status error: machine not found"
-            user_default_id = await repo.get_user_default_executor_id(_user_id())
+            user_default_id = (
+                await repo.get_profile_default_executor_id(current_agent_profile_id().strip() or "")
+                if current_agent_profile_id().strip()
+                else None
+            ) or await repo.get_user_default_executor_id(_user_id())
         session_default_id = await executor_router.get_session_default(_session_id())
         machine = await _serialize_machine(
             row,
@@ -1573,7 +1588,12 @@ def build_graph(
         encrypted = manager.encrypt(value)
         async with SessionLocal() as session:
             repo = Repository(session)
-            secret = await repo.create_secret(_user_id(), secret_name, encrypted)
+            secret = await repo.create_secret(
+                _user_id(),
+                secret_name,
+                encrypted,
+                agent_profile_id=current_agent_profile_id().strip() or None,
+            )
         if secret is None:
             await _complete_tool_run(
                 decision.tool_run_id,
@@ -1602,7 +1622,10 @@ def build_graph(
 
         async with SessionLocal() as session:
             repo = Repository(session)
-            secrets = await repo.list_secrets(_user_id())
+            secrets = await repo.list_secrets(
+                _user_id(),
+                agent_profile_id=current_agent_profile_id().strip() or None,
+            )
         names = sorted(
             {
                 name
@@ -1896,9 +1919,10 @@ def build_graph(
         target_scope_id = _scope_id()
         if target_scope_type not in {"private", "group"}:
             target_scope_type = "private"
-            target_scope_id = f"private:{user.id}"
+            target_scope_id = f"private:{current_agent_profile_id().strip() or user.id}"
         result = await scheduler_service.create_job(
             user.id,
+            current_agent_profile_id().strip() or None,
             target_channel,
             name or "Scheduled job",
             prompt,
@@ -1986,7 +2010,7 @@ def build_graph(
             if user is None:
                 await _complete_tool_run(tool_run_id, "failed", {"error": "user not found"})
                 return "schedule_list error: user not found"
-        jobs = await scheduler_service.list_jobs(user.id)
+        jobs = await scheduler_service.list_jobs(user.id, agent_profile_id=current_agent_profile_id().strip() or None)
         output = {"jobs": jobs}
         await _complete_tool_run(tool_run_id, "completed", output)
         return json.dumps(output)
@@ -2011,7 +2035,12 @@ def build_graph(
             await _complete_tool_run(tool_run_id, "failed", {"error": "query is required"})
             return "memory_search error: query is required"
         try:
-            results = await memory_service.search(_user_id(), query, top_k)
+            results = await memory_service.search(
+                _user_id(),
+                query,
+                top_k,
+                agent_profile_id=current_agent_profile_id().strip() or None,
+            )
         except Exception as exc:
             await _complete_tool_run(tool_run_id, "failed", {"error": str(exc)})
             return f"memory_search error: {exc}"
@@ -2057,6 +2086,7 @@ def build_graph(
         try:
             job_id = await job_service.enqueue_subagent_job(
                 user_id=_user_id(),
+                agent_profile_id=current_agent_profile_id().strip() or None,
                 session_id=_session_id(),
                 name=(name or "").strip() or "Background sub-agent job",
                 task=task.strip(),
@@ -2112,7 +2142,12 @@ def build_graph(
         if job_service is None:
             await _complete_tool_run(tool_run_id, "failed", {"error": "job service unavailable"})
             return "job_list error: job service unavailable"
-        jobs = await job_service.list_jobs(_user_id(), limit=max(1, min(int(limit), 100)), status=(status or "").strip() or None)
+        jobs = await job_service.list_jobs(
+            _user_id(),
+            agent_profile_id=current_agent_profile_id().strip() or None,
+            limit=max(1, min(int(limit), 100)),
+            status=(status or "").strip() or None,
+        )
         output = {"jobs": [_serialize_job(job) for job in jobs]}
         await _complete_tool_run(tool_run_id, "completed", output)
         return json.dumps(output)
@@ -2178,7 +2213,7 @@ def build_graph(
             user_id=_user_id(),
             session_id=_session_id(),
             model_name=worker_model_name,
-            system_prompt=build_system_prompt(_user_id()),
+            system_prompt=build_system_prompt(_user_id(), current_agent_profile_slug().strip() or None),
             spec=spec,
         )
         output = {
@@ -2257,7 +2292,7 @@ def build_graph(
             user_id=_user_id(),
             session_id=_session_id(),
             model_name=worker_model_name,
-            system_prompt=build_system_prompt(_user_id()),
+            system_prompt=build_system_prompt(_user_id(), current_agent_profile_slug().strip() or None),
             specs=specs,
         )
         summary_rows = [

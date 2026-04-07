@@ -25,6 +25,32 @@ PARAGRAPH_BREAK_PATTERN = re.compile(r"\n{2,}")
 SENTENCE_BREAK_PATTERN = re.compile(r"[.!?](?:[\"')\]]+)?\s+")
 
 
+def _parse_text_command(text: str) -> tuple[str | None, dict[str, object]]:
+    stripped = str(text or "").strip()
+    if not stripped.startswith("/"):
+        return None, {}
+    parts = stripped.split(" ", 1)
+    command = parts[0][1:].strip().lower()
+    argument = parts[1].strip() if len(parts) > 1 else ""
+    if not command:
+        return None, {}
+    metadata: dict[str, object] = {}
+    if command == "profile":
+        metadata["raw"] = argument
+        return command, metadata
+    if command == "memory_search" and argument:
+        metadata["query"] = argument
+    elif command in {"schedule_delete", "schedule_pause", "schedule_resume"} and argument:
+        metadata["job_id"] = argument
+    elif command == "model" and argument:
+        metadata["model_name"] = argument
+    elif command == "machine" and argument:
+        metadata["target_machine"] = argument
+    elif argument:
+        metadata["raw"] = argument
+    return command, metadata
+
+
 def _count_links(content: str) -> int:
     return len(URL_PATTERN.findall(content))
 
@@ -289,12 +315,10 @@ class DiscordTransport(TransportAdapter):
             if message.author.bot:
                 return
             is_private = isinstance(message.channel, discord.DMChannel)
-            if not is_private:
-                # DM-only mode for now. Edit this block to re-enable server/group handling later.
-                return
             if self._handler is None:
                 return
             await self._record_user_channel(message, is_private=is_private)
+            command, command_meta = _parse_text_command(message.content)
             envelope = MessageEnvelope(
                 message_id=str(message.id),
                 channel_id=str(message.channel.id),
@@ -306,7 +330,9 @@ class DiscordTransport(TransportAdapter):
                     for a in message.attachments
                 ],
                 origin="discord",
+                command=command,
                 metadata={
+                    **command_meta,
                     "is_private": is_private,
                     "external_channel_id": str(message.channel.id),
                     "guild_id": str(message.guild.id) if message.guild else None,
@@ -370,6 +396,15 @@ class DiscordTransport(TransportAdapter):
         @self.tree.command(name="info", description="Show session usage and cost info")
         async def info(interaction: discord.Interaction) -> None:
             await self._handle_command(interaction, "info")
+
+        @self.tree.command(name="profile", description="Show or manage agent profiles")
+        async def profile(interaction: discord.Interaction, command_text: Optional[str] = None) -> None:
+            await self._handle_command(
+                interaction,
+                "profile",
+                extra={"raw": command_text or ""},
+                ephemeral=isinstance(interaction.channel, discord.DMChannel),
+            )
 
     def on_event(self, handler: EventHandler) -> None:
         self._handler = handler
@@ -554,15 +589,13 @@ class DiscordTransport(TransportAdapter):
         if self._handler is None:
             await interaction.response.send_message("Handler is not configured.")
             return
-        if not isinstance(interaction.channel, discord.DMChannel):
-            # DM-only mode for now. Edit this block to re-enable server/group handling later.
-            return
         await interaction.response.defer(thinking=True, ephemeral=ephemeral)
         await self._record_interaction(interaction)
         is_private = isinstance(interaction.channel, discord.DMChannel)
         metadata = dict(extra or {})
         metadata.update(
             {
+                "interaction_response": True,
                 "is_private": is_private,
                 "external_channel_id": str(interaction.channel_id) if interaction.channel_id is not None else "",
                 "guild_id": str(interaction.guild_id) if interaction.guild_id is not None else None,

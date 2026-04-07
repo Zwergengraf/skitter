@@ -20,7 +20,7 @@ from textual.message import Message
 from textual.screen import ModalScreen
 from textual.widgets import Button, Footer, Header, Input, RichLog, Static
 
-from .client import ApiError, AuthUser, SkitterApiClient, StreamEvent, ToolRun, UserPrompt
+from .client import AgentProfile, ApiError, AuthUser, SkitterApiClient, StreamEvent, ToolRun, UserPrompt
 from .onboarding import OnboardingData, OnboardingWizard
 
 
@@ -30,6 +30,7 @@ class AppConfig:
     access_token: str | None = None
     device_name: str | None = None
     session_id: str | None = None
+    agent_profile_slug: str | None = None
     prefer_saved_token: bool = True
     prefer_saved_api_url: bool = True
 
@@ -367,6 +368,13 @@ class SkitterTuiApp(App[None]):
         self._thinking_frame = 0
         saved_theme = self._persisted_state.get("theme")
         self._saved_theme = saved_theme if isinstance(saved_theme, str) and saved_theme.strip() else None
+        saved_profile = self._persisted_state.get("agent_profile_slug")
+        if (
+            self.config.agent_profile_slug is None
+            and isinstance(saved_profile, str)
+            and saved_profile.strip()
+        ):
+            self.config.agent_profile_slug = saved_profile.strip()
         saved_api_url = self._persisted_state.get("api_url")
         if (
             self.config.prefer_saved_api_url
@@ -387,6 +395,8 @@ class SkitterTuiApp(App[None]):
         self.api = SkitterApiClient(self.config.api_url, api_key=self.config.access_token)
         self._save_api_url(self.config.api_url)
         self._auth_user: AuthUser | None = None
+        self._profiles: list[AgentProfile] = []
+        self._selected_profile_slug: str | None = self.config.agent_profile_slug
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
@@ -394,7 +404,7 @@ class SkitterTuiApp(App[None]):
             yield Static("Connecting...", id="status")
             yield RichLog(id="chat", highlight=True, markup=True, wrap=True)
             yield Input(
-                placeholder="Type a message. Commands: /new /memory_reindex /memory_search /schedule_list /model /machine /pair /setup /info /help",
+                placeholder="Type a message. Commands: /profile /new /memory_reindex /memory_search /schedule_list /model /machine /pair /setup /info /help",
                 id="input",
             )
         yield Footer()
@@ -493,10 +503,15 @@ class SkitterTuiApp(App[None]):
                 )
                 self.post_message(StatusUpdate("Waiting approval", "account pending"))
                 return
+            await self._refresh_profiles()
             if self._session_id:
                 self.post_message(SessionReady(self._session_id, created=False))
                 return
-            session_id = await self.api.create_session(origin="tui", reuse_active=True)
+            session_id = await self.api.create_session(
+                origin="tui",
+                reuse_active=True,
+                agent_profile_slug=self._selected_profile_slug,
+            )
             self.post_message(SessionReady(session_id, created=True))
         except Exception as exc:
             self.post_message(SystemLog(f"Connection failed: {exc}"))
@@ -520,13 +535,14 @@ class SkitterTuiApp(App[None]):
         identity = self._auth_user.display_name if self._auth_user else "unknown user"
         self._append_system(
             f"Connected as `{identity}`\n"
+            f"Profile: `{self._selected_profile_slug or 'default'}`\n"
             f"Session: `{message.session_id}`\n"
             f"Type `/help` for commands."
         )
         if message.created:
-            self._update_status("Ready", "New session created")
+            self._update_status("Ready", f"profile={self._selected_profile_slug or 'default'}")
         else:
-            self._update_status("Ready", "Attached to existing session")
+            self._update_status("Ready", f"profile={self._selected_profile_slug or 'default'}")
         await self._restart_event_stream(message.session_id)
         self.run_worker(
             self._load_session_history(message.session_id),
@@ -881,6 +897,15 @@ class SkitterTuiApp(App[None]):
         if cmd == "/help":
             self._append_system(
                 "Commands:\n"
+                "- `/profile` show current and available profiles\n"
+                "- `/profile list` list profiles\n"
+                "- `/profile use <slug>` switch this client to another profile\n"
+                "- `/profile default <slug>` set the default profile for new clients\n"
+                "- `/profile create <name>` create a new profile\n"
+                "- `/profile clone <source> <name> [mode=settings|all|blank]` clone a profile\n"
+                "- `/profile rename <slug> <new_name>` rename a profile\n"
+                "- `/profile archive <slug>` archive a profile\n"
+                "- `/profile unarchive <slug>` restore a profile\n"
                 "- `/new` start a new session\n"
                 "- `/memory_reindex` rebuild memory embeddings\n"
                 "- `/memory_search <query>` semantic memory search\n"
@@ -934,7 +959,8 @@ class SkitterTuiApp(App[None]):
                 self._append_system(
                     f"User: `{self._auth_user.display_name}`\n"
                     f"User ID: `{self._auth_user.id}`\n"
-                    f"Status: {approval}"
+                    f"Status: {approval}\n"
+                    f"Profile: `{self._selected_profile_slug or self._auth_user.default_profile_slug or 'default'}`"
                 )
             return
         if cmd == "/setup":
@@ -950,6 +976,8 @@ class SkitterTuiApp(App[None]):
             self._save_access_token(token)
             self._session_id = None
             self._auth_user = None
+            self._selected_profile_slug = None
+            self._save_profile_slug(None)
             self._append_system("Access token updated. Reconnecting...")
             self.run_worker(self._bootstrap(), name="bootstrap", group="bootstrap", exclusive=True)
             return
@@ -959,6 +987,8 @@ class SkitterTuiApp(App[None]):
             self._save_access_token(None)
             self._session_id = None
             self._auth_user = None
+            self._selected_profile_slug = None
+            self._save_profile_slug(None)
             self._stream_stop.set()
             self._update_status("Ready", "unauthenticated")
             self._append_system("Logged out. Use /bootstrap or /pair to authenticate.")
@@ -1001,6 +1031,11 @@ class SkitterTuiApp(App[None]):
             new_session_id = str(result.data.get("session_id") or "").strip()
             if new_session_id:
                 self.post_message(SessionReady(new_session_id, created=True))
+            return
+        if cmd == "/profile":
+            result = await self._run_remote_command("profile", {"raw": arg} if arg else {"raw": ""})
+            if result is not None:
+                await self._apply_profile_command_result(result)
             return
         if cmd == "/memory_reindex":
             await self._run_remote_command("memory_reindex")
@@ -1222,7 +1257,11 @@ class SkitterTuiApp(App[None]):
     async def action_new_session(self) -> None:
         self._update_status("Creating session", "")
         try:
-            session_id = await self.api.create_session(origin="tui", reuse_active=False)
+            session_id = await self.api.create_session(
+                origin="tui",
+                reuse_active=False,
+                agent_profile_slug=self._selected_profile_slug,
+            )
         except Exception as exc:
             self._append_error(f"Could not create session: {exc}")
             self._update_status("Error", "session creation failed")
@@ -1237,7 +1276,7 @@ class SkitterTuiApp(App[None]):
             group="history",
             exclusive=True,
         )
-        self._update_status("Ready", "new session active")
+        self._update_status("Ready", f"profile={self._selected_profile_slug or 'default'}")
 
     def action_clear_chat(self) -> None:
         chat = self.query_one("#chat", RichLog)
@@ -1446,7 +1485,12 @@ class SkitterTuiApp(App[None]):
 
     async def _run_remote_command(self, command: str, args: dict[str, Any] | None = None):
         try:
-            result = await self.api.execute_command(command=command, args=args, origin="tui")
+            result = await self.api.execute_command(
+                command=command,
+                args=args,
+                origin="tui",
+                agent_profile_slug=self._selected_profile_slug,
+            )
         except Exception as exc:
             self._append_error(f"Command failed: {exc}")
             return None
@@ -1486,6 +1530,55 @@ class SkitterTuiApp(App[None]):
     def _save_access_token(self, token: str | None) -> None:
         value = token.strip() if isinstance(token, str) else ""
         self._save_state_value("access_token", value or None)
+
+    def _save_profile_slug(self, profile_slug: str | None) -> None:
+        cleaned = profile_slug.strip() if isinstance(profile_slug, str) else ""
+        self._save_state_value("agent_profile_slug", cleaned or None)
+
+    async def _refresh_profiles(self) -> None:
+        self._profiles = await self.api.list_profiles()
+        default_slug = self._auth_user.default_profile_slug if self._auth_user else None
+        selected = (self._selected_profile_slug or "").strip()
+        if selected and any(profile.slug == selected for profile in self._profiles):
+            self._save_profile_slug(selected)
+            return
+        self._selected_profile_slug = default_slug or (self._profiles[0].slug if self._profiles else None)
+        self.config.agent_profile_slug = self._selected_profile_slug
+        self._save_profile_slug(self._selected_profile_slug)
+
+    async def _apply_profile_command_result(self, result) -> None:
+        data = result.data or {}
+        next_slug = None
+        if "agent_profile_slug" in data:
+            value = data.get("agent_profile_slug")
+            next_slug = str(value).strip() if value is not None else None
+        elif "profile" in data and isinstance(data["profile"], dict):
+            value = data["profile"].get("slug")
+            next_slug = str(value).strip() if value is not None else None
+        apply_selection = bool(data.get("apply_client_selection")) or bool(next_slug and result.ok and "profile" in result.message.lower())
+        if not next_slug:
+            await self._refresh_profiles()
+            self._update_status("Ready", f"profile={(self._selected_profile_slug or 'default')}")
+            return
+        if not apply_selection:
+            await self._refresh_profiles()
+            self._update_status("Ready", f"profile={(self._selected_profile_slug or 'default')}")
+            return
+        self._selected_profile_slug = next_slug
+        self.config.agent_profile_slug = next_slug
+        self._save_profile_slug(next_slug)
+        self._session_id = None
+        await self._refresh_profiles()
+        try:
+            session_id = await self.api.create_session(
+                origin="tui",
+                reuse_active=True,
+                agent_profile_slug=self._selected_profile_slug,
+            )
+        except Exception as exc:
+            self._append_error(f"Failed to activate profile `{next_slug}`: {exc}")
+            return
+        self.post_message(SessionReady(session_id, created=False))
 
     def _save_state_value(self, key: str, value: Any | None) -> None:
         if value is None:

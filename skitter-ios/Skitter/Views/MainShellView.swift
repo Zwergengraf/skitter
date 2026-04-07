@@ -364,6 +364,9 @@ private struct ChatScreen: View {
             }
         }
         .toolbar {
+            ToolbarItem(placement: .topBarLeading) {
+                profileMenu
+            }
             ToolbarItemGroup(placement: .topBarTrailing) {
                 Button {
                     Task {
@@ -395,6 +398,40 @@ private struct ChatScreen: View {
         }
         .onChange(of: settings.speechRecognitionLocaleIdentifier) { _, _ in
             speechController.setRecognitionLocaleIdentifier(settings.effectiveSpeechRecognitionLocaleIdentifier)
+        }
+    }
+
+    private var profileMenu: some View {
+        Menu {
+            if model.profiles.isEmpty {
+                Text("No profiles loaded")
+            } else {
+                ForEach(model.profiles) { profile in
+                    Button {
+                        Task { await model.useProfile(slug: profile.slug) }
+                    } label: {
+                        HStack {
+                            Text(profile.name)
+                            Spacer()
+                            if profile.slug == (model.effectiveProfileSlug ?? "") {
+                                Image(systemName: "checkmark")
+                            } else if profile.isDefault && model.selectedProfileSlug.isEmpty {
+                                Image(systemName: "arrow.uturn.backward.circle")
+                            }
+                        }
+                    }
+                }
+            }
+            if !model.selectedProfileSlug.isEmpty {
+                Divider()
+                Button("Use Server Default") {
+                    Task { await model.useProfile(slug: nil) }
+                }
+            }
+        } label: {
+            Label(model.activeProfileTitle, systemImage: "person.crop.circle")
+                .labelStyle(.titleAndIcon)
+                .lineLimit(1)
         }
     }
 

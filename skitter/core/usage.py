@@ -5,6 +5,7 @@ from typing import Iterable
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
 
 from .llm import resolve_model
+from .profile_context import current_agent_profile_id
 from ..data.db import SessionLocal
 from ..data.repositories import Repository
 
@@ -83,6 +84,7 @@ async def record_usage(
     user_id: str,
     model_name: str,
     usage: dict,
+    agent_profile_id: str | None = None,
 ) -> None:
     try:
         resolved = resolve_model(model_name)
@@ -101,6 +103,7 @@ async def record_usage(
         await repo.record_llm_usage(
             session_id=session_id,
             user_id=user_id,
+            agent_profile_id=agent_profile_id or (current_agent_profile_id().strip() or None),
             model=resolved.name,
             input_tokens=input_tokens,
             output_tokens=output_tokens,

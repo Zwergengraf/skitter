@@ -64,8 +64,12 @@ struct APIClient {
         return payload.status.lowercased() == "ok"
     }
 
-    func createOrResumeSession(origin: String, reuseActive: Bool) async throws -> String {
-        let body = SessionCreateBody(origin: origin, reuse_active: reuseActive)
+    func createOrResumeSession(origin: String, reuseActive: Bool, agentProfileSlug: String? = nil) async throws -> String {
+        let body = SessionCreateBody(
+            origin: origin,
+            reuse_active: reuseActive,
+            agent_profile_slug: agentProfileSlug
+        )
         let payload: SessionPayload = try await requestJSON(
             path: "/v1/sessions",
             method: "POST",
@@ -345,12 +349,28 @@ struct APIClient {
         return payload.toDomain()
     }
 
+    func listProfiles() async throws -> [AgentProfile] {
+        let payload: [AgentProfilePayload] = try await requestJSON(
+            path: "/v1/profiles",
+            method: "GET",
+            body: Optional<Int>.none,
+            requiresAPIKey: true
+        )
+        return payload.map { $0.toDomain() }
+    }
+
     func executeCommand(
         command: String,
         args: [String: String] = [:],
-        origin: String = "menubar"
+        origin: String = "menubar",
+        agentProfileSlug: String? = nil
     ) async throws -> CommandResult {
-        let body = CommandExecuteBody(command: command, args: args, origin: origin)
+        let body = CommandExecuteBody(
+            command: command,
+            args: args,
+            origin: origin,
+            agent_profile_slug: agentProfileSlug
+        )
         let payload: CommandExecutePayload = try await requestJSON(
             path: "/v1/commands/execute",
             method: "POST",
@@ -492,6 +512,7 @@ private struct HealthPayload: Decodable {
 private struct SessionCreateBody: Encodable {
     let origin: String
     let reuse_active: Bool
+    let agent_profile_slug: String?
 }
 
 private struct SessionPayload: Decodable {
@@ -611,9 +632,17 @@ private struct AuthUserPayload: Decodable {
     let id: String
     let display_name: String
     let approved: Bool
+    let default_profile_id: String?
+    let default_profile_slug: String?
 
     func toDomain() -> AuthUser {
-        AuthUser(id: id, displayName: display_name, approved: approved)
+        AuthUser(
+            id: id,
+            displayName: display_name,
+            approved: approved,
+            defaultProfileID: default_profile_id,
+            defaultProfileSlug: default_profile_slug
+        )
     }
 }
 
@@ -621,10 +650,23 @@ private struct CommandExecuteBody: Encodable {
     let command: String
     let args: [String: String]
     let origin: String
+    let agent_profile_slug: String?
 }
 
 private struct CommandExecutePayload: Decodable {
     let ok: Bool
     let message: String
     let data: [String: JSONValue]?
+}
+
+private struct AgentProfilePayload: Decodable {
+    let id: String
+    let slug: String
+    let name: String
+    let status: String
+    let is_default: Bool
+
+    func toDomain() -> AgentProfile {
+        AgentProfile(id: id, slug: slug, name: name, status: status, isDefault: is_default)
+    }
 }
