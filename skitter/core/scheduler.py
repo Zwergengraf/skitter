@@ -17,7 +17,7 @@ from .llm import resolve_model_name
 from .models import MessageEnvelope
 
 
-DeliverFunc = Callable[[str, str, str, list], Awaitable[None]]
+DeliverFunc = Callable[[str, str | None, str, str, list], Awaitable[None]]
 
 
 class SchedulerService:
@@ -142,6 +142,7 @@ class SchedulerService:
         target_scope_type: str = "private",
         target_scope_id: str | None = None,
         target_origin: str | None = None,
+        target_transport_account_key: str | None = None,
         target_destination_id: str | None = None,
     ) -> dict:
         schedule_type, expr = self._normalize_schedule(cron)
@@ -169,6 +170,7 @@ class SchedulerService:
                 target_scope_type=target_scope_type,
                 target_scope_id=target_scope_id,
                 target_origin=target_origin,
+                target_transport_account_key=target_transport_account_key,
                 target_destination_id=target_destination_id,
             )
         self._schedule_job(job.id, job.schedule_type, job.schedule_expr, job.timezone)
@@ -243,6 +245,7 @@ class SchedulerService:
                     "target_scope_type": job.target_scope_type,
                     "target_scope_id": job.target_scope_id,
                     "target_origin": job.target_origin,
+                    "target_transport_account_key": getattr(job, "target_transport_account_key", None),
                     "target_destination_id": job.target_destination_id,
                 }
             )
@@ -319,6 +322,7 @@ class SchedulerService:
                 timestamp=self._utcnow(),
                 text=job.prompt,
                 origin="scheduler",
+                transport_account_key=getattr(job, "target_transport_account_key", None) or "",
                 metadata={
                     "internal_user_id": user.id,
                     "agent_profile_id": getattr(job, "agent_profile_id", None),
@@ -328,12 +332,14 @@ class SchedulerService:
                     "is_private": False,
                     "target_scope_type": job.target_scope_type or "private",
                     "target_scope_id": job.target_scope_id or f"private:{getattr(job, 'agent_profile_id', '') or job.user_id}",
+                    "transport_account_key": getattr(job, "target_transport_account_key", None),
                 },
             )
             # Scheduled runs are intentionally stateless: each run executes with no prior chat history.
             self.runtime.clear_history(execution_session_id)
             response = await self.runtime.handle_message(execution_session_id, envelope)
-            if target_session_id is not None:
+            has_visible_reply = bool(response.text or response.attachments)
+            if target_session_id is not None and has_visible_reply:
                 attachment_meta = []
                 for attachment in response.attachments:
                     attachment_meta.append(
@@ -358,10 +364,16 @@ class SchedulerService:
                         metadata=meta,
                     )
             delivery_error: str | None = None
-            if self.deliver is not None and job.target_origin and (job.target_destination_id or job.channel_id):
+            if (
+                has_visible_reply
+                and self.deliver is not None
+                and job.target_origin
+                and (job.target_destination_id or job.channel_id)
+            ):
                 try:
                     await self.deliver(
                         job.target_origin,
+                        getattr(job, "target_transport_account_key", None),
                         job.target_destination_id or job.channel_id,
                         response.text,
                         response.attachments,

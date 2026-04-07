@@ -133,6 +133,9 @@ async def update_config(payload: ConfigUpdate, request: Request) -> ConfigRespon
     runtime = getattr(request.app.state, "runtime", None)
     if runtime is not None and hasattr(runtime, "refresh_model_configuration"):
         runtime.refresh_model_configuration()
+    reconcile_transports = getattr(request.app.state, "reconcile_transports", None)
+    if reconcile_transports is not None:
+        await reconcile_transports()
 
     config_path = _config_path()
     try:

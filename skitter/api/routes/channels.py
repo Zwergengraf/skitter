@@ -22,16 +22,25 @@ def _label(kind: str, name: str) -> str:
 async def list_channels(
     request: Request,
     repo: Repository = Depends(get_repo),
+    origin: str | None = Query(default=None),
+    transport_account_key: str | None = Query(default=None),
     limit: int = Query(default=200, ge=1, le=500),
 ) -> list[ChannelListItem]:
     require_admin(request)
-    channels = await repo.list_channels(limit=limit)
+    channels = await repo.list_channels(
+        limit=limit,
+        origin=origin,
+        transport_account_key=transport_account_key,
+    )
     return [
         ChannelListItem(
             id=channel.transport_channel_id,
+            origin=channel.origin,
+            transport_account_key=channel.transport_account_key,
             name=channel.name,
             kind=channel.kind,
             label=_label(channel.kind, channel.name),
+            guild_id=channel.guild_id,
             guild_name=channel.guild_name,
         )
         for channel in channels

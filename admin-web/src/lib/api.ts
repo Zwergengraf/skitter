@@ -16,6 +16,8 @@ import type {
   SecretItem,
   SessionDetail,
   SessionListItem,
+  TransportAccountItem,
+  TransportBindingItem,
   ToolRunListItem,
   UserListItem,
 } from "@/lib/types";
@@ -173,7 +175,11 @@ export const api = {
   getAgentJob: (id: string): Promise<AgentJobDetail> => request(`/v1/agent-jobs/${id}`),
   createSchedule: (payload: {
     user_id: string;
+    agent_profile_id?: string;
     channel_id: string;
+    target_origin?: string;
+    target_destination_id?: string;
+    target_transport_account_key?: string;
     name: string;
     prompt: string;
     model: string;
@@ -185,9 +191,13 @@ export const api = {
   updateSchedule: (
     id: string,
     payload: Partial<{
+      agent_profile_id: string;
       name: string;
       prompt: string;
       model: string;
+      target_origin: string;
+      target_destination_id: string;
+      target_transport_account_key: string;
       schedule_type: string;
       schedule_expr: string;
       enabled: boolean;
@@ -230,7 +240,80 @@ export const api = {
     request(`/v1/users/${id}`, { method: "PATCH", body: JSON.stringify(payload) }),
   deleteUser: (id: string): Promise<{ id: string; deleted: boolean }> =>
     request(`/v1/users/${id}`, { method: "DELETE" }),
-  getChannels: (): Promise<ChannelListItem[]> => request("/v1/channels"),
+  getChannels: (filters?: {
+    origin?: string;
+    transport_account_key?: string;
+  }): Promise<ChannelListItem[]> => {
+    const params = new URLSearchParams();
+    if (filters?.origin) {
+      params.set("origin", filters.origin);
+    }
+    if (filters?.transport_account_key) {
+      params.set("transport_account_key", filters.transport_account_key);
+    }
+    const query = params.toString();
+    return request(`/v1/channels${query ? `?${query}` : ""}`);
+  },
+  getTransportAccounts: (userId: string, agentProfileId?: string): Promise<TransportAccountItem[]> => {
+    const params = new URLSearchParams();
+    params.set("user_id", userId);
+    if (agentProfileId) {
+      params.set("agent_profile_id", agentProfileId);
+    }
+    return request(`/v1/transport-accounts?${params.toString()}`);
+  },
+  createTransportAccount: (payload: {
+    user_id: string;
+    agent_profile_id: string;
+    transport?: string;
+    display_name?: string;
+    enabled?: boolean;
+    credential_value: string;
+  }): Promise<TransportAccountItem> =>
+    request("/v1/transport-accounts", { method: "POST", body: JSON.stringify(payload) }),
+  updateTransportAccount: (
+    accountKey: string,
+    payload: Partial<{
+      display_name: string;
+      enabled: boolean;
+      credential_value: string;
+    }>
+  ): Promise<TransportAccountItem> =>
+    request(`/v1/transport-accounts/${encodeURIComponent(accountKey)}`, {
+      method: "PATCH",
+      body: JSON.stringify(payload),
+    }),
+  deleteTransportAccount: (accountKey: string): Promise<{ account_key: string; deleted: boolean }> =>
+    request(`/v1/transport-accounts/${encodeURIComponent(accountKey)}`, { method: "DELETE" }),
+  getTransportSurfaces: (accountKey: string): Promise<ChannelListItem[]> =>
+    request(`/v1/transport-accounts/${encodeURIComponent(accountKey)}/surfaces`),
+  getTransportBindings: (accountKey: string): Promise<TransportBindingItem[]> =>
+    request(`/v1/transport-accounts/${encodeURIComponent(accountKey)}/bindings`),
+  createTransportBinding: (payload: {
+    transport_account_key: string;
+    user_id: string;
+    agent_profile_id?: string;
+    origin?: string;
+    surface_kind: string;
+    surface_id: string;
+    mode?: string;
+    enabled?: boolean;
+  }): Promise<TransportBindingItem> =>
+    request("/v1/transport-accounts/bindings", { method: "POST", body: JSON.stringify(payload) }),
+  updateTransportBinding: (
+    bindingId: string,
+    payload: Partial<{
+      agent_profile_id: string;
+      mode: string;
+      enabled: boolean;
+    }>
+  ): Promise<TransportBindingItem> =>
+    request(`/v1/transport-accounts/bindings/${bindingId}`, {
+      method: "PATCH",
+      body: JSON.stringify(payload),
+    }),
+  deleteTransportBinding: (bindingId: string): Promise<{ id: string; deleted: boolean }> =>
+    request(`/v1/transport-accounts/bindings/${bindingId}`, { method: "DELETE" }),
   getMemory: (userId: string, agentProfileId?: string): Promise<MemoryEntry[]> => {
     const params = new URLSearchParams();
     params.set("user_id", userId);

@@ -177,7 +177,11 @@ export interface RunTraceDetail {
 export interface ScheduledJobItem {
   id: string;
   user_id: string;
+  agent_profile_id?: string | null;
   channel_id: string;
+  target_origin?: string | null;
+  target_transport_account_key?: string | null;
+  target_destination_id?: string | null;
   model: string;
   name: string;
   prompt: string;
@@ -200,6 +204,7 @@ export interface ScheduledJobItem {
 export interface AgentJobListItem {
   id: string;
   user_id: string;
+  agent_profile_id?: string | null;
   session_id?: string | null;
   kind: string;
   name: string;
@@ -208,6 +213,7 @@ export interface AgentJobListItem {
   target_scope_type: string;
   target_scope_id: string;
   target_origin?: string | null;
+  target_transport_account_key?: string | null;
   target_destination_id?: string | null;
   cancel_requested: boolean;
   tool_calls_used: number;
@@ -254,10 +260,47 @@ export interface AgentProfile {
 
 export interface ChannelListItem {
   id: string;
+  origin: string;
+  transport_account_key: string;
   name: string;
   kind: string;
   label: string;
+  guild_id?: string | null;
   guild_name?: string | null;
+}
+
+export interface TransportAccountItem {
+  id?: string | null;
+  account_key: string;
+  transport: string;
+  user_id?: string | null;
+  agent_profile_id?: string | null;
+  agent_profile_slug?: string | null;
+  display_name: string;
+  enabled: boolean;
+  status: string;
+  is_shared_default: boolean;
+  external_account_id?: string | null;
+  external_label?: string | null;
+  last_seen_at?: string | null;
+  last_error?: string | null;
+  created_at?: string | null;
+  updated_at?: string | null;
+}
+
+export interface TransportBindingItem {
+  id: string;
+  transport_account_key: string;
+  user_id: string;
+  agent_profile_id: string;
+  agent_profile_slug?: string | null;
+  origin: string;
+  surface_kind: string;
+  surface_id: string;
+  mode: string;
+  enabled: boolean;
+  created_at: string;
+  updated_at: string;
 }
 
 export interface SandboxWorkspace {

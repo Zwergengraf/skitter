@@ -9,6 +9,7 @@ from fastapi import HTTPException
 from ..schemas import UserApprovalRequest, UserListItem
 from ...data.repositories import Repository
 from ...core.config import settings
+from ...core.transport_accounts import DEFAULT_DISCORD_ACCOUNT_KEY
 
 router = APIRouter(prefix="/v1/users", tags=["users"])
 PENDING_REQUEST_TTL_MINUTES = 15
@@ -60,8 +61,21 @@ async def update_user(
         notifier = getattr(request.app.state, "user_notifier", None)
         if notifier:
             message = settings.user_approved_message
+            meta = dict(user.meta or {})
+            last_by_origin = meta.get("last_transport_account_key_by_origin")
+            account_key = DEFAULT_DISCORD_ACCOUNT_KEY
+            if isinstance(last_by_origin, dict):
+                candidate = str(last_by_origin.get("discord") or "").strip()
+                if candidate:
+                    account_key = candidate
             try:
-                await notifier(user.transport_user_id, message, attachments=None)
+                await notifier(
+                    user.transport_user_id,
+                    message,
+                    attachments=None,
+                    origin="discord",
+                    transport_account_key=account_key,
+                )
             except Exception:
                 pass
     return {"id": user.id, "approved": user.approved}

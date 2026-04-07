@@ -11,15 +11,8 @@ from ..data.db import SessionLocal
 from ..data.repositories import Repository
 
 
-ApprovalNotifier = Callable[[str, str, str, Dict[str, Any]], Awaitable[None]]
+ApprovalNotifier = Callable[[str, str, str, str | None, Dict[str, Any]], Awaitable[None]]
 _logger = logging.getLogger(__name__)
-
-
-def _looks_like_discord_channel_id(channel_id: str) -> bool:
-    value = (channel_id or "").strip()
-    if not value:
-        return False
-    return value.isdigit()
 
 
 @dataclass
@@ -41,6 +34,8 @@ class ToolApprovalService:
         self,
         session_id: str,
         channel_id: str,
+        origin: str,
+        transport_account_key: str | None,
         tool_name: str,
         payload: Dict[str, Any],
         requested_by: str,
@@ -87,16 +82,21 @@ class ToolApprovalService:
             data={"tool_name": tool_name, "channel_id": channel_id, "payload": payload},
         )
 
-        should_notify = self._notifier is not None and _looks_like_discord_channel_id(channel_id)
+        should_notify = (
+            self._notifier is not None
+            and str(origin or "").strip().lower() == "discord"
+            and bool(str(transport_account_key or "").strip())
+        )
         if should_notify:
             try:
-                await self._notifier(tool_run.id, channel_id, tool_name, payload)
+                await self._notifier(tool_run.id, channel_id, tool_name, transport_account_key, payload)
             except Exception:
                 _logger.exception(
-                    "Failed to deliver tool approval request (tool_run_id=%s, channel_id=%s, tool=%s)",
+                    "Failed to deliver tool approval request (tool_run_id=%s, channel_id=%s, tool=%s, account=%s)",
                     tool_run.id,
                     channel_id,
                     tool_name,
+                    transport_account_key,
                 )
                 async with SessionLocal() as session:
                     repo = Repository(session)
@@ -110,10 +110,12 @@ class ToolApprovalService:
         else:
             # Non-discord channels (e.g. web/menubar): keep request pending for API-driven approval.
             _logger.info(
-                "Queued tool approval without notifier (tool_run_id=%s, channel_id=%s, tool=%s)",
+                "Queued tool approval without notifier (tool_run_id=%s, channel_id=%s, tool=%s, origin=%s, account=%s)",
                 tool_run.id,
                 channel_id,
                 tool_name,
+                origin,
+                transport_account_key,
             )
 
         approved = await future

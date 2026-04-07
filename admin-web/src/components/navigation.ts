@@ -1,6 +1,7 @@
 import {
   AlarmClock,
   AppWindow,
+  Bot,
   Braces,
   Database,
   Gauge,
@@ -22,6 +23,7 @@ export const navItems = [
   { id: "memory", label: "Memory", icon: Database },
   { id: "secrets", label: "Secrets", icon: KeyRound },
   { id: "users", label: "Users", icon: Users },
+  { id: "profiles", label: "Profiles", icon: Bot },
   { id: "sandbox", label: "Executors", icon: HardDrive },
   { id: "settings", label: "Settings", icon: Settings },
 ] as const;

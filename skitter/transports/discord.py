@@ -4,7 +4,7 @@ import contextlib
 import io
 import json
 import re
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Awaitable, Callable, Iterable, Optional
 
 import discord
@@ -232,7 +232,7 @@ class ApprovalView(discord.ui.View):
                 pass
 
 
-UserPromptResponder = Callable[[str, str, str, str], Awaitable[None]]
+UserPromptResponder = Callable[[str, str, str, str, str, bool], Awaitable[None]]
 UserPromptClosed = Callable[[str], None]
 MAX_USER_PROMPT_BUTTON_CHARS = 24
 
@@ -288,19 +288,36 @@ class UserPromptView(discord.ui.View):
                     await interaction.response.edit_message(view=None)
             else:
                 await interaction.response.defer(thinking=False)
-            await self.responder(self.prompt_id, choice, str(interaction.user.id), str(interaction.channel_id))
+            await self.responder(
+                self.prompt_id,
+                choice,
+                str(interaction.user.id),
+                str(interaction.channel_id),
+                self.account_key,
+                isinstance(interaction.channel, discord.DMChannel),
+            )
 
         return _handler
 
 class DiscordTransport(TransportAdapter):
-    def __init__(self, token: Optional[str] = None) -> None:
+    def __init__(
+        self,
+        *,
+        account_key: str,
+        token: Optional[str] = None,
+        pinned_profile_id: str | None = None,
+        display_name: str | None = None,
+    ) -> None:
         intents = discord.Intents.default()
         intents.message_content = True
         intents.guilds = True
         self.client = discord.Client(intents=intents)
         self.tree = app_commands.CommandTree(self.client)
         self._handler: EventHandler | None = None
+        self._account_key = str(account_key or "").strip() or "discord:default"
         self.token = token or settings.discord_token
+        self.pinned_profile_id = str(pinned_profile_id or "").strip() or None
+        self.display_name = str(display_name or "").strip() or "Discord"
         self._approval_service: ToolApprovalService | None = None
         self._user_prompt_responder: UserPromptResponder | None = None
         self._user_prompt_messages: dict[str, discord.Message] = {}
@@ -309,16 +326,34 @@ class DiscordTransport(TransportAdapter):
         async def on_ready() -> None:
             await self.tree.sync()
             await self._sync_channels()
+            if self._runtime_state_callback is not None and self.client.user is not None:
+                await self._runtime_state_callback(
+                    {
+                        "status": "online",
+                        "last_error": None,
+                        "last_seen_at": datetime.now(UTC),
+                        "external_account_id": str(self.client.user.id),
+                        "external_label": self.client.user.name,
+                    }
+                )
 
         @self.client.event
         async def on_message(message: discord.Message) -> None:
-            if message.author.bot:
+            bot_user = self.client.user
+            if bot_user is not None and getattr(message.author, "id", None) == bot_user.id:
                 return
             is_private = isinstance(message.channel, discord.DMChannel)
             if self._handler is None:
                 return
             await self._record_user_channel(message, is_private=is_private)
             command, command_meta = _parse_text_command(message.content)
+            mentions_bot = bool(
+                bot_user is not None and any(getattr(member, "id", None) == bot_user.id for member in message.mentions)
+            )
+            reply_to_bot = False
+            referenced = getattr(message.reference, "resolved", None)
+            if isinstance(referenced, discord.Message) and bot_user is not None:
+                reply_to_bot = bool(referenced.author and referenced.author.id == bot_user.id)
             envelope = MessageEnvelope(
                 message_id=str(message.id),
                 channel_id=str(message.channel.id),
@@ -330,12 +365,21 @@ class DiscordTransport(TransportAdapter):
                     for a in message.attachments
                 ],
                 origin="discord",
+                transport_account_key=self.account_key,
                 command=command,
                 metadata={
                     **command_meta,
                     "is_private": is_private,
                     "external_channel_id": str(message.channel.id),
                     "guild_id": str(message.guild.id) if message.guild else None,
+                    "parent_channel_id": (
+                        str(message.channel.parent_id)
+                        if isinstance(message.channel, discord.Thread) and message.channel.parent_id is not None
+                        else None
+                    ),
+                    "mentions_bot": mentions_bot,
+                    "reply_to_bot": reply_to_bot,
+                    "pinned_profile_id": self.pinned_profile_id,
                 },
             )
             await self._handler(envelope)
@@ -405,6 +449,14 @@ class DiscordTransport(TransportAdapter):
                 extra={"raw": command_text or ""},
                 ephemeral=isinstance(interaction.channel, discord.DMChannel),
             )
+
+    @property
+    def origin(self) -> str:
+        return "discord"
+
+    @property
+    def account_key(self) -> str:
+        return self._account_key
 
     def on_event(self, handler: EventHandler) -> None:
         self._handler = handler
@@ -596,9 +648,16 @@ class DiscordTransport(TransportAdapter):
         metadata.update(
             {
                 "interaction_response": True,
+                "is_explicit_interaction": True,
                 "is_private": is_private,
                 "external_channel_id": str(interaction.channel_id) if interaction.channel_id is not None else "",
                 "guild_id": str(interaction.guild_id) if interaction.guild_id is not None else None,
+                "parent_channel_id": (
+                    str(interaction.channel.parent_id)
+                    if isinstance(interaction.channel, discord.Thread) and interaction.channel.parent_id is not None
+                    else None
+                ),
+                "pinned_profile_id": self.pinned_profile_id,
             }
         )
         envelope = MessageEnvelope(
@@ -609,6 +668,7 @@ class DiscordTransport(TransportAdapter):
             text="",
             attachments=[],
             origin="discord",
+            transport_account_key=self.account_key,
             command=command,
             metadata=metadata,
         )
@@ -630,6 +690,11 @@ class DiscordTransport(TransportAdapter):
             kind = "dm"
             guild_id = None
             guild_name = None
+        elif isinstance(message.channel, discord.Thread):
+            channel_name = getattr(message.channel, "name", None) or str(message.channel.id)
+            kind = "thread"
+            guild_id = str(message.guild.id) if message.guild else None
+            guild_name = message.guild.name if message.guild else None
         else:
             channel_name = getattr(message.channel, "name", None) or str(message.channel.id)
             kind = "text"
@@ -640,6 +705,8 @@ class DiscordTransport(TransportAdapter):
             repo = Repository(session)
             await repo.upsert_user_profile(str(message.author.id), display_name, username, avatar_url)
             await repo.upsert_channel(
+                origin=self.origin,
+                transport_account_key=self.account_key,
                 transport_channel_id=str(message.channel.id),
                 name=channel_name,
                 kind=kind,
@@ -656,6 +723,11 @@ class DiscordTransport(TransportAdapter):
             kind = "dm"
             guild_id = None
             guild_name = None
+        elif isinstance(interaction.channel, discord.Thread):
+            channel_name = getattr(interaction.channel, "name", None) or str(interaction.channel_id)
+            kind = "thread"
+            guild_id = str(interaction.guild_id) if interaction.guild_id is not None else None
+            guild_name = interaction.guild.name if interaction.guild is not None else None
         else:
             channel_name = getattr(interaction.channel, "name", None) or str(interaction.channel_id)
             kind = "text"
@@ -667,6 +739,8 @@ class DiscordTransport(TransportAdapter):
             await repo.upsert_user_profile(str(interaction.user.id), display_name, username, avatar_url)
             if interaction.channel_id is not None:
                 await repo.upsert_channel(
+                    origin=self.origin,
+                    transport_account_key=self.account_key,
                     transport_channel_id=str(interaction.channel_id),
                     name=channel_name,
                     kind=kind,
@@ -680,6 +754,8 @@ class DiscordTransport(TransportAdapter):
             for guild in self.client.guilds:
                 for channel in guild.text_channels:
                     await repo.upsert_channel(
+                        origin=self.origin,
+                        transport_account_key=self.account_key,
                         transport_channel_id=str(channel.id),
                         name=channel.name,
                         kind="text",

@@ -9,7 +9,7 @@ from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, Tool
 from skitter.core.config import settings
 from skitter.core.events import EventBus
 from skitter.core.graph import UserPromptRequired
-from skitter.core.models import MessageEnvelope
+from skitter.core.models import MessageEnvelope, SKITTER_NO_REPLY
 from skitter.core.runtime import AgentRuntime
 
 
@@ -469,6 +469,11 @@ class _PromptGraph:
         )
 
 
+class _NoReplyGraph:
+    async def ainvoke(self, *_args, **_kwargs):
+        return {"messages": [AIMessage(content=SKITTER_NO_REPLY)]}
+
+
 @pytest.mark.asyncio
 async def test_handle_message_returns_pending_prompt_when_ask_user_is_triggered(monkeypatch) -> None:
     runtime = AgentRuntime(event_bus=EventBus(), graph=_PromptGraph())
@@ -537,3 +542,58 @@ async def test_handle_message_returns_pending_prompt_when_ask_user_is_triggered(
         "- macbook\n"
         "Custom free-text replies were allowed."
     )
+
+
+@pytest.mark.asyncio
+async def test_handle_message_treats_skitter_no_reply_as_empty_response(monkeypatch) -> None:
+    runtime = AgentRuntime(event_bus=EventBus(), graph=_NoReplyGraph())
+
+    async def _fake_ensure_history(session_id: str) -> None:
+        runtime._history.setdefault(session_id, [SystemMessage(content="system")])
+
+    async def _noop_async(*_args, **_kwargs) -> None:
+        return None
+
+    async def _fake_get_session_model(_session_id: str, _envelope) -> str:
+        return "provider/main"
+
+    monkeypatch.setattr("skitter.core.runtime.list_models", lambda: [object()])
+    monkeypatch.setattr("skitter.core.runtime.resolve_model_name", lambda _value=None, purpose="main": "provider/main")
+    monkeypatch.setattr("skitter.core.runtime.resolve_model_candidates", lambda _value, purpose="main": ["provider/main"])
+    monkeypatch.setattr(
+        "skitter.core.runtime.resolve_model",
+        lambda _value, purpose="main": type(
+            "Resolved",
+            (),
+            {
+                "input_cost_per_1m": 0.0,
+                "output_cost_per_1m": 0.0,
+                "provider_api_type": "openai",
+                "model": "provider/main",
+                "name": "provider/main",
+                "api_base": "",
+            },
+        )(),
+    )
+    monkeypatch.setattr(runtime, "_ensure_history", _fake_ensure_history)
+    monkeypatch.setattr(runtime, "_get_session_model", _fake_get_session_model)
+    monkeypatch.setattr(runtime, "_ensure_system_prompt", lambda history, _user_id: None)
+    monkeypatch.setattr(runtime, "_compact_history_for_context", _noop_async)
+    monkeypatch.setattr(runtime, "_trace_create", _noop_async)
+    monkeypatch.setattr(runtime, "_trace_update", _noop_async)
+    monkeypatch.setattr(runtime, "_trace_event", _noop_async)
+
+    envelope = MessageEnvelope(
+        message_id="msg-no-reply",
+        channel_id="chan-1",
+        user_id="user-1",
+        timestamp=datetime.now(UTC),
+        text="Say nothing if you have nothing to add.",
+        origin="tui",
+        metadata={"internal_user_id": "user-1"},
+    )
+
+    response = await runtime.handle_message("session-no-reply", envelope)
+
+    assert response.text == ""
+    assert response.attachments == []

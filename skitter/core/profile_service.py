@@ -7,14 +7,10 @@ from pathlib import Path
 from ..data.models import AgentProfile
 from ..data.repositories import Repository
 from .profiles import DEFAULT_AGENT_PROFILE_NAME, DEFAULT_AGENT_PROFILE_SLUG, normalize_profile_slug
+from .transport_accounts import discord_surface_kind
 from .workspace import ensure_profile_workspace, profile_workspace_root
 
 PROFILE_SETTINGS_DIRS = ("skills",)
-
-
-def discord_surface_kind() -> str:
-    return "discord_channel"
-
 
 def serialize_profile(profile: AgentProfile, *, default_profile_id: str | None = None) -> dict[str, object]:
     return {
@@ -112,6 +108,7 @@ class ProfileService:
         agent_profile_slug: str | None = None,
         origin: str | None = None,
         channel_id: str | None = None,
+        transport_account_key: str | None = None,
     ) -> AgentProfile:
         profile: AgentProfile | None = None
         if agent_profile_id:
@@ -122,6 +119,7 @@ class ProfileService:
             override = await repo.get_surface_profile_override(
                 user_id=user_id,
                 origin=origin,
+                transport_account_key=str(transport_account_key or "").strip() or "discord:default",
                 surface_kind=discord_surface_kind(),
                 surface_id=channel_id,
             )
@@ -189,6 +187,10 @@ class ProfileService:
         updated = await repo.update_agent_profile(profile.id, status="archived")
         if updated is None:
             raise ValueError("Profile not found.")
+        if hasattr(repo, "disable_transport_accounts_for_profile"):
+            await repo.disable_transport_accounts_for_profile(profile.id)
+        if hasattr(repo, "disable_transport_surface_bindings_for_profile"):
+            await repo.disable_transport_surface_bindings_for_profile(profile.id)
         return updated
 
     async def unarchive_profile(self, repo: Repository, user_id: str, slug: str) -> AgentProfile:
@@ -221,6 +223,7 @@ class ProfileService:
         user_id: str,
         *,
         origin: str,
+        transport_account_key: str,
         channel_id: str,
         slug: str,
     ) -> AgentProfile:
@@ -229,6 +232,7 @@ class ProfileService:
             user_id=user_id,
             agent_profile_id=profile.id,
             origin=origin,
+            transport_account_key=transport_account_key,
             surface_kind=discord_surface_kind(),
             surface_id=channel_id,
         )
@@ -243,6 +247,7 @@ class ProfileService:
         channel_id: str | None,
         agent_profile_id: str | None = None,
         agent_profile_slug: str | None = None,
+        transport_account_key: str | None = None,
     ) -> AgentProfile:
         return await self.resolve_profile(
             repo,
@@ -251,6 +256,7 @@ class ProfileService:
             agent_profile_slug=agent_profile_slug,
             origin=origin,
             channel_id=channel_id,
+            transport_account_key=transport_account_key,
         )
 
     async def _unique_slug(self, repo: Repository, user_id: str, value: str) -> str:

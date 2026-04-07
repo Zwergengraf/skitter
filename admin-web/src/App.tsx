@@ -70,6 +70,8 @@ import type {
   SecretItem,
   SessionDetail,
   SessionListItem,
+  TransportAccountItem,
+  TransportBindingItem,
   ToolRunListItem,
   UserListItem,
 } from "@/lib/types";
@@ -84,6 +86,7 @@ const views: Record<NavItemId, string> = {
   memory: "Memory",
   secrets: "Secrets",
   users: "Users",
+  profiles: "Profiles",
   sandbox: "Executors",
   settings: "Settings",
 };
@@ -599,6 +602,17 @@ export default function App() {
   const [profileSaving, setProfileSaving] = useState<boolean>(false);
   const [profileActionLoading, setProfileActionLoading] = useState<Record<string, boolean>>({});
   const [profileRenameDrafts, setProfileRenameDrafts] = useState<Record<string, string>>({});
+  const [transportAccountsByUserId, setTransportAccountsByUserId] = useState<Record<string, TransportAccountItem[]>>({});
+  const [transportAccountsLoadingByUserId, setTransportAccountsLoadingByUserId] = useState<Record<string, boolean>>({});
+  const [transportAccountsErrorByUserId, setTransportAccountsErrorByUserId] = useState<Record<string, string | null>>({});
+  const [transportActionLoading, setTransportActionLoading] = useState<Record<string, boolean>>({});
+  const [transportDisplayNameDrafts, setTransportDisplayNameDrafts] = useState<Record<string, string>>({});
+  const [transportTokenDrafts, setTransportTokenDrafts] = useState<Record<string, string>>({});
+  const [bindingsByAccountKey, setBindingsByAccountKey] = useState<Record<string, TransportBindingItem[]>>({});
+  const [bindingsLoadingByAccountKey, setBindingsLoadingByAccountKey] = useState<Record<string, boolean>>({});
+  const [bindingDrafts, setBindingDrafts] = useState<
+    Record<string, { guild_id: string; surface_id: string; mode: string; agent_profile_id: string }>
+  >({});
   const [sandboxStatus, setSandboxStatus] = useState<SandboxStatus | null>(null);
   const [executorsData, setExecutorsData] = useState<ExecutorItem[]>([]);
   const [sandboxLoading, setSandboxLoading] = useState<boolean>(false);
@@ -662,8 +676,10 @@ export default function App() {
   const [jobForm, setJobForm] = useState({
     user_id: "",
     user_label: "",
+    agent_profile_id: "",
     channel_id: "",
     channel_label: "",
+    target_transport_account_key: "",
     name: "",
     prompt: "",
     model: SCHEDULED_JOB_MODEL_MAIN,
@@ -1475,21 +1491,80 @@ export default function App() {
     }
   };
 
-  const openProfileManager = (userId: string) => {
-    setProfileManagerUserId(userId);
-    setProfileCreateName("");
-    setProfileCreateSourceSlug("blank");
-    setProfileCreateMode("blank");
-    setProfileCreateMakeDefault(false);
-    void refreshProfilesForUser(userId, true);
+  const refreshTransportAccountsForUser = async (
+    userId: string,
+    force = false
+  ): Promise<TransportAccountItem[]> => {
+    const cleanedUserId = userId.trim();
+    if (!cleanedUserId) {
+      return [];
+    }
+    if (
+      !force &&
+      (transportAccountsByUserId[cleanedUserId] || transportAccountsLoadingByUserId[cleanedUserId])
+    ) {
+      return transportAccountsByUserId[cleanedUserId] ?? [];
+    }
+    setTransportAccountsLoadingByUserId((current) => ({ ...current, [cleanedUserId]: true }));
+    setTransportAccountsErrorByUserId((current) => ({ ...current, [cleanedUserId]: null }));
+    try {
+      const accounts = await api.getTransportAccounts(cleanedUserId);
+      setTransportAccountsByUserId((current) => ({ ...current, [cleanedUserId]: accounts }));
+      setTransportDisplayNameDrafts((current) => {
+        const next = { ...current };
+        for (const account of accounts) {
+          next[account.account_key] = account.display_name;
+        }
+        return next;
+      });
+      await Promise.all(
+        accounts
+          .filter((account) => account.transport === "discord")
+          .map((account) => refreshBindingsForAccount(account.account_key, true))
+      );
+      return accounts;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setTransportAccountsErrorByUserId((current) => ({ ...current, [cleanedUserId]: message }));
+      return [];
+    } finally {
+      setTransportAccountsLoadingByUserId((current) => ({ ...current, [cleanedUserId]: false }));
+    }
   };
 
-  const closeProfileManager = () => {
-    setProfileManagerUserId(null);
+  const refreshBindingsForAccount = async (accountKey: string, force = false): Promise<TransportBindingItem[]> => {
+    const cleanedAccountKey = accountKey.trim();
+    if (!cleanedAccountKey) {
+      return [];
+    }
+    if (!force && (bindingsByAccountKey[cleanedAccountKey] || bindingsLoadingByAccountKey[cleanedAccountKey])) {
+      return bindingsByAccountKey[cleanedAccountKey] ?? [];
+    }
+    setBindingsLoadingByAccountKey((current) => ({ ...current, [cleanedAccountKey]: true }));
+    try {
+      const bindings = await api.getTransportBindings(cleanedAccountKey);
+      setBindingsByAccountKey((current) => ({ ...current, [cleanedAccountKey]: bindings }));
+      return bindings;
+    } catch {
+      return [];
+    } finally {
+      setBindingsLoadingByAccountKey((current) => ({ ...current, [cleanedAccountKey]: false }));
+    }
+  };
+
+  const resetProfileCreateState = () => {
     setProfileCreateName("");
     setProfileCreateSourceSlug("blank");
     setProfileCreateMode("blank");
     setProfileCreateMakeDefault(false);
+  };
+
+  const openProfileManager = (userId: string) => {
+    setActive("profiles");
+    setProfileManagerUserId(userId);
+    resetProfileCreateState();
+    void refreshProfilesForUser(userId, true);
+    void refreshTransportAccountsForUser(userId, true);
   };
 
   const handleProfileCreate = async () => {
@@ -1524,6 +1599,167 @@ export default function App() {
       setProfilesErrorByUserId((current) => ({ ...current, [userId]: message }));
     } finally {
       setProfileSaving(false);
+    }
+  };
+
+  const handleTransportAccountSave = async (userId: string, profile: AgentProfile) => {
+    const existing = (transportAccountsByUserId[userId] ?? []).find(
+      (account) => !account.is_shared_default && account.agent_profile_id === profile.id && account.transport === "discord"
+    );
+    const draftName = (transportDisplayNameDrafts[existing?.account_key ?? profile.id] ?? "").trim();
+    const draftToken = (transportTokenDrafts[profile.id] ?? "").trim();
+    if (!existing && !draftToken) {
+      setTransportAccountsErrorByUserId((current) => ({
+        ...current,
+        [userId]: "A bot token is required to create a dedicated Discord bot.",
+      }));
+      return;
+    }
+    const loadingKey = existing?.account_key ?? profile.id;
+    setTransportActionLoading((current) => ({ ...current, [loadingKey]: true }));
+    setTransportAccountsErrorByUserId((current) => ({ ...current, [userId]: null }));
+    try {
+      if (existing) {
+        await api.updateTransportAccount(existing.account_key, {
+          display_name: draftName || existing.display_name,
+          credential_value: draftToken || undefined,
+        });
+      } else {
+        await api.createTransportAccount({
+          user_id: userId,
+          agent_profile_id: profile.id,
+          transport: "discord",
+          display_name: draftName || `${profile.name} Discord`,
+          credential_value: draftToken,
+          enabled: true,
+        });
+      }
+      setTransportTokenDrafts((current) => ({ ...current, [profile.id]: "" }));
+      await refreshTransportAccountsForUser(userId, true);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setTransportAccountsErrorByUserId((current) => ({ ...current, [userId]: message }));
+    } finally {
+      setTransportActionLoading((current) => ({ ...current, [loadingKey]: false }));
+    }
+  };
+
+  const handleTransportAccountEnabled = async (
+    userId: string,
+    account: TransportAccountItem,
+    enabled: boolean
+  ) => {
+    setTransportActionLoading((current) => ({ ...current, [account.account_key]: true }));
+    setTransportAccountsErrorByUserId((current) => ({ ...current, [userId]: null }));
+    try {
+      await api.updateTransportAccount(account.account_key, { enabled });
+      await refreshTransportAccountsForUser(userId, true);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setTransportAccountsErrorByUserId((current) => ({ ...current, [userId]: message }));
+    } finally {
+      setTransportActionLoading((current) => ({ ...current, [account.account_key]: false }));
+    }
+  };
+
+  const handleTransportAccountDelete = async (userId: string, account: TransportAccountItem) => {
+    const confirmed = window.confirm(
+      `Delete the dedicated Discord bot "${account.display_name}"?\nThis disables its bindings and removes the override token.`
+    );
+    if (!confirmed) {
+      return;
+    }
+    setTransportActionLoading((current) => ({ ...current, [account.account_key]: true }));
+    setTransportAccountsErrorByUserId((current) => ({ ...current, [userId]: null }));
+    try {
+      await api.deleteTransportAccount(account.account_key);
+      await refreshTransportAccountsForUser(userId, true);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setTransportAccountsErrorByUserId((current) => ({ ...current, [userId]: message }));
+    } finally {
+      setTransportActionLoading((current) => ({ ...current, [account.account_key]: false }));
+    }
+  };
+
+  const handleBindingCreate = async (
+    userId: string,
+    account: TransportAccountItem,
+    fallbackProfileId?: string
+  ) => {
+    const draft = bindingDrafts[account.account_key] ?? {
+      guild_id: "",
+      surface_id: "",
+      mode: "mention_only",
+      agent_profile_id: fallbackProfileId ?? "",
+    };
+    if (!draft.surface_id) {
+      setTransportAccountsErrorByUserId((current) => ({
+        ...current,
+        [userId]: "Choose a Discord channel before creating a binding.",
+      }));
+      return;
+    }
+    setTransportActionLoading((current) => ({ ...current, [account.account_key]: true }));
+    setTransportAccountsErrorByUserId((current) => ({ ...current, [userId]: null }));
+    try {
+      await api.createTransportBinding({
+        transport_account_key: account.account_key,
+        user_id: userId,
+        agent_profile_id: account.is_shared_default ? draft.agent_profile_id : fallbackProfileId,
+        origin: "discord",
+        surface_kind: "discord_channel",
+        surface_id: draft.surface_id,
+        mode: draft.mode,
+        enabled: true,
+      });
+      setBindingDrafts((current) => ({
+        ...current,
+        [account.account_key]: {
+          guild_id: draft.guild_id,
+          surface_id: "",
+          mode: "mention_only",
+          agent_profile_id: fallbackProfileId ?? draft.agent_profile_id,
+        },
+      }));
+      await refreshBindingsForAccount(account.account_key, true);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setTransportAccountsErrorByUserId((current) => ({ ...current, [userId]: message }));
+    } finally {
+      setTransportActionLoading((current) => ({ ...current, [account.account_key]: false }));
+    }
+  };
+
+  const handleBindingUpdate = async (
+    userId: string,
+    binding: TransportBindingItem,
+    payload: Partial<{ mode: string; enabled: boolean; agent_profile_id: string }>
+  ) => {
+    setTransportActionLoading((current) => ({ ...current, [binding.id]: true }));
+    setTransportAccountsErrorByUserId((current) => ({ ...current, [userId]: null }));
+    try {
+      await api.updateTransportBinding(binding.id, payload);
+      await refreshBindingsForAccount(binding.transport_account_key, true);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setTransportAccountsErrorByUserId((current) => ({ ...current, [userId]: message }));
+    } finally {
+      setTransportActionLoading((current) => ({ ...current, [binding.id]: false }));
+    }
+  };
+
+  const handleBindingDelete = async (userId: string, binding: TransportBindingItem) => {
+    setTransportActionLoading((current) => ({ ...current, [binding.id]: true }));
+    setTransportAccountsErrorByUserId((current) => ({ ...current, [userId]: null }));
+    try {
+      await api.deleteTransportBinding(binding.id);
+      await refreshBindingsForAccount(binding.transport_account_key, true);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setTransportAccountsErrorByUserId((current) => ({ ...current, [userId]: message }));
+    } finally {
+      setTransportActionLoading((current) => ({ ...current, [binding.id]: false }));
     }
   };
 
@@ -1956,6 +2192,13 @@ export default function App() {
       case "users":
         refreshUsers();
         break;
+      case "profiles":
+        refreshUsers();
+        if (profileManagerUserId) {
+          void refreshProfilesForUser(profileManagerUserId, true);
+          void refreshTransportAccountsForUser(profileManagerUserId, true);
+        }
+        break;
       case "sandbox":
         refreshSandbox();
         break;
@@ -1998,6 +2241,20 @@ export default function App() {
     }
     refreshUsers();
   }, [active, apiReady]);
+
+  useEffect(() => {
+    if (!apiReady || active !== "profiles") {
+      return;
+    }
+    refreshUsers();
+  }, [active, apiReady]);
+
+  useEffect(() => {
+    if (active !== "profiles" || profileManagerUserId || !usersData.length) {
+      return;
+    }
+    openProfileManager(usersData[0].id);
+  }, [active, profileManagerUserId, usersData]);
 
   useEffect(() => {
     if (!apiReady || active !== "sandbox") {
@@ -2081,6 +2338,63 @@ export default function App() {
 
   const activeProfilesForUser = (userId: string | null | undefined) => profilesForUser(userId, false);
 
+  const transportAccountsForUser = (userId: string | null | undefined) => {
+    if (!userId) {
+      return [] as TransportAccountItem[];
+    }
+    return transportAccountsByUserId[userId] ?? [];
+  };
+
+  const explicitDiscordAccountForProfile = (
+    userId: string | null | undefined,
+    profileId: string | null | undefined
+  ) =>
+    transportAccountsForUser(userId).find(
+      (account) =>
+        !account.is_shared_default &&
+        account.transport === "discord" &&
+        account.agent_profile_id === profileId
+    );
+
+  const sharedDefaultDiscordAccount = (userId: string | null | undefined) =>
+    transportAccountsForUser(userId).find(
+      (account) => account.is_shared_default && account.transport === "discord"
+    );
+
+  const channelOptionsForAccount = (accountKey?: string | null, guildId?: string | null) =>
+    channelsData.filter((channel) => {
+      const guildMatches =
+        guildId === undefined || guildId === null
+          ? true
+          : guildId === ""
+            ? false
+            : channel.guild_id === guildId;
+      return channel.transport_account_key === accountKey && guildMatches && channel.kind !== "dm";
+    });
+
+  const guildOptionsForAccount = (accountKey?: string | null) => {
+    const seen = new Set<string>();
+    return channelsData
+      .filter(
+        (channel) =>
+          channel.transport_account_key === accountKey &&
+          channel.kind !== "dm" &&
+          !!channel.guild_id
+      )
+      .map((channel) => ({
+        guild_id: channel.guild_id ?? "",
+        guild_name: channel.guild_name?.trim() || channel.guild_id || "Unknown server",
+      }))
+      .filter((guild) => {
+        if (!guild.guild_id || seen.has(guild.guild_id)) {
+          return false;
+        }
+        seen.add(guild.guild_id);
+        return true;
+      })
+      .sort((left, right) => left.guild_name.localeCompare(right.guild_name));
+  };
+
   const preferredProfileIdForUser = (
     userId: string,
     candidateProfiles: AgentProfile[] = activeProfilesForUser(userId),
@@ -2137,16 +2451,22 @@ export default function App() {
     return match?.id ?? value;
   };
 
-  const channelLabelFor = (channelId: string) => {
-    const channel = channelsData.find((item) => item.id === channelId);
+  const channelLabelFor = (channelId: string, accountKey?: string | null) => {
+    const channel = channelsData.find(
+      (item) => item.id === channelId && (!accountKey || item.transport_account_key === accountKey)
+    );
     return channel?.label ?? channelId;
   };
 
-  const resolveChannelId = (value: string, fallback: string) => {
+  const resolveChannelId = (value: string, fallback: string, accountKey?: string | null) => {
     if (!value) {
       return fallback;
     }
-    const match = channelsData.find((channel) => channel.label === value || channel.id === value);
+    const match = channelsData.find(
+      (channel) =>
+        (!accountKey || channel.transport_account_key === accountKey) &&
+        (channel.label === value || channel.id === value)
+    );
     return match?.id ?? value;
   };
 
@@ -2154,6 +2474,7 @@ export default function App() {
   const secretProfiles = activeProfilesForUser(secretUserId);
   const profileManagerUserIdValue = profileManagerUserId ?? "";
   const profileManagerProfiles = profilesForUser(profileManagerUserId);
+  const profileManagerSharedDefaultDiscord = sharedDefaultDiscordAccount(profileManagerUserId);
   const profileManagerUserLabel = profileManagerUserId ? userLabelFor(profileManagerUserId) : "";
   const visibleSecrets = useMemo(() => {
     const filtered = secretsData.filter((secret) => {
@@ -2441,9 +2762,14 @@ export default function App() {
     if (!jobDialogOpen) {
       return;
     }
+    if (jobForm.user_id) {
+      void refreshProfilesForUser(jobForm.user_id);
+      void refreshTransportAccountsForUser(jobForm.user_id);
+    }
     setJobForm((prev) => {
       const nextUserLabel = prev.user_label || userLabelFor(prev.user_id);
-      const nextChannelLabel = prev.channel_label || channelLabelFor(prev.channel_id);
+      const nextChannelLabel =
+        prev.channel_label || channelLabelFor(prev.channel_id, prev.target_transport_account_key);
       if (nextUserLabel === prev.user_label && nextChannelLabel === prev.channel_label) {
         return prev;
       }
@@ -2453,7 +2779,41 @@ export default function App() {
         channel_label: nextChannelLabel,
       };
     });
-  }, [usersData, channelsData, jobDialogOpen]);
+  }, [usersData, channelsData, jobDialogOpen, jobForm.user_id]);
+
+  useEffect(() => {
+    if (!jobDialogOpen || !jobForm.user_id) {
+      return;
+    }
+    const profiles = activeProfilesForUser(jobForm.user_id);
+    if (!profiles.length) {
+      return;
+    }
+    const fallbackProfileId =
+      profiles.find((profile) => profile.id === jobForm.agent_profile_id)?.id ??
+      preferredProfileIdForUser(jobForm.user_id, profiles);
+    const dedicated = explicitDiscordAccountForProfile(jobForm.user_id, fallbackProfileId);
+    const shared = sharedDefaultDiscordAccount(jobForm.user_id);
+    const nextAccountKey = dedicated?.account_key ?? shared?.account_key ?? "";
+    if (
+      fallbackProfileId === jobForm.agent_profile_id &&
+      nextAccountKey === jobForm.target_transport_account_key
+    ) {
+      return;
+    }
+    setJobForm((prev) => ({
+      ...prev,
+      agent_profile_id: fallbackProfileId,
+      target_transport_account_key: nextAccountKey,
+    }));
+  }, [
+    jobDialogOpen,
+    jobForm.user_id,
+    jobForm.agent_profile_id,
+    jobForm.target_transport_account_key,
+    profilesByUserId,
+    transportAccountsByUserId,
+  ]);
 
   const buildDateSchedule = (date: string, time: string) => {
     if (!date || !time) {
@@ -2468,8 +2828,10 @@ export default function App() {
     setJobForm({
       user_id: "",
       user_label: "",
+      agent_profile_id: "",
       channel_id: "",
       channel_label: "",
+      target_transport_account_key: "",
       name: "",
       prompt: "",
       model: SCHEDULED_JOB_MODEL_MAIN,
@@ -2489,8 +2851,10 @@ export default function App() {
     setJobForm({
       user_id: job.user_id,
       user_label: userLabelFor(job.user_id),
+      agent_profile_id: job.agent_profile_id ?? preferredProfileIdForUser(job.user_id),
       channel_id: job.channel_id,
-      channel_label: channelLabelFor(job.channel_id),
+      channel_label: channelLabelFor(job.channel_id, job.target_transport_account_key),
+      target_transport_account_key: job.target_transport_account_key ?? "",
       name: job.name,
       prompt: job.prompt,
       model: job.model || SCHEDULED_JOB_MODEL_MAIN,
@@ -2511,12 +2875,23 @@ export default function App() {
           ? buildDateSchedule(jobForm.schedule_date, jobForm.schedule_time)
           : jobForm.schedule_expr;
       const resolvedUserId = resolveUserId(jobForm.user_label, jobForm.user_id);
-      const resolvedChannelId = resolveChannelId(jobForm.channel_label, jobForm.channel_id);
+      const resolvedChannelId = resolveChannelId(
+        jobForm.channel_label,
+        jobForm.channel_id,
+        jobForm.target_transport_account_key
+      );
+      if (!resolvedUserId || !jobForm.agent_profile_id || !jobForm.target_transport_account_key || !resolvedChannelId) {
+        throw new Error("User, profile, Discord bot, and destination channel are all required.");
+      }
       if (editingJob) {
         await api.updateSchedule(editingJob.id, {
+          agent_profile_id: jobForm.agent_profile_id,
           name: jobForm.name,
           prompt: jobForm.prompt,
           model: jobForm.model,
+          target_origin: "discord",
+          target_destination_id: resolvedChannelId,
+          target_transport_account_key: jobForm.target_transport_account_key,
           schedule_type: jobForm.schedule_type,
           schedule_expr: scheduleExpr,
           enabled: jobForm.enabled,
@@ -2525,7 +2900,11 @@ export default function App() {
       } else {
         await api.createSchedule({
           user_id: resolvedUserId,
+          agent_profile_id: jobForm.agent_profile_id,
           channel_id: resolvedChannelId,
+          target_origin: "discord",
+          target_destination_id: resolvedChannelId,
+          target_transport_account_key: jobForm.target_transport_account_key,
           name: jobForm.name,
           prompt: jobForm.prompt,
           model: jobForm.model,
@@ -4523,8 +4902,7 @@ export default function App() {
                             </div>
                           </TableCell>
                           <TableCell>
-                            {channelsData.find((channel) => channel.id === job.channel_id)?.label ??
-                              job.channel_id}
+                            {channelLabelFor(job.channel_id, job.target_transport_account_key)}
                           </TableCell>
                           <TableCell className="text-mutedForeground">
                             {formatRelativeTime(job.next_run_at)}
@@ -4737,6 +5115,76 @@ export default function App() {
                     </div>
                     <div className="grid gap-2">
                       <label className="text-xs font-semibold uppercase tracking-[0.2em] text-mutedForeground">
+                        Profile
+                      </label>
+                      <Select
+                        value={jobForm.agent_profile_id}
+                        onValueChange={(value) =>
+                          setJobForm((prev) => ({
+                            ...prev,
+                            agent_profile_id: value,
+                            channel_id: "",
+                            channel_label: "",
+                          }))
+                        }
+                        disabled={!jobForm.user_id}
+                      >
+                        <SelectTrigger>
+                          <SelectValue placeholder="Select profile" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {activeProfilesForUser(jobForm.user_id).map((profile) => (
+                            <SelectItem key={profile.id} value={profile.id}>
+                              {profile.name} · {profile.slug}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    </div>
+                  </div>
+                  <div className="grid gap-2 md:grid-cols-2">
+                    <div className="grid gap-2">
+                      <label className="text-xs font-semibold uppercase tracking-[0.2em] text-mutedForeground">
+                        Discord bot
+                      </label>
+                      <Select
+                        value={jobForm.target_transport_account_key}
+                        onValueChange={(value) =>
+                          setJobForm((prev) => ({
+                            ...prev,
+                            target_transport_account_key: value,
+                            channel_id: "",
+                            channel_label: "",
+                          }))
+                        }
+                        disabled={!jobForm.user_id}
+                      >
+                        <SelectTrigger>
+                          <SelectValue placeholder="Select Discord bot" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {(() => {
+                            const dedicated = explicitDiscordAccountForProfile(jobForm.user_id, jobForm.agent_profile_id);
+                            const shared = sharedDefaultDiscordAccount(jobForm.user_id);
+                            const accounts = dedicated
+                              ? [dedicated]
+                              : shared
+                                ? [shared]
+                                : [];
+                            return accounts.map((account) => (
+                              <SelectItem key={account.account_key} value={account.account_key}>
+                                {account.display_name}
+                              </SelectItem>
+                            ));
+                          })()}
+                        </SelectContent>
+                      </Select>
+                      <p className="text-xs text-mutedForeground">
+                        Profiles with dedicated Discord bots must use that bot for scheduled delivery.
+                      </p>
+                    </div>
+                    <div className="grid gap-2">
+                      <label className="text-xs font-semibold uppercase tracking-[0.2em] text-mutedForeground">
                         Channel
                       </label>
                       <Input
@@ -4748,20 +5196,22 @@ export default function App() {
                             return {
                               ...prev,
                               channel_label: value,
-                              channel_id: value ? resolveChannelId(value, prev.channel_id) : "",
+                              channel_id: value
+                                ? resolveChannelId(value, prev.channel_id, prev.target_transport_account_key)
+                                : "",
                             };
                           })
                         }
                         placeholder="Select a channel"
                       />
                       <datalist id="skitter-channels">
-                        {channelsData.map((channel) => (
+                        {channelOptionsForAccount(jobForm.target_transport_account_key).map((channel) => (
                           <option key={channel.id} value={channel.label} label={channel.id} />
                         ))}
                       </datalist>
                       <p className="text-xs text-mutedForeground">
                         {jobForm.channel_id
-                          ? `Selected: ${channelLabelFor(jobForm.channel_id)} (${jobForm.channel_id})`
+                          ? `Selected: ${channelLabelFor(jobForm.channel_id, jobForm.target_transport_account_key)} (${jobForm.channel_id})`
                           : "Type to search by label or paste a channel id."}
                       </p>
                     </div>
@@ -6786,16 +7236,74 @@ export default function App() {
           </Dialog>
         )}
 
-        {profileManagerUserId && (
-          <Dialog open={!!profileManagerUserId} onOpenChange={(open) => !open && closeProfileManager()}>
-            <DialogContent className="max-w-5xl w-[94vw] max-h-[90vh] overflow-hidden">
-              <DialogHeader>
-                <DialogTitle>Manage Profiles</DialogTitle>
-                <DialogDescription>
-                  Create, clone, rename, archive, and set the default profile for {profileManagerUserLabel}.
-                </DialogDescription>
-              </DialogHeader>
-              <div className="grid gap-6 overflow-hidden">
+        {active === "profiles" && (
+          <div className="grid gap-6">
+            <Card>
+              <CardHeader>
+                <SectionHeader
+                  title="Profiles"
+                  subtitle="Create, clone, rename, archive, and manage Discord access for each user's profiles."
+                />
+              </CardHeader>
+              <CardContent className="space-y-6">
+                <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-end">
+                  <div className="grid max-w-xl gap-2">
+                    <label className="text-xs font-semibold uppercase tracking-[0.2em] text-mutedForeground">
+                      User
+                    </label>
+                    <Select
+                      value={profileManagerUserIdValue || usersData[0]?.id || "none"}
+                      onValueChange={(value) => {
+                        if (value === "none") {
+                          return;
+                        }
+                        openProfileManager(value);
+                      }}
+                      disabled={usersLoading && !usersData.length}
+                    >
+                      <SelectTrigger>
+                        <SelectValue placeholder="Select user" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {usersData.length ? (
+                          usersData.map((user) => (
+                            <SelectItem key={user.id} value={user.id}>
+                              {userLabelFor(user.id)}
+                            </SelectItem>
+                          ))
+                        ) : (
+                          <SelectItem value="none">
+                            {usersLoading ? "Loading users..." : "No users available"}
+                          </SelectItem>
+                        )}
+                      </SelectContent>
+                    </Select>
+                    <p className="text-xs text-mutedForeground">
+                      {profileManagerUserIdValue
+                        ? `Managing profiles for ${profileManagerUserLabel} (${profileManagerUserIdValue}).`
+                        : "Choose a user to manage their profiles and transport assignments."}
+                    </p>
+                  </div>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <Button variant="outline" onClick={refreshUsers} disabled={usersLoading}>
+                      {usersLoading ? "Refreshing users..." : "Refresh users"}
+                    </Button>
+                    <Button variant="outline" onClick={() => setActive("users")}>
+                      View users
+                    </Button>
+                  </div>
+                </div>
+
+                {!usersData.length ? (
+                  <div className="rounded-2xl border border-dashed border-border bg-muted/40 px-4 py-6 text-sm text-mutedForeground">
+                    {usersLoading ? "Loading users..." : "No users yet."}
+                  </div>
+                ) : !profileManagerUserIdValue ? (
+                  <div className="rounded-2xl border border-dashed border-border bg-muted/40 px-4 py-6 text-sm text-mutedForeground">
+                    Select a user to manage profiles, Discord bots, and channel bindings.
+                  </div>
+                ) : (
+                  <div className="grid gap-6">
                 <div className="rounded-2xl border border-border bg-muted/30 p-4">
                   <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
                     <div className="grid gap-2 xl:col-span-2">
@@ -6889,9 +7397,227 @@ export default function App() {
                     {profilesErrorByUserId[profileManagerUserIdValue]}
                   </div>
                 ) : null}
+                {transportAccountsErrorByUserId[profileManagerUserIdValue] ? (
+                  <div className="rounded-2xl border border-dashed border-border bg-muted/40 px-4 py-4 text-sm text-mutedForeground">
+                    {transportAccountsErrorByUserId[profileManagerUserIdValue]}
+                  </div>
+                ) : null}
 
-                <ScrollArea className="h-[48vh] rounded-2xl border border-border bg-card p-4">
-                  <div className="space-y-4">
+                <div className="space-y-4">
+                    {profileManagerSharedDefaultDiscord ? (
+                      <div className="rounded-2xl border border-border bg-muted/20 p-4">
+                        <div className="flex flex-wrap items-center justify-between gap-3">
+                          <div>
+                            <div className="flex flex-wrap items-center gap-2">
+                              <p className="text-sm font-semibold">Shared default Discord bot</p>
+                              <Badge variant="secondary">{profileManagerSharedDefaultDiscord.status}</Badge>
+                              {profileManagerSharedDefaultDiscord.external_label ? (
+                                <Badge variant="outline">{profileManagerSharedDefaultDiscord.external_label}</Badge>
+                              ) : null}
+                            </div>
+                            <p className="mt-2 text-xs text-mutedForeground">
+                              Profiles without their own Discord override can use this shared bot in DMs and in
+                              explicitly bound server channels.
+                            </p>
+                            {profileManagerSharedDefaultDiscord.last_error ? (
+                              <p className="mt-2 text-xs text-danger">
+                                {profileManagerSharedDefaultDiscord.last_error}
+                              </p>
+                            ) : null}
+                          </div>
+                        </div>
+                        <div className="mt-4 grid gap-3">
+                          <div className="grid gap-2 md:grid-cols-[220px_minmax(0,1fr)_220px_220px_auto]">
+                            <Select
+                              value={bindingDrafts[profileManagerSharedDefaultDiscord.account_key]?.guild_id ?? ""}
+                              onValueChange={(value) =>
+                                setBindingDrafts((current) => ({
+                                  ...current,
+                                  [profileManagerSharedDefaultDiscord.account_key]: {
+                                    guild_id: value,
+                                    surface_id: "",
+                                    mode:
+                                      current[profileManagerSharedDefaultDiscord.account_key]?.mode ?? "mention_only",
+                                    agent_profile_id:
+                                      current[profileManagerSharedDefaultDiscord.account_key]?.agent_profile_id ??
+                                      profileManagerProfiles.find(
+                                        (profile) =>
+                                          profile.status !== "archived" &&
+                                          !explicitDiscordAccountForProfile(profileManagerUserIdValue, profile.id)
+                                      )?.id ??
+                                      "",
+                                  },
+                                }))
+                              }
+                            >
+                              <SelectTrigger>
+                                <SelectValue placeholder="Choose a server" />
+                              </SelectTrigger>
+                              <SelectContent>
+                                {guildOptionsForAccount(profileManagerSharedDefaultDiscord.account_key).map((guild) => (
+                                  <SelectItem key={guild.guild_id} value={guild.guild_id}>
+                                    {guild.guild_name}
+                                  </SelectItem>
+                                ))}
+                              </SelectContent>
+                            </Select>
+                            <Select
+                              value={bindingDrafts[profileManagerSharedDefaultDiscord.account_key]?.surface_id ?? ""}
+                              onValueChange={(value) =>
+                                setBindingDrafts((current) => ({
+                                  ...current,
+                                  [profileManagerSharedDefaultDiscord.account_key]: {
+                                    guild_id:
+                                      current[profileManagerSharedDefaultDiscord.account_key]?.guild_id ?? "",
+                                    surface_id: value,
+                                    mode:
+                                      current[profileManagerSharedDefaultDiscord.account_key]?.mode ?? "mention_only",
+                                    agent_profile_id:
+                                      current[profileManagerSharedDefaultDiscord.account_key]?.agent_profile_id ??
+                                      profileManagerProfiles.find(
+                                        (profile) =>
+                                          profile.status !== "archived" &&
+                                          !explicitDiscordAccountForProfile(profileManagerUserIdValue, profile.id)
+                                      )?.id ??
+                                      "",
+                                  },
+                                }))
+                              }
+                            >
+                              <SelectTrigger>
+                                <SelectValue placeholder="Choose a server channel" />
+                              </SelectTrigger>
+                              <SelectContent>
+                                {channelOptionsForAccount(
+                                  profileManagerSharedDefaultDiscord.account_key,
+                                  bindingDrafts[profileManagerSharedDefaultDiscord.account_key]?.guild_id ?? ""
+                                ).map((channel) => (
+                                  <SelectItem key={channel.id} value={channel.id}>
+                                    {channel.label}
+                                  </SelectItem>
+                                ))}
+                              </SelectContent>
+                            </Select>
+                            <Select
+                              value={bindingDrafts[profileManagerSharedDefaultDiscord.account_key]?.agent_profile_id ?? ""}
+                              onValueChange={(value) =>
+                                setBindingDrafts((current) => ({
+                                  ...current,
+                                  [profileManagerSharedDefaultDiscord.account_key]: {
+                                    guild_id:
+                                      current[profileManagerSharedDefaultDiscord.account_key]?.guild_id ?? "",
+                                    surface_id:
+                                      current[profileManagerSharedDefaultDiscord.account_key]?.surface_id ?? "",
+                                    mode:
+                                      current[profileManagerSharedDefaultDiscord.account_key]?.mode ?? "mention_only",
+                                    agent_profile_id: value,
+                                  },
+                                }))
+                              }
+                            >
+                              <SelectTrigger>
+                                <SelectValue placeholder="Choose a profile" />
+                              </SelectTrigger>
+                              <SelectContent>
+                                {profileManagerProfiles
+                                  .filter(
+                                    (profile) =>
+                                      profile.status !== "archived" &&
+                                      !explicitDiscordAccountForProfile(profileManagerUserIdValue, profile.id)
+                                  )
+                                  .map((profile) => (
+                                    <SelectItem key={profile.id} value={profile.id}>
+                                      {profile.name} · {profile.slug}
+                                    </SelectItem>
+                                  ))}
+                              </SelectContent>
+                            </Select>
+                            <Select
+                              value={bindingDrafts[profileManagerSharedDefaultDiscord.account_key]?.mode ?? "mention_only"}
+                              onValueChange={(value) =>
+                                setBindingDrafts((current) => ({
+                                  ...current,
+                                  [profileManagerSharedDefaultDiscord.account_key]: {
+                                    guild_id:
+                                      current[profileManagerSharedDefaultDiscord.account_key]?.guild_id ?? "",
+                                    surface_id:
+                                      current[profileManagerSharedDefaultDiscord.account_key]?.surface_id ?? "",
+                                    mode: value,
+                                    agent_profile_id:
+                                      current[profileManagerSharedDefaultDiscord.account_key]?.agent_profile_id ?? "",
+                                  },
+                                }))
+                              }
+                            >
+                              <SelectTrigger>
+                                <SelectValue placeholder="Mode" />
+                              </SelectTrigger>
+                              <SelectContent>
+                                <SelectItem value="mention_only">Mentions only</SelectItem>
+                                <SelectItem value="all_messages">All messages</SelectItem>
+                              </SelectContent>
+                            </Select>
+                            <Button
+                              size="sm"
+                              onClick={() =>
+                                void handleBindingCreate(
+                                  profileManagerUserIdValue,
+                                  profileManagerSharedDefaultDiscord,
+                                )
+                              }
+                              disabled={transportActionLoading[profileManagerSharedDefaultDiscord.account_key]}
+                            >
+                              Bind channel
+                            </Button>
+                          </div>
+                          {(bindingsByAccountKey[profileManagerSharedDefaultDiscord.account_key] ?? []).length ? (
+                            <div className="space-y-2">
+                              {(bindingsByAccountKey[profileManagerSharedDefaultDiscord.account_key] ?? []).map(
+                                (binding) => (
+                                  <div
+                                    key={binding.id}
+                                    className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-border bg-card px-4 py-3"
+                                  >
+                                    <div>
+                                      <p className="text-sm font-semibold">
+                                        {channelLabelFor(binding.surface_id, binding.transport_account_key)}
+                                      </p>
+                                      <p className="text-xs text-mutedForeground">
+                                        Profile {profileLabelFor(binding.user_id, binding.agent_profile_id, binding.agent_profile_slug)}
+                                      </p>
+                                    </div>
+                                    <div className="flex flex-wrap items-center gap-2">
+                                      <Badge variant={binding.mode === "all_messages" ? "warning" : "secondary"}>
+                                        {binding.mode === "all_messages" ? "all messages" : "mentions only"}
+                                      </Badge>
+                                      <Switch
+                                        checked={binding.enabled}
+                                        onCheckedChange={(value) =>
+                                          void handleBindingUpdate(profileManagerUserIdValue, binding, {
+                                            enabled: value,
+                                          })
+                                        }
+                                      />
+                                      <Button
+                                        size="sm"
+                                        variant="danger"
+                                        onClick={() => void handleBindingDelete(profileManagerUserIdValue, binding)}
+                                      >
+                                        Delete
+                                      </Button>
+                                    </div>
+                                  </div>
+                                )
+                              )}
+                            </div>
+                          ) : (
+                            <div className="rounded-2xl border border-dashed border-border bg-muted/30 px-4 py-4 text-sm text-mutedForeground">
+                              No server channels are bound to the shared default bot yet.
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    ) : null}
                     {profilesLoadingByUserId[profileManagerUserIdValue] && !profileManagerProfiles.length ? (
                       <div className="rounded-2xl border border-dashed border-border bg-muted/40 px-4 py-6 text-sm text-mutedForeground">
                         Loading profiles...
@@ -6899,6 +7625,11 @@ export default function App() {
                     ) : profileManagerProfiles.length ? (
                       profileManagerProfiles.map((profile) => {
                         const loading = profileActionLoading[profile.id];
+                        const dedicatedDiscord = explicitDiscordAccountForProfile(profileManagerUserIdValue, profile.id);
+                        const dedicatedBindings = dedicatedDiscord
+                          ? bindingsByAccountKey[dedicatedDiscord.account_key] ?? []
+                          : [];
+                        const transportDraftKey = dedicatedDiscord?.account_key ?? profile.id;
                         return (
                           <div key={profile.id} className="rounded-2xl border border-border bg-muted/20 p-4">
                             <div className="flex flex-wrap items-start justify-between gap-3">
@@ -6994,6 +7725,233 @@ export default function App() {
                                 )}
                               </div>
                             </div>
+                            <div className="mt-4 rounded-2xl border border-border bg-card p-4">
+                              <div className="flex flex-wrap items-start justify-between gap-3">
+                                <div>
+                                  <div className="flex flex-wrap items-center gap-2">
+                                    <p className="text-sm font-semibold">Dedicated Discord bot</p>
+                                    {dedicatedDiscord ? (
+                                      <>
+                                        <Badge variant={dedicatedDiscord.enabled ? "success" : "secondary"}>
+                                          {dedicatedDiscord.enabled ? "enabled" : "disabled"}
+                                        </Badge>
+                                        <Badge variant="secondary">{dedicatedDiscord.status}</Badge>
+                                      </>
+                                    ) : (
+                                      <Badge variant="outline">Using shared default</Badge>
+                                    )}
+                                  </div>
+                                  <p className="mt-2 text-xs text-mutedForeground">
+                                    Give this profile its own bot token to make it exclusive on Discord.
+                                  </p>
+                                  {dedicatedDiscord?.last_error ? (
+                                    <p className="mt-2 text-xs text-danger">{dedicatedDiscord.last_error}</p>
+                                  ) : null}
+                                </div>
+                              </div>
+                              <div className="mt-4 grid gap-3 md:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto]">
+                                <Input
+                                  value={
+                                    transportDisplayNameDrafts[transportDraftKey] ??
+                                    dedicatedDiscord?.display_name ??
+                                    `${profile.name} Discord`
+                                  }
+                                  onChange={(event) =>
+                                    setTransportDisplayNameDrafts((current) => ({
+                                      ...current,
+                                      [transportDraftKey]: event.target.value,
+                                    }))
+                                  }
+                                  placeholder={`${profile.name} Discord`}
+                                  disabled={profile.status === "archived"}
+                                />
+                                <Input
+                                  type="password"
+                                  value={transportTokenDrafts[profile.id] ?? ""}
+                                  onChange={(event) =>
+                                    setTransportTokenDrafts((current) => ({
+                                      ...current,
+                                      [profile.id]: event.target.value,
+                                    }))
+                                  }
+                                  placeholder={dedicatedDiscord ? "Paste a new token to rotate it" : "Discord bot token"}
+                                  disabled={profile.status === "archived"}
+                                />
+                                <div className="flex flex-wrap items-center gap-2">
+                                  {dedicatedDiscord ? (
+                                    <>
+                                      <Switch
+                                        checked={dedicatedDiscord.enabled}
+                                        onCheckedChange={(value) =>
+                                          void handleTransportAccountEnabled(
+                                            profileManagerUserIdValue,
+                                            dedicatedDiscord,
+                                            value
+                                          )
+                                        }
+                                        disabled={transportActionLoading[dedicatedDiscord.account_key]}
+                                      />
+                                      <Button
+                                        size="sm"
+                                        variant="outline"
+                                        onClick={() => void handleTransportAccountSave(profileManagerUserIdValue, profile)}
+                                        disabled={profile.status === "archived" || transportActionLoading[dedicatedDiscord.account_key]}
+                                      >
+                                        Save bot
+                                      </Button>
+                                      <Button
+                                        size="sm"
+                                        variant="danger"
+                                        onClick={() =>
+                                          void handleTransportAccountDelete(profileManagerUserIdValue, dedicatedDiscord)
+                                        }
+                                        disabled={transportActionLoading[dedicatedDiscord.account_key]}
+                                      >
+                                        Remove bot
+                                      </Button>
+                                    </>
+                                  ) : (
+                                    <Button
+                                      size="sm"
+                                      onClick={() => void handleTransportAccountSave(profileManagerUserIdValue, profile)}
+                                      disabled={profile.status === "archived" || transportActionLoading[transportDraftKey]}
+                                    >
+                                      Create bot
+                                    </Button>
+                                  )}
+                                </div>
+                              </div>
+                              {dedicatedDiscord ? (
+                                <div className="mt-4 space-y-3">
+                                  <div className="grid gap-2 md:grid-cols-[220px_minmax(0,1fr)_220px_auto]">
+                                    <Select
+                                      value={bindingDrafts[dedicatedDiscord.account_key]?.guild_id ?? ""}
+                                      onValueChange={(value) =>
+                                        setBindingDrafts((current) => ({
+                                          ...current,
+                                          [dedicatedDiscord.account_key]: {
+                                            guild_id: value,
+                                            surface_id: "",
+                                            mode: current[dedicatedDiscord.account_key]?.mode ?? "mention_only",
+                                            agent_profile_id: profile.id,
+                                          },
+                                        }))
+                                      }
+                                    >
+                                      <SelectTrigger>
+                                        <SelectValue placeholder="Choose a server" />
+                                      </SelectTrigger>
+                                      <SelectContent>
+                                        {guildOptionsForAccount(dedicatedDiscord.account_key).map((guild) => (
+                                          <SelectItem key={guild.guild_id} value={guild.guild_id}>
+                                            {guild.guild_name}
+                                          </SelectItem>
+                                        ))}
+                                      </SelectContent>
+                                    </Select>
+                                    <Select
+                                      value={bindingDrafts[dedicatedDiscord.account_key]?.surface_id ?? ""}
+                                      onValueChange={(value) =>
+                                        setBindingDrafts((current) => ({
+                                          ...current,
+                                          [dedicatedDiscord.account_key]: {
+                                            guild_id: current[dedicatedDiscord.account_key]?.guild_id ?? "",
+                                            surface_id: value,
+                                            mode: current[dedicatedDiscord.account_key]?.mode ?? "mention_only",
+                                            agent_profile_id: profile.id,
+                                          },
+                                        }))
+                                      }
+                                    >
+                                      <SelectTrigger>
+                                        <SelectValue placeholder="Choose a server channel" />
+                                      </SelectTrigger>
+                                      <SelectContent>
+                                        {channelOptionsForAccount(
+                                          dedicatedDiscord.account_key,
+                                          bindingDrafts[dedicatedDiscord.account_key]?.guild_id ?? ""
+                                        ).map((channel) => (
+                                          <SelectItem key={channel.id} value={channel.id}>
+                                            {channel.label}
+                                          </SelectItem>
+                                        ))}
+                                      </SelectContent>
+                                    </Select>
+                                    <Select
+                                      value={bindingDrafts[dedicatedDiscord.account_key]?.mode ?? "mention_only"}
+                                      onValueChange={(value) =>
+                                        setBindingDrafts((current) => ({
+                                          ...current,
+                                          [dedicatedDiscord.account_key]: {
+                                            guild_id: current[dedicatedDiscord.account_key]?.guild_id ?? "",
+                                            surface_id: current[dedicatedDiscord.account_key]?.surface_id ?? "",
+                                            mode: value,
+                                            agent_profile_id: profile.id,
+                                          },
+                                        }))
+                                      }
+                                    >
+                                      <SelectTrigger>
+                                        <SelectValue placeholder="Mode" />
+                                      </SelectTrigger>
+                                      <SelectContent>
+                                        <SelectItem value="mention_only">Mentions only</SelectItem>
+                                        <SelectItem value="all_messages">All messages</SelectItem>
+                                      </SelectContent>
+                                    </Select>
+                                    <Button
+                                      size="sm"
+                                      onClick={() =>
+                                        void handleBindingCreate(profileManagerUserIdValue, dedicatedDiscord, profile.id)
+                                      }
+                                      disabled={transportActionLoading[dedicatedDiscord.account_key]}
+                                    >
+                                      Bind channel
+                                    </Button>
+                                  </div>
+                                  {dedicatedBindings.length ? (
+                                    <div className="space-y-2">
+                                      {dedicatedBindings.map((binding) => (
+                                        <div
+                                          key={binding.id}
+                                          className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-border bg-muted/20 px-4 py-3"
+                                        >
+                                          <div>
+                                            <p className="text-sm font-semibold">
+                                              {channelLabelFor(binding.surface_id, binding.transport_account_key)}
+                                            </p>
+                                            <p className="text-xs text-mutedForeground">
+                                              {binding.mode === "all_messages" ? "All messages" : "Mentions and replies"}
+                                            </p>
+                                          </div>
+                                          <div className="flex flex-wrap items-center gap-2">
+                                            <Switch
+                                              checked={binding.enabled}
+                                              onCheckedChange={(value) =>
+                                                void handleBindingUpdate(profileManagerUserIdValue, binding, {
+                                                  enabled: value,
+                                                })
+                                              }
+                                            />
+                                            <Button
+                                              size="sm"
+                                              variant="danger"
+                                              onClick={() => void handleBindingDelete(profileManagerUserIdValue, binding)}
+                                            >
+                                              Delete
+                                            </Button>
+                                          </div>
+                                        </div>
+                                      ))}
+                                    </div>
+                                  ) : (
+                                    <div className="rounded-2xl border border-dashed border-border bg-muted/30 px-4 py-4 text-sm text-mutedForeground">
+                                      No server channels are bound to this dedicated bot yet.
+                                    </div>
+                                  )}
+                                </div>
+                              ) : null}
+                            </div>
                           </div>
                         );
                       })
@@ -7002,16 +7960,12 @@ export default function App() {
                         No profiles found for this user.
                       </div>
                     )}
+                </div>
                   </div>
-                </ScrollArea>
-              </div>
-              <div className="flex justify-end border-t border-border pt-4">
-                <Button variant="outline" onClick={closeProfileManager}>
-                  Close
-                </Button>
-              </div>
-            </DialogContent>
-          </Dialog>
+                )}
+              </CardContent>
+            </Card>
+          </div>
         )}
 
         <footer className="flex items-center justify-between border-t border-border pt-4 text-xs text-mutedForeground">

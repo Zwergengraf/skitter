@@ -184,6 +184,7 @@ class SessionManager:
         scope_id: str,
         origin: str,
         channel_id: str | None = None,
+        cache_key: str | None = None,
     ) -> tuple[Optional[Path], str]:
         ensure_profile_workspace(user_id, agent_profile_slug)
         async with SessionLocal() as session:
@@ -212,8 +213,8 @@ class SessionManager:
                 scope_type=scope_type,
                 scope_id=scope_id,
             )
-        if channel_id:
-            self._scope_session[f"{agent_profile_id}:{channel_id}"] = new_session.id
+        if channel_id or cache_key:
+            self._scope_session[f"{agent_profile_id}:{cache_key or channel_id}"] = new_session.id
         self._scope_session[f"{agent_profile_id}:{scope_id}"] = new_session.id
         await self.runtime.event_bus.emit_admin(
             kind="session.started",

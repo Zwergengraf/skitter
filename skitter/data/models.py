@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
-from sqlalchemy import DateTime, Float, JSON, Integer, String, Text
+from sqlalchemy import Boolean, DateTime, Float, JSON, Integer, String, Text
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 from pgvector.sqlalchemy import Vector
 
@@ -201,6 +201,28 @@ class Secret(Base):
     last_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
+class TransportAccount(Base):
+    __tablename__ = "transport_accounts"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    account_key: Mapped[str] = mapped_column(String, unique=True, index=True)
+    user_id: Mapped[str] = mapped_column(String, index=True)
+    agent_profile_id: Mapped[str] = mapped_column(String, index=True)
+    transport: Mapped[str] = mapped_column(String, index=True)
+    display_name: Mapped[str | None] = mapped_column(String, nullable=True)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    status: Mapped[str] = mapped_column(String, default="offline")
+    credential_secret_name: Mapped[str] = mapped_column(String)
+    credential_fingerprint: Mapped[str | None] = mapped_column(String, index=True, nullable=True)
+    external_account_id: Mapped[str | None] = mapped_column(String, index=True, nullable=True)
+    external_label: Mapped[str | None] = mapped_column(String, nullable=True)
+    last_seen_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    meta: Mapped[dict] = mapped_column(JSON, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
 class SurfaceProfileOverride(Base):
     __tablename__ = "surface_profile_overrides"
 
@@ -208,6 +230,7 @@ class SurfaceProfileOverride(Base):
     user_id: Mapped[str] = mapped_column(String, index=True)
     agent_profile_id: Mapped[str] = mapped_column(String, index=True)
     origin: Mapped[str] = mapped_column(String, index=True)
+    transport_account_key: Mapped[str] = mapped_column(String, index=True, default="discord:default")
     surface_kind: Mapped[str] = mapped_column(String, index=True)
     surface_id: Mapped[str] = mapped_column(String, index=True)
     meta: Mapped[dict] = mapped_column(JSON, default=dict)
@@ -251,12 +274,31 @@ class Channel(Base):
     __tablename__ = "channels"
 
     id: Mapped[str] = mapped_column(String, primary_key=True)
+    origin: Mapped[str] = mapped_column(String, index=True, default="discord")
+    transport_account_key: Mapped[str] = mapped_column(String, index=True, default="discord:default")
     transport_channel_id: Mapped[str] = mapped_column(String, index=True)
     name: Mapped[str] = mapped_column(String)
     kind: Mapped[str] = mapped_column(String)
     guild_id: Mapped[str | None] = mapped_column(String, nullable=True)
     guild_name: Mapped[str | None] = mapped_column(String, nullable=True)
     meta: Mapped[dict] = mapped_column(JSON, default=dict)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class TransportSurfaceBinding(Base):
+    __tablename__ = "transport_surface_bindings"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    transport_account_key: Mapped[str] = mapped_column(String, index=True)
+    user_id: Mapped[str] = mapped_column(String, index=True)
+    agent_profile_id: Mapped[str] = mapped_column(String, index=True)
+    origin: Mapped[str] = mapped_column(String, index=True)
+    surface_kind: Mapped[str] = mapped_column(String, index=True)
+    surface_id: Mapped[str] = mapped_column(String, index=True)
+    mode: Mapped[str] = mapped_column(String, default="mention_only")
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    meta: Mapped[dict] = mapped_column(JSON, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
@@ -273,6 +315,7 @@ class ScheduledJob(Base):
     target_scope_type: Mapped[str] = mapped_column(String, default="private")
     target_scope_id: Mapped[str] = mapped_column(String, default="")
     target_origin: Mapped[str | None] = mapped_column(String, nullable=True)
+    target_transport_account_key: Mapped[str | None] = mapped_column(String, index=True, nullable=True)
     target_destination_id: Mapped[str | None] = mapped_column(String, nullable=True)
     name: Mapped[str] = mapped_column(String)
     prompt: Mapped[str] = mapped_column(Text)
@@ -315,6 +358,7 @@ class AgentJob(Base):
     target_scope_type: Mapped[str] = mapped_column(String, default="private")
     target_scope_id: Mapped[str] = mapped_column(String, default="")
     target_origin: Mapped[str | None] = mapped_column(String, nullable=True)
+    target_transport_account_key: Mapped[str | None] = mapped_column(String, index=True, nullable=True)
     target_destination_id: Mapped[str | None] = mapped_column(String, nullable=True)
     payload: Mapped[dict] = mapped_column(JSON, default=dict)
     limits: Mapped[dict] = mapped_column(JSON, default=dict)

@@ -62,6 +62,7 @@ _CURRENT_SESSION_ID: ContextVar[str] = ContextVar("skitter_session_id", default=
 _CURRENT_CHANNEL_ID: ContextVar[str] = ContextVar("skitter_channel_id", default="default")
 _CURRENT_USER_ID: ContextVar[str] = ContextVar("skitter_user_id", default="default")
 _CURRENT_ORIGIN: ContextVar[str] = ContextVar("skitter_origin", default="unknown")
+_CURRENT_TRANSPORT_ACCOUNT_KEY: ContextVar[str] = ContextVar("skitter_transport_account_key", default="")
 _CURRENT_SCOPE_TYPE: ContextVar[str] = ContextVar("skitter_scope_type", default="private")
 _CURRENT_SCOPE_ID: ContextVar[str] = ContextVar("skitter_scope_id", default="default")
 _CURRENT_RUN_ID: ContextVar[str] = ContextVar("skitter_run_id", default="")
@@ -98,6 +99,14 @@ def set_current_origin(origin: str) -> Token:
 
 def reset_current_origin(token: Token) -> None:
     _CURRENT_ORIGIN.reset(token)
+
+
+def set_current_transport_account_key(transport_account_key: str) -> Token:
+    return _CURRENT_TRANSPORT_ACCOUNT_KEY.set(str(transport_account_key or ""))
+
+
+def reset_current_transport_account_key(token: Token) -> None:
+    _CURRENT_TRANSPORT_ACCOUNT_KEY.reset(token)
 
 
 def set_current_scope_type(scope_type: str) -> Token:
@@ -145,6 +154,10 @@ def _user_id() -> str:
 
 def _origin() -> str:
     return _CURRENT_ORIGIN.get()
+
+
+def _transport_account_key() -> str:
+    return _CURRENT_TRANSPORT_ACCOUNT_KEY.get()
 
 
 def _scope_type() -> str:
@@ -202,6 +215,8 @@ async def _maybe_approve(
     return await approval_service.request(
         session_id=_session_id(),
         channel_id=_channel_id(),
+        origin=_origin(),
+        transport_account_key=_transport_account_key() or None,
         tool_name=tool_name,
         payload=payload,
         requested_by=_user_id(),
@@ -1317,6 +1332,8 @@ def build_graph(
                 decision = await approval_service.request(
                     session_id=_session_id(),
                     channel_id=_channel_id(),
+                    origin=_origin(),
+                    transport_account_key=_transport_account_key() or None,
                     tool_name="shell",
                     payload=approval_payload,
                     requested_by=_user_id(),
@@ -1720,6 +1737,8 @@ def build_graph(
         prompt_request = await user_prompt_service.request(
             session_id=_session_id(),
             channel_id=_channel_id(),
+            origin=_origin(),
+            transport_account_key=_transport_account_key() or None,
             question=normalized_question,
             choices=normalized_choices,
             allow_free_text=bool(allow_free_text),
@@ -1931,6 +1950,7 @@ def build_graph(
             target_scope_type=target_scope_type,
             target_scope_id=target_scope_id,
             target_origin=_origin(),
+            target_transport_account_key=_transport_account_key() or None,
             target_destination_id=target_channel,
         )
         await _complete_tool_run(tool_run_id, "failed" if isinstance(result, dict) and result.get("error") else "completed", result if isinstance(result, dict) else {"result": result})
@@ -2096,6 +2116,7 @@ def build_graph(
                 target_scope_type=_scope_type(),
                 target_scope_id=_scope_id(),
                 target_origin=_origin(),
+                target_transport_account_key=_transport_account_key() or None,
                 target_destination_id=_channel_id(),
             )
         except Exception as exc:

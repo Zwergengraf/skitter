@@ -11,13 +11,7 @@ from ..data.repositories import Repository
 
 _logger = logging.getLogger(__name__)
 
-UserPromptNotifier = Callable[[str, str, str, list[str], bool], Awaitable[None]]
-
-
-def _looks_like_discord_channel_id(channel_id: str) -> bool:
-    value = (channel_id or "").strip()
-    return bool(value and value.isdigit())
-
+UserPromptNotifier = Callable[[str, str, str | None, str, list[str], bool], Awaitable[None]]
 
 @dataclass(slots=True)
 class UserPromptRequest:
@@ -41,6 +35,8 @@ class UserPromptService:
         *,
         session_id: str,
         channel_id: str,
+        origin: str,
+        transport_account_key: str | None = None,
         question: str,
         choices: list[str] | None = None,
         allow_free_text: bool = True,
@@ -80,20 +76,26 @@ class UserPromptService:
             run_id=run_id,
             data=payload,
         )
-        if self._notifier is not None and _looks_like_discord_channel_id(channel_id):
+        if (
+            self._notifier is not None
+            and str(origin or "").strip().lower() == "discord"
+            and bool(str(transport_account_key or "").strip())
+        ):
             try:
                 await self._notifier(
                     prompt.id,
                     channel_id,
+                    transport_account_key,
                     prompt.question,
                     list(prompt.choices or []),
                     bool(prompt.allow_free_text),
                 )
             except Exception:
                 _logger.exception(
-                    "Failed to deliver user prompt request (prompt_id=%s, channel_id=%s)",
+                    "Failed to deliver user prompt request (prompt_id=%s, channel_id=%s, account=%s)",
                     prompt.id,
                     channel_id,
+                    transport_account_key,
                 )
 
         return UserPromptRequest(

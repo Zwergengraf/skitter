@@ -26,6 +26,8 @@ from .models import (
     Session,
     Secret,
     SurfaceProfileOverride,
+    TransportAccount,
+    TransportSurfaceBinding,
     ToolRun,
     UserPrompt,
     User,
@@ -173,12 +175,22 @@ class Repository:
         raw = str(meta.get("default_executor_id") or "").strip()
         return raw or None
 
-    async def mark_user_notified(self, user_id: str) -> None:
+    async def mark_user_notified(self, user_id: str, transport_account_key: str | None = None) -> None:
         result = await self.session.execute(select(User).where(User.id == user_id))
         user = result.scalar_one_or_none()
         if user is None:
             return
         meta = dict(user.meta or {})
+        account_key = str(transport_account_key or "").strip()
+        if account_key:
+            existing = meta.get("approval_notified_accounts")
+            if isinstance(existing, list):
+                values = [str(item).strip() for item in existing if str(item).strip()]
+            else:
+                values = []
+            if account_key not in values:
+                values.append(account_key)
+            meta["approval_notified_accounts"] = values
         meta["approval_notified"] = True
         user.meta = meta
         await self.session.commit()
@@ -329,6 +341,8 @@ class Repository:
         await self.session.execute(delete(AgentJob).where(agent_job_filter))
         await self.session.execute(delete(MemoryEntry).where(MemoryEntry.agent_profile_id == profile_id))
         await self.session.execute(delete(Secret).where(Secret.agent_profile_id == profile_id))
+        await self.session.execute(delete(TransportSurfaceBinding).where(TransportSurfaceBinding.agent_profile_id == profile_id))
+        await self.session.execute(delete(TransportAccount).where(TransportAccount.agent_profile_id == profile_id))
         await self.session.execute(delete(SurfaceProfileOverride).where(SurfaceProfileOverride.agent_profile_id == profile_id))
         await self.session.execute(delete(ScheduledJob).where(ScheduledJob.agent_profile_id == profile_id))
         await self.session.execute(delete(Session).where(session_filter))
@@ -353,6 +367,7 @@ class Repository:
         *,
         user_id: str,
         origin: str,
+        transport_account_key: str,
         surface_kind: str,
         surface_id: str,
     ) -> SurfaceProfileOverride | None:
@@ -360,6 +375,7 @@ class Repository:
             select(SurfaceProfileOverride).where(
                 SurfaceProfileOverride.user_id == user_id,
                 SurfaceProfileOverride.origin == origin,
+                SurfaceProfileOverride.transport_account_key == transport_account_key,
                 SurfaceProfileOverride.surface_kind == surface_kind,
                 SurfaceProfileOverride.surface_id == surface_id,
             )
@@ -372,6 +388,7 @@ class Repository:
         user_id: str,
         agent_profile_id: str,
         origin: str,
+        transport_account_key: str,
         surface_kind: str,
         surface_id: str,
         meta: dict | None = None,
@@ -379,6 +396,7 @@ class Repository:
         row = await self.get_surface_profile_override(
             user_id=user_id,
             origin=origin,
+            transport_account_key=transport_account_key,
             surface_kind=surface_kind,
             surface_id=surface_id,
         )
@@ -389,6 +407,7 @@ class Repository:
                 user_id=user_id,
                 agent_profile_id=agent_profile_id,
                 origin=origin,
+                transport_account_key=transport_account_key,
                 surface_kind=surface_kind,
                 surface_id=surface_id,
                 meta=meta or {},
@@ -399,6 +418,7 @@ class Repository:
         else:
             row.agent_profile_id = agent_profile_id
             row.meta = meta or row.meta or {}
+            row.transport_account_key = transport_account_key
             row.updated_at = now
         await self.session.commit()
         return row
@@ -408,12 +428,14 @@ class Repository:
         *,
         user_id: str,
         origin: str,
+        transport_account_key: str,
         surface_kind: str,
         surface_id: str,
     ) -> bool:
         row = await self.get_surface_profile_override(
             user_id=user_id,
             origin=origin,
+            transport_account_key=transport_account_key,
             surface_kind=surface_kind,
             surface_id=surface_id,
         )
@@ -422,6 +444,239 @@ class Repository:
         await self.session.delete(row)
         await self.session.commit()
         return True
+
+    async def list_transport_accounts(
+        self,
+        *,
+        user_id: str | None = None,
+        agent_profile_id: str | None = None,
+        transport: str | None = None,
+        include_disabled: bool = True,
+    ) -> list[TransportAccount]:
+        stmt = select(TransportAccount).order_by(TransportAccount.transport.asc(), TransportAccount.created_at.asc())
+        if user_id:
+            stmt = stmt.where(TransportAccount.user_id == user_id)
+        if agent_profile_id:
+            stmt = stmt.where(TransportAccount.agent_profile_id == agent_profile_id)
+        if transport:
+            stmt = stmt.where(TransportAccount.transport == transport)
+        if not include_disabled:
+            stmt = stmt.where(TransportAccount.enabled.is_(True))
+        result = await self.session.execute(stmt)
+        return list(result.scalars().all())
+
+    async def get_transport_account(self, account_id: str) -> TransportAccount | None:
+        result = await self.session.execute(select(TransportAccount).where(TransportAccount.id == account_id))
+        return result.scalar_one_or_none()
+
+    async def get_transport_account_by_key(self, account_key: str) -> TransportAccount | None:
+        result = await self.session.execute(
+            select(TransportAccount).where(TransportAccount.account_key == account_key)
+        )
+        return result.scalar_one_or_none()
+
+    async def get_transport_account_for_profile(self, agent_profile_id: str, transport: str) -> TransportAccount | None:
+        result = await self.session.execute(
+            select(TransportAccount).where(
+                TransportAccount.agent_profile_id == agent_profile_id,
+                TransportAccount.transport == transport,
+            )
+        )
+        return result.scalar_one_or_none()
+
+    async def get_transport_account_by_fingerprint(self, transport: str, fingerprint: str) -> TransportAccount | None:
+        result = await self.session.execute(
+            select(TransportAccount).where(
+                TransportAccount.transport == transport,
+                TransportAccount.credential_fingerprint == fingerprint,
+            )
+        )
+        return result.scalar_one_or_none()
+
+    async def create_transport_account(
+        self,
+        *,
+        account_key: str,
+        user_id: str,
+        agent_profile_id: str,
+        transport: str,
+        credential_secret_name: str,
+        credential_fingerprint: str,
+        display_name: str | None = None,
+        enabled: bool = True,
+        status: str = "offline",
+        meta: dict | None = None,
+    ) -> TransportAccount:
+        now = self._utcnow()
+        row = TransportAccount(
+            id=str(uuid.uuid4()),
+            account_key=account_key,
+            user_id=user_id,
+            agent_profile_id=agent_profile_id,
+            transport=transport,
+            display_name=display_name,
+            enabled=enabled,
+            status=status,
+            credential_secret_name=credential_secret_name,
+            credential_fingerprint=credential_fingerprint,
+            meta=meta or {},
+            created_at=now,
+            updated_at=now,
+        )
+        self.session.add(row)
+        await self.session.commit()
+        return row
+
+    async def update_transport_account(self, account_key: str, **fields: Any) -> TransportAccount | None:
+        row = await self.get_transport_account_by_key(account_key)
+        if row is None:
+            return None
+        for key, value in fields.items():
+            if not hasattr(row, key):
+                continue
+            if value is not None or key in {"display_name", "last_error", "external_account_id", "external_label", "last_seen_at"}:
+                setattr(row, key, value)
+        row.updated_at = self._utcnow()
+        await self.session.commit()
+        return row
+
+    async def delete_transport_account(self, account_key: str) -> bool:
+        row = await self.get_transport_account_by_key(account_key)
+        if row is None:
+            return False
+        await self.session.execute(
+            text("UPDATE scheduled_jobs SET target_transport_account_key = NULL WHERE target_transport_account_key = :account_key"),
+            {"account_key": account_key},
+        )
+        await self.session.execute(
+            text("UPDATE agent_jobs SET target_transport_account_key = NULL WHERE target_transport_account_key = :account_key"),
+            {"account_key": account_key},
+        )
+        await self.session.execute(delete(Channel).where(Channel.transport_account_key == account_key))
+        await self.session.execute(
+            delete(TransportSurfaceBinding).where(TransportSurfaceBinding.transport_account_key == account_key)
+        )
+        await self.session.execute(
+            delete(SurfaceProfileOverride).where(SurfaceProfileOverride.transport_account_key == account_key)
+        )
+        await self.session.delete(row)
+        await self.session.commit()
+        return True
+
+    async def list_transport_surface_bindings(
+        self,
+        *,
+        transport_account_key: str | None = None,
+        user_id: str | None = None,
+        agent_profile_id: str | None = None,
+        origin: str | None = None,
+    ) -> list[TransportSurfaceBinding]:
+        stmt = select(TransportSurfaceBinding).order_by(TransportSurfaceBinding.created_at.asc())
+        if transport_account_key:
+            stmt = stmt.where(TransportSurfaceBinding.transport_account_key == transport_account_key)
+        if user_id:
+            stmt = stmt.where(TransportSurfaceBinding.user_id == user_id)
+        if agent_profile_id:
+            stmt = stmt.where(TransportSurfaceBinding.agent_profile_id == agent_profile_id)
+        if origin:
+            stmt = stmt.where(TransportSurfaceBinding.origin == origin)
+        result = await self.session.execute(stmt)
+        return list(result.scalars().all())
+
+    async def get_transport_surface_binding(self, binding_id: str) -> TransportSurfaceBinding | None:
+        result = await self.session.execute(
+            select(TransportSurfaceBinding).where(TransportSurfaceBinding.id == binding_id)
+        )
+        return result.scalar_one_or_none()
+
+    async def get_transport_surface_binding_for_surface(
+        self,
+        *,
+        transport_account_key: str,
+        origin: str,
+        surface_kind: str,
+        surface_id: str,
+    ) -> TransportSurfaceBinding | None:
+        result = await self.session.execute(
+            select(TransportSurfaceBinding).where(
+                TransportSurfaceBinding.transport_account_key == transport_account_key,
+                TransportSurfaceBinding.origin == origin,
+                TransportSurfaceBinding.surface_kind == surface_kind,
+                TransportSurfaceBinding.surface_id == surface_id,
+            )
+        )
+        return result.scalar_one_or_none()
+
+    async def upsert_transport_surface_binding(
+        self,
+        *,
+        transport_account_key: str,
+        user_id: str,
+        agent_profile_id: str,
+        origin: str,
+        surface_kind: str,
+        surface_id: str,
+        mode: str,
+        enabled: bool = True,
+        meta: dict | None = None,
+    ) -> TransportSurfaceBinding:
+        row = await self.get_transport_surface_binding_for_surface(
+            transport_account_key=transport_account_key,
+            origin=origin,
+            surface_kind=surface_kind,
+            surface_id=surface_id,
+        )
+        now = self._utcnow()
+        if row is None:
+            row = TransportSurfaceBinding(
+                id=str(uuid.uuid4()),
+                transport_account_key=transport_account_key,
+                user_id=user_id,
+                agent_profile_id=agent_profile_id,
+                origin=origin,
+                surface_kind=surface_kind,
+                surface_id=surface_id,
+                mode=mode,
+                enabled=enabled,
+                meta=meta or {},
+                created_at=now,
+                updated_at=now,
+            )
+            self.session.add(row)
+        else:
+            row.user_id = user_id
+            row.agent_profile_id = agent_profile_id
+            row.mode = mode
+            row.enabled = enabled
+            row.meta = meta or row.meta or {}
+            row.updated_at = now
+        await self.session.commit()
+        return row
+
+    async def delete_transport_surface_binding(self, binding_id: str) -> bool:
+        row = await self.get_transport_surface_binding(binding_id)
+        if row is None:
+            return False
+        await self.session.delete(row)
+        await self.session.commit()
+        return True
+
+    async def disable_transport_accounts_for_profile(self, agent_profile_id: str) -> None:
+        rows = await self.list_transport_accounts(agent_profile_id=agent_profile_id)
+        now = self._utcnow()
+        for row in rows:
+            row.enabled = False
+            row.status = "disabled"
+            row.updated_at = now
+        await self.session.commit()
+
+    async def disable_transport_surface_bindings_for_profile(self, agent_profile_id: str) -> None:
+        rows = await self.list_transport_surface_bindings(agent_profile_id=agent_profile_id)
+        now = self._utcnow()
+        for row in rows:
+            row.enabled = False
+            row.updated_at = now
+        await self.session.commit()
 
     async def create_session(
         self,
@@ -1129,6 +1384,8 @@ class Repository:
 
     async def upsert_channel(
         self,
+        origin: str,
+        transport_account_key: str,
         transport_channel_id: str,
         name: str,
         kind: str,
@@ -1137,12 +1394,18 @@ class Repository:
         meta: dict | None = None,
     ) -> Channel:
         result = await self.session.execute(
-            select(Channel).where(Channel.transport_channel_id == transport_channel_id)
+            select(Channel).where(
+                Channel.origin == origin,
+                Channel.transport_account_key == transport_account_key,
+                Channel.transport_channel_id == transport_channel_id,
+            )
         )
         channel = result.scalar_one_or_none()
         if channel is None:
             channel = Channel(
                 id=str(uuid.uuid4()),
+                origin=origin,
+                transport_account_key=transport_account_key,
                 transport_channel_id=transport_channel_id,
                 name=name,
                 kind=kind,
@@ -1153,6 +1416,8 @@ class Repository:
             )
             self.session.add(channel)
         else:
+            channel.origin = origin
+            channel.transport_account_key = transport_account_key
             channel.name = name
             channel.kind = kind
             channel.guild_id = guild_id
@@ -1162,8 +1427,19 @@ class Repository:
         await self.session.commit()
         return channel
 
-    async def list_channels(self, limit: int = 200) -> List[Channel]:
-        result = await self.session.execute(select(Channel).order_by(Channel.name.asc()).limit(limit))
+    async def list_channels(
+        self,
+        *,
+        limit: int = 200,
+        origin: str | None = None,
+        transport_account_key: str | None = None,
+    ) -> List[Channel]:
+        stmt = select(Channel).order_by(Channel.name.asc()).limit(limit)
+        if origin:
+            stmt = stmt.where(Channel.origin == origin)
+        if transport_account_key:
+            stmt = stmt.where(Channel.transport_account_key == transport_account_key)
+        result = await self.session.execute(stmt)
         return list(result.scalars().all())
 
     async def list_users(self, limit: int = 200) -> List[User]:
@@ -1443,6 +1719,7 @@ class Repository:
         target_scope_type: str = "private",
         target_scope_id: str | None = None,
         target_origin: str | None = None,
+        target_transport_account_key: str | None = None,
         target_destination_id: str | None = None,
     ) -> ScheduledJob:
         if not target_scope_id:
@@ -1455,6 +1732,7 @@ class Repository:
             target_scope_type=target_scope_type,
             target_scope_id=target_scope_id,
             target_origin=target_origin,
+            target_transport_account_key=target_transport_account_key,
             target_destination_id=target_destination_id,
             name=name,
             prompt=prompt,
@@ -1544,6 +1822,7 @@ class Repository:
         target_scope_type: str = "private",
         target_scope_id: str = "",
         target_origin: str | None = None,
+        target_transport_account_key: str | None = None,
         target_destination_id: str | None = None,
     ) -> AgentJob:
         job = AgentJob(
@@ -1560,6 +1839,7 @@ class Repository:
             target_scope_type=target_scope_type,
             target_scope_id=target_scope_id,
             target_origin=target_origin,
+            target_transport_account_key=target_transport_account_key,
             target_destination_id=target_destination_id,
             created_at=self._utcnow(),
         )

@@ -43,6 +43,7 @@ async def execute_command(
             origin=(payload.origin or "api").strip() or "api",
             agent_profile_id=payload.agent_profile_id,
             agent_profile_slug=payload.agent_profile_slug,
+            transport_account_key=payload.transport_account_key,
         )
     except LookupError as exc:
         raise HTTPException(status_code=404, detail=str(exc) or "Not found") from exc

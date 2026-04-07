@@ -24,6 +24,7 @@ def _to_job_list_item(job) -> AgentJobListItem:
         target_scope_type=job.target_scope_type or "private",
         target_scope_id=job.target_scope_id or "",
         target_origin=job.target_origin,
+        target_transport_account_key=getattr(job, "target_transport_account_key", None),
         target_destination_id=job.target_destination_id,
         cancel_requested=bool(job.cancel_requested),
         tool_calls_used=int(job.tool_calls_used or 0),

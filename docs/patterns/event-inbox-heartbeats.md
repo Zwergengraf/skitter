@@ -47,14 +47,14 @@ Put this file in the user workspace as `HEARTBEAT.md`:
 You are running in heartbeat mode.
 
 1. Read up to 10 oldest files from `/inbox/events`.
-2. If `/inbox/events` is missing or empty, reply exactly `HEARTBEAT_OK`.
+2. If `/inbox/events` is missing or empty, reply exactly `SKITTER_NO_REPLY`.
 3. For each event file, parse frontmatter (`event_id`, `source`, `type`, `created_at`, `priority`).
 4. Perform needed actions using tools only when required.
 5. After successful handling, move the file to `/inbox/processed/<same-filename>`.
 6. If handling fails, move the file to `/inbox/failed/<same-filename>` and append a one-line failure reason.
 7. Skip duplicate events by `event_id` if already handled.
 8. Respect quiet hours unless event priority is `high` or `urgent`.
-9. If there are no pending actions after processing, reply exactly `HEARTBEAT_OK`.
+9. If there are no pending actions after processing, reply exactly `SKITTER_NO_REPLY`.
 
 Never invent events. Only act on files that actually exist in `/inbox/events`.
 ```

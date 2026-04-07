@@ -10,6 +10,11 @@ from .llm import list_models, resolve_model_name
 from .models import StreamEvent
 from .profile_service import parse_profile_command, profile_service, serialize_profile
 from .sessions import SessionManager
+from .transport_accounts import (
+    DEFAULT_DISCORD_ACCOUNT_KEY,
+    is_shared_default_account_key,
+    transport_account_service,
+)
 from ..api.security import hash_pair_code, make_pair_code
 from ..data.models import AgentProfile
 from ..data.repositories import Repository
@@ -132,6 +137,8 @@ class CommandService:
         scope_id: str | None = None,
         surface_id: str | None = None,
         persist_surface_profile: bool = False,
+        transport_account_key: str | None = None,
+        surface_is_private: bool | None = None,
     ) -> CommandExecutionResult:
         normalized_command = (command or "").strip().lower()
         if not normalized_command:
@@ -145,6 +152,7 @@ class CommandService:
             agent_profile_slug=agent_profile_slug,
             origin=origin,
             channel_id=surface_id,
+            transport_account_key=transport_account_key,
         )
         resolved_scope_type = (scope_type or "private").strip() or "private"
         resolved_scope_id = (scope_id or "").strip()
@@ -165,6 +173,8 @@ class CommandService:
                 persist_surface_profile=persist_surface_profile,
                 current_profile=profile,
                 raw=str(args.get("raw") or "").strip(),
+                transport_account_key=transport_account_key,
+                surface_is_private=surface_is_private,
             )
 
         if normalized_command == "new":
@@ -174,6 +184,13 @@ class CommandService:
                 agent_profile_id=profile.id,
             )
             old_session_id = active.id if active is not None else None
+            cache_key = None
+            if surface_id:
+                cache_key = surface_id
+                if origin == "discord" and resolved_scope_type != "private":
+                    cleaned_account_key = str(transport_account_key or "").strip()
+                    if cleaned_account_key:
+                        cache_key = f"{cleaned_account_key}:{surface_id}"
             _, new_session_id = await session_manager.start_new_session_for_scope(
                 user_id=user.id,
                 agent_profile_id=profile.id,
@@ -182,6 +199,7 @@ class CommandService:
                 scope_id=resolved_scope_id,
                 origin=origin,
                 channel_id=surface_id,
+                cache_key=cache_key,
             )
             if old_session_id and old_session_id != new_session_id:
                 await _publish_session_switch(
@@ -448,10 +466,20 @@ class CommandService:
         persist_surface_profile: bool,
         current_profile: AgentProfile,
         raw: str,
+        transport_account_key: str | None,
+        surface_is_private: bool | None,
     ) -> CommandExecutionResult:
         parsed = parse_profile_command(raw)
         action = str(parsed.get("action") or "show").strip().lower()
         default_profile = await profile_service.ensure_default_profile(repo, user_id)
+        discord_accounts_by_profile = await transport_account_service.list_explicit_accounts_by_profile(
+            repo,
+            user_id=user_id,
+            transport="discord",
+        )
+        is_shared_default_discord = origin == "discord" and is_shared_default_account_key(
+            transport_account_key or DEFAULT_DISCORD_ACCOUNT_KEY
+        )
 
         if action == "show":
             rows = await profile_service.list_profiles(repo, user_id, include_archived=True)
@@ -469,6 +497,8 @@ class CommandService:
                     suffix_parts.append("default")
                 if item["status"] != "active":
                     suffix_parts.append(str(item["status"]))
+                if origin == "discord" and is_shared_default_discord and item["id"] in discord_accounts_by_profile:
+                    suffix_parts.append("dedicated bot only")
                 suffix = f" [{' / '.join(suffix_parts)}]" if suffix_parts else ""
                 lines.append(f"- `{item['slug']}`: {item['name']}{suffix}")
             return CommandExecutionResult(
@@ -482,24 +512,35 @@ class CommandService:
 
         if action == "use":
             slug = str(parsed.get("slug") or "").strip()
-            if persist_surface_profile and origin == "discord" and surface_id:
-                target = await profile_service.set_surface_override(
-                    repo,
-                    user_id,
-                    origin=origin,
-                    channel_id=surface_id,
-                    slug=slug,
-                )
-                return CommandExecutionResult(
-                    message=f"This Discord channel now uses profile `{target.slug}`.",
-                    data={
-                        "profile": serialize_profile(target, default_profile_id=default_profile.id),
-                        "agent_profile_id": target.id,
-                        "agent_profile_slug": target.slug,
-                        "surface_override": True,
-                    },
-                )
             target = await profile_service.resolve_profile(repo, user_id, agent_profile_slug=slug)
+            if origin == "discord":
+                if not bool(surface_is_private):
+                    raise RuntimeError("This Discord channel is bound by admin. Use the admin UI to change its profile.")
+                if not is_shared_default_discord:
+                    raise RuntimeError(f"This bot is pinned to profile `{current_profile.slug}`.")
+                if target.id in discord_accounts_by_profile:
+                    raise RuntimeError(
+                        f"Profile `{target.slug}` uses a dedicated Discord bot and cannot be selected on the shared default bot."
+                    )
+                if persist_surface_profile and surface_id:
+                    target = await profile_service.set_surface_override(
+                        repo,
+                        user_id,
+                        origin=origin,
+                        transport_account_key=str(transport_account_key or DEFAULT_DISCORD_ACCOUNT_KEY).strip()
+                        or DEFAULT_DISCORD_ACCOUNT_KEY,
+                        channel_id=surface_id,
+                        slug=slug,
+                    )
+                    return CommandExecutionResult(
+                        message=f"This Discord DM now uses profile `{target.slug}`.",
+                        data={
+                            "profile": serialize_profile(target, default_profile_id=default_profile.id),
+                            "agent_profile_id": target.id,
+                            "agent_profile_slug": target.slug,
+                            "surface_override": True,
+                        },
+                    )
             return CommandExecutionResult(
                 message=f"Active profile switched to `{target.slug}`.",
                 data={

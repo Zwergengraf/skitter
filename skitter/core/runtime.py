@@ -32,6 +32,7 @@ from .graph import (
     current_user_id,
     reset_current_channel_id,
     reset_current_origin,
+    reset_current_transport_account_key,
     reset_current_scope_id,
     reset_current_scope_type,
     reset_current_session_id,
@@ -41,13 +42,21 @@ from .graph import (
     set_current_channel_id,
     set_current_message_id,
     set_current_origin,
+    set_current_transport_account_key,
     set_current_run_id,
     set_current_scope_id,
     set_current_scope_type,
     set_current_session_id,
     set_current_user_id,
 )
-from .models import AgentResponse, Attachment, MessageEnvelope, PendingUserPrompt, StreamEvent
+from .models import (
+    AgentResponse,
+    Attachment,
+    MessageEnvelope,
+    PendingUserPrompt,
+    StreamEvent,
+    normalize_agent_response_text,
+)
 from .llm import ResolvedModel, build_llm, list_models, resolve_model, resolve_model_candidates, resolve_model_name
 from .llm_debug import ThinkingDebugCallback
 from .prompting import build_system_prompt
@@ -148,6 +157,7 @@ class AgentRuntime:
             "profile_id": set_current_agent_profile_id(agent_profile_id),
             "profile_slug": set_current_agent_profile_slug(agent_profile_slug),
             "origin": set_current_origin(envelope.origin),
+            "transport_account_key": set_current_transport_account_key(envelope.transport_account_key),
             "run_id": set_current_run_id(run_id),
             "message_id": set_current_message_id(envelope.message_id),
             "scope_type": set_current_scope_type(scope_type),
@@ -159,6 +169,7 @@ class AgentRuntime:
         reset_current_scope_id(tokens["scope_id"])
         reset_current_scope_type(tokens["scope_type"])
         reset_current_origin(tokens["origin"])
+        reset_current_transport_account_key(tokens["transport_account_key"])
         reset_current_agent_profile_slug(tokens["profile_slug"])
         reset_current_agent_profile_id(tokens["profile_id"])
         reset_current_user_id(tokens["user"])
@@ -773,6 +784,7 @@ class AgentRuntime:
                 response=response,
                 session_id=session_id,
             )
+        cleaned = normalize_agent_response_text(cleaned)
         if run_limit_reason is None:
             run_limit_reason, run_limit_detail = self._extract_limit_from_response(cleaned)
         if run_status == "running":

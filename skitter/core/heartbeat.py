@@ -14,11 +14,12 @@ from ..data.repositories import Repository
 from .config import settings
 from .conversation_scope import private_scope_id
 from .llm import resolve_model_name
+from .transport_accounts import transport_account_service
 from .workspace import user_workspace_root
-from .models import MessageEnvelope
+from .models import MessageEnvelope, SKITTER_NO_REPLY
 
 
-DeliverFunc = Callable[[str, str, str, list], Awaitable[None]]
+DeliverFunc = Callable[[str, str | None, str, str, list], Awaitable[None]]
 
 
 class HeartbeatService:
@@ -127,6 +128,7 @@ class HeartbeatService:
                     meta = profile.meta or {}
                     target_origin = str(meta.get("last_private_origin") or meta.get("last_origin") or "").strip()
                     target_destination = str(meta.get("last_private_destination_id") or meta.get("last_channel_id") or "").strip()
+                    target_transport_account_key = str(meta.get("last_private_transport_account_key") or "").strip() or None
                     session_obj = await repo.get_latest_session_by_status(user_id, "heartbeat", agent_profile_id=profile.id)
                     if session_obj is None:
                         model_name = resolve_model_name(None, purpose="heartbeat")
@@ -165,6 +167,13 @@ class HeartbeatService:
                         )
                         return
                     prompt = f"{settings.heartbeat_prompt}\n\n{heartbeat_content}".strip()
+                    if not target_transport_account_key and target_origin == "discord":
+                        account = await transport_account_service.resolve_transport_account_for_profile(
+                            repo,
+                            profile=profile,
+                            transport="discord",
+                        )
+                        target_transport_account_key = getattr(account, "account_key", None)
                     envelope = MessageEnvelope(
                         message_id=str(uuid.uuid4()),
                         channel_id=target_destination or private_session.id,
@@ -172,6 +181,7 @@ class HeartbeatService:
                         timestamp=datetime.utcnow(),
                         text=prompt,
                         origin="heartbeat",
+                        transport_account_key=target_transport_account_key or "",
                         metadata={
                             "internal_user_id": user.id,
                             "agent_profile_id": profile.id,
@@ -185,15 +195,16 @@ class HeartbeatService:
                 # Keep heartbeat context isolated to persisted heartbeat messages only.
                 self.runtime.clear_history(session_obj.id)
                 response = await self.runtime.handle_message(session_obj.id, envelope)
-                if response.text.strip() == "HEARTBEAT_OK" and not response.attachments:
-                        self._logger.info(
-                            "Heartbeat for user %s profile %s returned HEARTBEAT_OK with no attachments, skipping delivery",
-                            user_id,
-                            profile_slug,
-                        )
-                        self.runtime.drop_messages_since(session_obj.id, envelope.message_id)
-                        self.runtime.clear_history(session_obj.id)
-                        return
+                if not response.text.strip() and not response.attachments:
+                    self._logger.info(
+                        "Heartbeat for user %s profile %s returned %s (effective empty response), skipping delivery",
+                        user_id,
+                        profile_slug,
+                        SKITTER_NO_REPLY,
+                    )
+                    self.runtime.drop_messages_since(session_obj.id, envelope.message_id)
+                    self.runtime.clear_history(session_obj.id)
+                    return
 
                 async with SessionLocal() as session:
                     repo = Repository(session)
@@ -248,7 +259,13 @@ class HeartbeatService:
                         target_destination,
                     )
                     try:
-                        await self.deliver(target_origin, target_destination, response.text, response.attachments)
+                        await self.deliver(
+                            target_origin,
+                            target_transport_account_key,
+                            target_destination,
+                            response.text,
+                            response.attachments,
+                        )
                     except Exception as exc:
                         self._logger.exception(
                             "Heartbeat delivery failed for user %s profile %s via %s target %s: %s",

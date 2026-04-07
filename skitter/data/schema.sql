@@ -518,6 +518,8 @@ CREATE INDEX IF NOT EXISTS pair_codes_flow_expires_idx
 
 CREATE TABLE IF NOT EXISTS channels (
     id TEXT PRIMARY KEY,
+    origin TEXT NOT NULL DEFAULT 'discord',
+    transport_account_key TEXT NOT NULL DEFAULT 'discord:default',
     transport_channel_id TEXT NOT NULL,
     name TEXT NOT NULL,
     kind TEXT NOT NULL,
@@ -527,11 +529,29 @@ CREATE TABLE IF NOT EXISTS channels (
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
+ALTER TABLE channels
+    ADD COLUMN IF NOT EXISTS origin TEXT NOT NULL DEFAULT 'discord';
+
+ALTER TABLE channels
+    ADD COLUMN IF NOT EXISTS transport_account_key TEXT NOT NULL DEFAULT 'discord:default';
+
+UPDATE channels
+SET origin = 'discord'
+WHERE origin IS NULL OR origin = '';
+
+UPDATE channels
+SET transport_account_key = 'discord:default'
+WHERE transport_account_key IS NULL OR transport_account_key = '';
+
+CREATE UNIQUE INDEX IF NOT EXISTS channels_origin_account_surface_idx
+    ON channels (origin, transport_account_key, transport_channel_id);
+
 CREATE TABLE IF NOT EXISTS surface_profile_overrides (
     id TEXT PRIMARY KEY,
     user_id TEXT NOT NULL,
     agent_profile_id TEXT NOT NULL,
     origin TEXT NOT NULL,
+    transport_account_key TEXT NOT NULL DEFAULT 'discord:default',
     surface_kind TEXT NOT NULL,
     surface_id TEXT NOT NULL,
     meta JSONB NOT NULL DEFAULT '{}'::jsonb,
@@ -539,11 +559,77 @@ CREATE TABLE IF NOT EXISTS surface_profile_overrides (
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
-CREATE UNIQUE INDEX IF NOT EXISTS surface_profile_overrides_unique_idx
-    ON surface_profile_overrides (user_id, origin, surface_kind, surface_id);
+ALTER TABLE surface_profile_overrides
+    ADD COLUMN IF NOT EXISTS transport_account_key TEXT NOT NULL DEFAULT 'discord:default';
+
+UPDATE surface_profile_overrides
+SET transport_account_key = 'discord:default'
+WHERE transport_account_key IS NULL OR transport_account_key = '';
+
+DROP INDEX IF EXISTS surface_profile_overrides_unique_idx;
+
+CREATE UNIQUE INDEX IF NOT EXISTS surface_profile_overrides_unique_v2_idx
+    ON surface_profile_overrides (user_id, origin, transport_account_key, surface_kind, surface_id);
 
 CREATE INDEX IF NOT EXISTS surface_profile_overrides_profile_idx
     ON surface_profile_overrides (agent_profile_id);
+
+CREATE TABLE IF NOT EXISTS transport_accounts (
+    id TEXT PRIMARY KEY,
+    account_key TEXT NOT NULL,
+    user_id TEXT NOT NULL,
+    agent_profile_id TEXT NOT NULL,
+    transport TEXT NOT NULL,
+    display_name TEXT,
+    enabled BOOLEAN NOT NULL DEFAULT TRUE,
+    status TEXT NOT NULL DEFAULT 'offline',
+    credential_secret_name TEXT NOT NULL,
+    credential_fingerprint TEXT,
+    external_account_id TEXT,
+    external_label TEXT,
+    last_seen_at TIMESTAMPTZ,
+    last_error TEXT,
+    meta JSONB NOT NULL DEFAULT '{}'::jsonb,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS transport_accounts_account_key_idx
+    ON transport_accounts (account_key);
+
+CREATE UNIQUE INDEX IF NOT EXISTS transport_accounts_profile_transport_idx
+    ON transport_accounts (agent_profile_id, transport);
+
+CREATE UNIQUE INDEX IF NOT EXISTS transport_accounts_transport_fingerprint_idx
+    ON transport_accounts (transport, credential_fingerprint)
+    WHERE credential_fingerprint IS NOT NULL AND credential_fingerprint <> '';
+
+CREATE INDEX IF NOT EXISTS transport_accounts_user_idx
+    ON transport_accounts (user_id);
+
+CREATE INDEX IF NOT EXISTS transport_accounts_transport_idx
+    ON transport_accounts (transport);
+
+CREATE TABLE IF NOT EXISTS transport_surface_bindings (
+    id TEXT PRIMARY KEY,
+    transport_account_key TEXT NOT NULL,
+    user_id TEXT NOT NULL,
+    agent_profile_id TEXT NOT NULL,
+    origin TEXT NOT NULL,
+    surface_kind TEXT NOT NULL,
+    surface_id TEXT NOT NULL,
+    mode TEXT NOT NULL DEFAULT 'mention_only',
+    enabled BOOLEAN NOT NULL DEFAULT TRUE,
+    meta JSONB NOT NULL DEFAULT '{}'::jsonb,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS transport_surface_bindings_surface_idx
+    ON transport_surface_bindings (origin, transport_account_key, surface_kind, surface_id);
+
+CREATE INDEX IF NOT EXISTS transport_surface_bindings_profile_idx
+    ON transport_surface_bindings (agent_profile_id);
 
 CREATE TABLE IF NOT EXISTS scheduled_jobs (
     id TEXT PRIMARY KEY,
@@ -553,6 +639,7 @@ CREATE TABLE IF NOT EXISTS scheduled_jobs (
     target_scope_type TEXT NOT NULL DEFAULT 'private',
     target_scope_id TEXT NOT NULL DEFAULT '',
     target_origin TEXT,
+    target_transport_account_key TEXT,
     target_destination_id TEXT,
     name TEXT NOT NULL,
     prompt TEXT NOT NULL,
@@ -578,6 +665,9 @@ ALTER TABLE scheduled_jobs
 
 ALTER TABLE scheduled_jobs
     ADD COLUMN IF NOT EXISTS target_origin TEXT;
+
+ALTER TABLE scheduled_jobs
+    ADD COLUMN IF NOT EXISTS target_transport_account_key TEXT;
 
 ALTER TABLE scheduled_jobs
     ADD COLUMN IF NOT EXISTS target_destination_id TEXT;
@@ -607,6 +697,11 @@ WHERE target_scope_type = 'private'
 UPDATE scheduled_jobs
 SET target_origin = COALESCE(target_origin, 'discord')
 WHERE target_origin IS NULL;
+
+UPDATE scheduled_jobs
+SET target_transport_account_key = 'discord:default'
+WHERE target_origin = 'discord'
+  AND (target_transport_account_key IS NULL OR target_transport_account_key = '');
 
 UPDATE scheduled_jobs
 SET target_destination_id = COALESCE(target_destination_id, channel_id)
@@ -652,6 +747,7 @@ CREATE TABLE IF NOT EXISTS agent_jobs (
     target_scope_type TEXT NOT NULL DEFAULT 'private',
     target_scope_id TEXT NOT NULL DEFAULT '',
     target_origin TEXT,
+    target_transport_account_key TEXT,
     target_destination_id TEXT,
     payload JSONB NOT NULL DEFAULT '{}'::jsonb,
     limits JSONB NOT NULL DEFAULT '{}'::jsonb,
@@ -696,6 +792,9 @@ ALTER TABLE agent_jobs
 
 ALTER TABLE agent_jobs
     ADD COLUMN IF NOT EXISTS target_origin TEXT;
+
+ALTER TABLE agent_jobs
+    ADD COLUMN IF NOT EXISTS target_transport_account_key TEXT;
 
 ALTER TABLE agent_jobs
     ADD COLUMN IF NOT EXISTS target_destination_id TEXT;
@@ -763,6 +862,15 @@ UPDATE agent_jobs
 SET target_scope_id = 'private:' || COALESCE(agent_profile_id, user_id)
 WHERE target_scope_type = 'private'
   AND target_scope_id = 'private:' || user_id;
+
+UPDATE agent_jobs
+SET target_origin = COALESCE(target_origin, 'discord')
+WHERE target_origin IS NULL;
+
+UPDATE agent_jobs
+SET target_transport_account_key = 'discord:default'
+WHERE target_origin = 'discord'
+  AND (target_transport_account_key IS NULL OR target_transport_account_key = '');
 
 CREATE INDEX IF NOT EXISTS agent_jobs_user_created_idx
     ON agent_jobs (user_id, created_at DESC);

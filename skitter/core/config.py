@@ -276,7 +276,7 @@ class Settings(BaseSettings):
     heartbeat_prompt: str = Field(
         default=(
             "Read HEARTBEAT.md if it exists (workspace context). Follow it strictly. "
-            "Do not infer or repeat old tasks from prior chats. If nothing needs attention, reply HEARTBEAT_OK."
+            "Do not infer or repeat old tasks from prior chats. If nothing needs attention, reply SKITTER_NO_REPLY."
         )
     )
     heartbeat_quiet_hours_start: str = Field(default="23:00")

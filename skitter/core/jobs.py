@@ -10,6 +10,7 @@ from .graph import (
     reset_current_channel_id,
     reset_current_message_id,
     reset_current_origin,
+    reset_current_transport_account_key,
     reset_current_run_id,
     reset_current_scope_id,
     reset_current_scope_type,
@@ -18,6 +19,7 @@ from .graph import (
     set_current_channel_id,
     set_current_message_id,
     set_current_origin,
+    set_current_transport_account_key,
     set_current_run_id,
     set_current_scope_id,
     set_current_scope_type,
@@ -36,7 +38,7 @@ from .prompting import build_system_prompt
 from .subagents import SubAgentService, SubAgentTaskSpec
 
 
-DeliverFunc = Callable[[str, str, str, list], Awaitable[None]]
+DeliverFunc = Callable[[str, str | None, str, str, list], Awaitable[None]]
 _logger = logging.getLogger(__name__)
 
 
@@ -101,6 +103,7 @@ class JobService:
         target_scope_type: str,
         target_scope_id: str,
         target_origin: str | None,
+        target_transport_account_key: str | None,
         target_destination_id: str | None,
     ) -> str:
         limits = {
@@ -127,6 +130,7 @@ class JobService:
                 target_scope_type=target_scope_type,
                 target_scope_id=target_scope_id,
                 target_origin=target_origin,
+                target_transport_account_key=target_transport_account_key,
                 target_destination_id=target_destination_id,
             )
         return job.id
@@ -293,6 +297,9 @@ class JobService:
                 "channel": set_current_channel_id(job.target_destination_id or ""),
                 "user": set_current_user_id(job.user_id),
                 "origin": set_current_origin(job.target_origin or "job"),
+                "transport_account_key": set_current_transport_account_key(
+                    getattr(job, "target_transport_account_key", None) or ""
+                ),
                 "run_id": set_current_run_id(run_id),
                 "message_id": set_current_message_id(message_id),
                 "scope_type": set_current_scope_type(job.target_scope_type or "private"),
@@ -318,6 +325,7 @@ class JobService:
                 reset_current_scope_id(context_tokens["scope_id"])
                 reset_current_scope_type(context_tokens["scope_type"])
                 reset_current_origin(context_tokens["origin"])
+                reset_current_transport_account_key(context_tokens["transport_account_key"])
                 reset_current_user_id(context_tokens["user"])
                 reset_current_message_id(context_tokens["message_id"])
                 reset_current_run_id(context_tokens["run_id"])
@@ -366,7 +374,13 @@ class JobService:
                 self.runtime.clear_history(target_session_id)
                 if self._deliver is not None and job.target_origin and job.target_destination_id:
                     try:
-                        await self._deliver(job.target_origin, job.target_destination_id, delivery_text, [])
+                        await self._deliver(
+                            job.target_origin,
+                            getattr(job, "target_transport_account_key", None),
+                            job.target_destination_id,
+                            delivery_text,
+                            [],
+                        )
                     except Exception as exc:  # pragma: no cover - transport-specific failure path
                         delivery_error = str(exc)
             finally:

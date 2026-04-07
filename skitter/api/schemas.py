@@ -385,6 +385,9 @@ class ScheduledJobCreate(BaseModel):
     user_id: str
     agent_profile_id: str | None = None
     channel_id: str
+    target_origin: str | None = "discord"
+    target_destination_id: str | None = None
+    target_transport_account_key: str | None = None
     name: str
     prompt: str
     model: str = "__main_chain__"
@@ -395,6 +398,9 @@ class ScheduledJobCreate(BaseModel):
 
 class ScheduledJobUpdate(BaseModel):
     agent_profile_id: str | None = None
+    target_origin: str | None = None
+    target_destination_id: str | None = None
+    target_transport_account_key: str | None = None
     name: str | None = None
     prompt: str | None = None
     model: str | None = None
@@ -412,6 +418,7 @@ class ScheduledJobOut(BaseModel):
     target_scope_type: str = "private"
     target_scope_id: str = ""
     target_origin: str | None = None
+    target_transport_account_key: str | None = None
     target_destination_id: str | None = None
     name: str
     prompt: str
@@ -438,6 +445,7 @@ class AgentJobListItem(BaseModel):
     target_scope_type: str = "private"
     target_scope_id: str = ""
     target_origin: str | None = None
+    target_transport_account_key: str | None = None
     target_destination_id: str | None = None
     cancel_requested: bool = False
     tool_calls_used: int = 0
@@ -478,10 +486,79 @@ class UserApprovalRequest(BaseModel):
 
 class ChannelListItem(BaseModel):
     id: str
+    origin: str
+    transport_account_key: str
     name: str
     kind: str
     label: str
+    guild_id: str | None = None
     guild_name: str | None = None
+
+
+class TransportAccountOut(BaseModel):
+    id: str | None = None
+    account_key: str
+    transport: str
+    user_id: str | None = None
+    agent_profile_id: str | None = None
+    agent_profile_slug: str | None = None
+    display_name: str
+    enabled: bool
+    status: str
+    is_shared_default: bool = False
+    external_account_id: str | None = None
+    external_label: str | None = None
+    last_seen_at: datetime | None = None
+    last_error: str | None = None
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
+
+
+class TransportAccountCreateRequest(BaseModel):
+    user_id: str
+    agent_profile_id: str
+    transport: str = "discord"
+    display_name: str | None = None
+    enabled: bool = True
+    credential_value: str = Field(min_length=1)
+
+
+class TransportAccountUpdateRequest(BaseModel):
+    display_name: str | None = None
+    enabled: bool | None = None
+    credential_value: str | None = None
+
+
+class TransportSurfaceBindingOut(BaseModel):
+    id: str
+    transport_account_key: str
+    user_id: str
+    agent_profile_id: str
+    agent_profile_slug: str | None = None
+    origin: str
+    surface_kind: str
+    surface_id: str
+    mode: str
+    enabled: bool
+    created_at: datetime
+    updated_at: datetime
+
+
+class TransportSurfaceBindingCreateRequest(BaseModel):
+    transport_account_key: str
+    user_id: str
+    agent_profile_id: str | None = None
+    origin: str = "discord"
+    surface_kind: str
+    surface_id: str
+    mode: str = "mention_only"
+    enabled: bool = True
+
+
+class TransportSurfaceBindingUpdateRequest(BaseModel):
+    agent_profile_id: str | None = None
+    mode: str | None = None
+    enabled: bool | None = None
 
 
 class SandboxWorkspaceOut(BaseModel):
@@ -624,6 +701,7 @@ class CommandExecuteRequest(BaseModel):
     user_id: str | None = None
     agent_profile_id: str | None = None
     agent_profile_slug: str | None = None
+    transport_account_key: str | None = None
 
 
 class CommandExecuteOut(BaseModel):

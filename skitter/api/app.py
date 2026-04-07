@@ -44,6 +44,7 @@ from .routes import (
     sessions,
     skills,
     tools,
+    transport_accounts,
     user_prompts,
     users,
 )
@@ -151,6 +152,7 @@ def create_app() -> FastAPI:
     app.include_router(admin_events.router)
     app.include_router(runs.router)
     app.include_router(skills.router)
+    app.include_router(transport_accounts.router)
     app.include_router(models.router)
     app.include_router(secrets.router)
     app.include_router(memory.router)
