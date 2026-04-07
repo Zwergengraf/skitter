@@ -5,9 +5,9 @@ This page is the practical day-to-day workflow for developing Skitter locally.
 ## Requirements
 
 - Python 3.11+
-- Docker (Postgres and optional sandbox image build)
-- Node.js 18+ (admin web UI)
-- Xcode + Swift toolchain (menubar app only)
+- Docker
+- Node.js 18+ for admin web UI
+- Xcode + Swift toolchain for the menubar app
 
 ## Recommended Run Order
 
@@ -17,7 +17,7 @@ This page is the practical day-to-day workflow for developing Skitter locally.
 docker compose up -d postgres
 ```
 
-2. Initialize schema (safe to re-run):
+2. Initialize schema:
 
 ```bash
 python -m skitter.data.init_db
@@ -56,29 +56,33 @@ swift run
 
 ## Useful Environment Variables
 
-- `SKITTER_CONFIG_PATH`: config file path (default `config.yaml`)
-- `SKITTER_API_KEY`: admin API key
-- `SKITTER_BOOTSTRAP_CODE`: one-time bootstrap code for first user/device
-- `SKITTER_SECRETS_MASTER_KEY`: encryption key for per-user secrets
-- `SKITTER_LOG_LEVEL`: `DEBUG|INFO|WARNING|ERROR`
+- `SKITTER_CONFIG_PATH`
+- `SKITTER_API_KEY`
+- `SKITTER_BOOTSTRAP_CODE`
+- `SKITTER_SECRETS_MASTER_KEY`
+- `SKITTER_LOG_LEVEL`
 
-Discord transport startup is controlled in `config.yaml`:
+## Discord Notes
+
+The shared default Discord bot is controlled in `config.yaml`:
 
 ```yaml
 discord:
   enabled: true
+  token: ""
 ```
 
-## Discord Notes (Current Behavior)
+Current Discord behavior:
 
-- Discord transport is DM-only.
-- Messages from server channels/threads/group chats are ignored.
-- Slash commands should be used in DM with the bot.
+- DMs are supported.
+- Public server channels and threads are supported through explicit admin bindings.
+- Dedicated per-profile Discord bots can override the shared default bot.
+- Busy public-channel sessions are serialized and backlog is coalesced by default.
 
 ## Typical Dev Loop
 
-1. Change server/client code.
-2. Restart affected process.
+1. Change server or client code.
+2. Restart the affected process.
 3. Run focused tests:
 
 ```bash
@@ -92,7 +96,7 @@ pytest skitter/tests/unit -q
 pytest skitter/tests/e2e -q
 ```
 
-## Common Local Checks
+## Good Local Smoke Tests
 
 - API health:
 
@@ -100,11 +104,19 @@ pytest skitter/tests/e2e -q
 curl -sS http://localhost:8000/health
 ```
 
-- Confirm auth:
+- Auth:
 
 ```bash
 curl -sS http://localhost:8000/v1/auth/me \
   -H "Authorization: Bearer <user-token>"
 ```
 
-- Verify DB connectivity errors early by watching API logs during startup.
+- Profiles:
+
+```bash
+curl -sS http://localhost:8000/v1/profiles \
+  -H "Authorization: Bearer <user-token>"
+```
+
+- Discord account/binding state:
+  - use the admin web UI `Profiles` page

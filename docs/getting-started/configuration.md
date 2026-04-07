@@ -1,24 +1,22 @@
 # Configuration
 
-The Skitter API server uses two config sources:
+The Skitter API server reads:
 
 - `config.yaml` for normal runtime settings
-- Environment variables for sensitive/host-specific values
+- environment variables for secrets and host-specific overrides
 
-## Load and Override Order
+## Load Order
 
-1. Defaults in code (`skitter/core/config.py`)
-2. `config.yaml` values
-3. Explicit `SKITTER_*` environment variables
-
-This means env vars always win over YAML when both are set.
+1. defaults in code
+2. `config.yaml`
+3. `SKITTER_*` environment variables
 
 ## Main `config.yaml` Sections
 
 - `database`
 - `providers`
 - `models`
-- `main_model`, `heartbeat_model` (ordered fallback chains)
+- `main_model`, `heartbeat_model`
 - `reasoning`
 - `embeddings`
 - `web_search`
@@ -31,11 +29,9 @@ This means env vars always win over YAML when both are set.
 - `limits`, `jobs`, `context`, `tools`, `sub_agents`
 - `cors`, `logging`, `prompt`, `users`
 
-Use `config.example.yaml` as the canonical template.
+Use `config.example.yaml` as the template.
 
 ## Providers and Models
-
-Providers define API endpoints and keys. Models reference providers.
 
 ```yaml
 providers:
@@ -57,67 +53,69 @@ heartbeat_model:
   - local/main
 ```
 
-Model selectors use `provider/model` format. The runtime tries models in order and falls back on provider HTTP failures.
+Model selectors use `provider/model`.
 
-## Web Search Configuration
+## Workspace Settings
+
+Important fields:
+
+- `workspace.root`
+- `workspace.host_root`
+- `workspace.skeleton`
+
+Recommended default for Docker deployments:
 
 ```yaml
-web_search:
-  engine: brave # or searxng
-  brave:
-    api_key: ""
-    api_base: https://api.search.brave.com/res/v1/web/search
-  searxng:
-    api_base: http://localhost:8080/search
+workspace:
+  root: /workspace
 ```
 
-Notes:
+What `host_root` means:
 
-- Tool input is intentionally minimal: `query` and optional `count`.
-- For SearXNG, result limiting is done in Skitter after fetching results.
+- `workspace.root` is the path seen by the Skitter API process.
+- `workspace.host_root` is the path seen by the Docker host when Skitter needs to create bind mounts for sandbox containers.
+- If `host_root` is empty, Skitter falls back to `workspace.root`.
 
-## Runtime Limits
+That fallback is fine when the API runs directly on the host, and often also works in Docker if mount detection succeeds.
 
-Key guardrails:
+## Discord Configuration
 
-- `limits.*` for normal interactive runs
-- `jobs.limits.*` for background jobs
-- `context.*` for chat/tool message compaction
-- `tools.approval_required` and `tools.approval_tools` for approvals
-
-Tune these early in production-like environments to avoid runaway runs.
-
-## Executors and Sandbox
-
-- `executors.auto_docker_default`: auto-create Docker executor fallback
-- `sandbox.*`: docker image/network/idle behavior for managed sandbox containers
-- `workspace.*`: workspace roots and skeleton location
-
-## Scheduler Timezone
-
-- Scheduler defaults to host timezone unless explicitly set.
-- You can override with `scheduler.timezone` in YAML.
-- Datetimes are stored in UTC in DB; scheduler interpretation uses configured/default timezone.
-
-## Environment-Only Secrets
-
-Keep these in environment variables (not in YAML):
-
-- `SKITTER_API_KEY`
-- `SKITTER_BOOTSTRAP_CODE`
-- `SKITTER_SECRETS_MASTER_KEY`
-
-Common optional env flags:
-
-- `SKITTER_CONFIG_PATH`
-- `SKITTER_LOG_LEVEL`
-
-## Discord Enablement
-
-Discord transport startup is configured in `config.yaml`, not via env var:
+Discord startup is controlled in `config.yaml`:
 
 ```yaml
 discord:
   enabled: true
   token: ""
 ```
+
+Important meaning:
+
+- `discord.enabled` enables the shared default Discord bot.
+- `discord.token` is the shared default bot token.
+- Extra per-profile Discord bot tokens are not stored here. They are created in the admin web UI and stored in encrypted secrets.
+
+## Executors and Sandbox
+
+- `executors.auto_docker_default`: auto-create Docker executor fallback
+- `sandbox.*`: image/network/idle behavior for managed profile-aware sandbox containers
+
+Skitter no longer uses a shared Docker sandbox fallback URL. Docker-backed sandbox execution is managed per profile.
+
+## Environment-Only Secrets
+
+Keep these in environment variables, not in YAML:
+
+- `SKITTER_API_KEY`
+- `SKITTER_BOOTSTRAP_CODE`
+- `SKITTER_SECRETS_MASTER_KEY`
+
+Common optional env vars:
+
+- `SKITTER_CONFIG_PATH`
+- `SKITTER_LOG_LEVEL`
+
+## Scheduler and Timezone
+
+- Scheduler defaults to host timezone unless explicitly set.
+- Datetimes are stored in UTC in the database.
+- Heartbeats and schedules can deliver through profile-specific transport accounts.

@@ -1,7 +1,6 @@
 # Skitter
 
-Skitter is your personal AI operator that can chat, run tools, automate recurring work, and execute tasks across multiple machines.
-Self-hosted, sandboxed executors (Docker), and with human-in-the-loop approval for secret usage.
+Skitter is a self-hosted AI operator platform with long-lived memory, tool use, schedules, background jobs, profile-based agents, and transport-aware routing.
 
 [View on GitHub](https://github.com/Zwergengraf/skitter){ .md-button }
 
@@ -9,11 +8,13 @@ Self-hosted, sandboxed executors (Docker), and with human-in-the-loop approval f
 
 ## What Skitter Gives You
 
-- One shared agent session across clients (Discord DM, terminal UI, macOS menubar).
-- Real tools: filesystem, shell, browser, web search, memory retrieval.
-- Automation: scheduled jobs, heartbeats, and background jobs.
-- Execution routing to Docker sandboxes or external executor nodes (macOS/Linux).
-- Human control with approvals, secrets management, limits, and run traces.
+- One human `User` can own multiple `AgentProfile`s.
+- Each profile has its own workspace, sessions, memory, secrets, schedules, and defaults.
+- Clients can select different active profiles at the same time.
+- Discord supports a shared default bot from `config.yaml` and dedicated per-profile bot overrides.
+- Public Discord channels are supported through explicit channel bindings.
+- Tool runs, jobs, heartbeats, and schedules can route through the correct transport account.
+- Docker sandboxes and external executor nodes can execute tool work with approval and tracing.
 
 ## Choose Your Path
 
@@ -21,24 +22,27 @@ Self-hosted, sandboxed executors (Docker), and with human-in-the-loop approval f
 
     - Use [Docker Compose](getting-started/docker-compose.md)
     - Learn login flow in [Auth and Pairing](getting-started/auth-and-pairing.md)
+    - Set up Discord in [Discord Transport](components/discord-transport.md)
     - Explore workflows in [Patterns](patterns/overview.md)
 
 === "I Want to Self-Host Skitter"
 
     - Use the [Manual Setup](getting-started/manual-setup.md)
-    - Configure models/executors in [Configuration](getting-started/configuration.md)
+    - Configure models, workspace roots, and Discord defaults in [Configuration](getting-started/configuration.md)
     - Check health and operations in [Operations](operations/deployment.md)
 
 === "I Want to Extend Skitter"
 
     - Read [System Overview](architecture/system-overview.md)
+    - Read [Profiles and Transports](core-concepts/profiles-and-transports.md)
     - Add capabilities with [Skills](core-concepts/skills.md)
     - Integrate machine routing in [Executors](api/executors.md)
 
 ---
 
 !!! tip "Recommended First 30 Minutes"
-    1. Run [Manual Setup](getting-started/manual-setup.md).
-    2. Pair one additional client (for example menubar + TUI).
-    3. Run `/model`, `/tools`, and create one scheduled task.
-    4. Open the admin web UI and inspect run traces and tool runs.
+    1. Run [Manual Setup](getting-started/manual-setup.md) or [Docker Compose](getting-started/docker-compose.md).
+    2. Pair one additional client.
+    3. Create a second profile and switch to it in one client.
+    4. If you use Discord, bind one test server channel in the admin web UI.
+    5. Run `/model`, `/tools`, and create one scheduled task.

@@ -1,32 +1,25 @@
 # Discord Transport
 
-Skitter can connect to Discord through a normal bot account.
+Skitter can connect to Discord through:
 
-Current behavior is intentionally simple:
+- one shared default bot configured in `config.yaml`
+- optional dedicated per-profile override bots configured in the admin web UI
 
-- DM-only transport behavior: server channels, threads, and group chats are ignored.
-- Slash commands are available in DMs with the bot.
-- Tool approvals and `ask_user` prompts are supported in Discord.
-- Attachments and images from the agent are delivered back into the DM.
+## Supported Surfaces
 
-## Quick Setup
+- DMs
+- public server text channels
+- threads
+- slash commands
+- button-driven approvals and prompt replies
 
-1. Open the [Discord Developer Portal](https://discord.com/developers/applications).
-2. Create a new application.
-3. Open the `Bot` page and create or reset the bot token.
-4. Enable `Message Content Intent` on the `Bot` page.
-5. Open the `Installation` page.
-6. Under install scopes, enable:
-   - `bot`
-   - `applications.commands`
-7. For bot permissions, enable at least:
-   - `View Channels`
-   - `Send Messages`
-   - `Read Message History`
-   - `Embed Links`
-   - `Attach Files`
-8. Use the generated install link to add the bot to your own private test server.
-9. In `config.yaml`, set your token:
+Public channels are opt-in through bindings. They are not active by default.
+
+## Shared Default vs Dedicated Bots
+
+### Shared default bot
+
+Configured in `config.yaml`:
 
 ```yaml
 discord:
@@ -34,28 +27,84 @@ discord:
   token: "YOUR_BOT_TOKEN"
 ```
 
-10. Restart Skitter:
+Use this when:
 
-```bash
-./setup.sh restart
-```
+- you want one default bot for most profiles
+- you want shared-default DMs
+- you want to bind some public channels without creating dedicated bots
 
-11. Open a DM with the bot and send a message.
+### Dedicated profile bot
 
-## Notes
+Configured in the admin web UI:
 
-- Discord support in Skitter is currently DM-only by design.
-- The bot token is sensitive. Do not commit it to git or share it.
-- If you do not want Discord at all, disable it in `config.yaml`:
+- stored as a transport account
+- token kept in encrypted secrets
+- pinned to exactly one profile
 
-```yaml
-discord:
-  enabled: false
-```
+Use this when:
 
-## What This Transport Handles
+- one profile should have its own bot identity
+- the shared default bot should no longer act as that profile
 
-- Inbound Discord messages are mapped into Skitter message envelopes.
-- Slash commands are routed into the same private user session model as other clients.
-- Approval requests and `ask_user` prompts are shown with Discord UI components.
-- Attachments are ingested and agent-generated files/images are sent back to Discord.
+## Public Channel Bindings
+
+To activate a normal Discord channel:
+
+1. add the bot to the server
+2. open the admin web UI
+3. go to `Profiles`
+4. select the bot account
+5. bind the channel
+6. choose a mode
+
+Modes:
+
+- `mention_only`
+  - bot wakes on direct mentions, replies to the bot, or explicit interactions
+- `all_messages`
+  - bot sees every non-self message in the bound channel
+
+## Sender Context
+
+In public channels, Skitter exposes sender metadata to the model:
+
+- display name
+- username
+- mention token
+- role names
+- bot flag
+
+This lets the agent reason about who said what while still running under the bound profile owner’s workspace and memory.
+
+## Session Behavior
+
+Public Discord channels use group sessions scoped by:
+
+- origin
+- transport account
+- external channel
+
+Skitter serializes one active run per session and coalesces backlog by default for plain public-channel messages.
+
+## Mentions
+
+Discord mention tokens work normally if the agent emits the correct token:
+
+- user: `<@USER_ID>`
+- role: `<@&ROLE_ID>`
+- channel: `<#CHANNEL_ID>`
+
+Skitter also provides the `discord_resolve_mentions` helper tool so agents can resolve mention tokens before replying.
+
+## Approval and Prompt UX
+
+- tool approvals use Discord buttons
+- `ask_user` prompts use Discord buttons or free-text replies
+- group-channel prompt replies are validated against the correct bound group session
+
+## Security Notes
+
+- the shared default bot token is sensitive
+- dedicated bot override tokens are sensitive
+- do not commit either kind of token to git
+- public channels are approved-users-only

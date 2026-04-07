@@ -1,53 +1,67 @@
 # Overview
 
-Skitter is a personal AI agent platform: chat with your agent, let it use tools and skills, run automations, and execute tasks across your machines from one shared session.
+Skitter is a stateful AI agent platform with profiles, tools, schedules, jobs, transport integrations, and persistent workspaces.
 
 ## What Skitter Is
 
-Skitter combines an LLM runtime, tool execution, [Agent Skills](https://agentskills.io/), memory, scheduling, and client apps into one system.  
+Skitter combines:
 
-You can use it like a chat assistant, or as a (semi-)autonomous operator that can run jobs, use browsers, work with files, and report back with results.
-The agent can also proactively pull in data (emails, news, changes on your Kanban board, ...) regularly and act accordingly.
-Skitter is intended to be lightweight and extensible, so the available features, tools and skills stay easy to use for both humans and agents.
-We suggest using Skitter in combination with 
-Check the [Patterns](../patterns/overview.md) section for integration ideas and use cases.
+- an LLM runtime
+- profile-scoped workspaces and memory
+- tool execution with approvals
+- schedules, heartbeats, and background jobs
+- multiple client surfaces
+- transport-aware delivery
+
+One human account can own multiple agent profiles. Each profile behaves like a distinct agent with its own workspace and long-term context.
 
 ## What You Can Do With It
 
-- Run a daily briefing every morning (news, open tasks, pending approvals).
-- Start long-running tasks in the background and get notified when they finish.
-- Route work to different executors (Docker sandbox, MacBook node, Linux node).
-- Let the agent use files, shell commands, browser automation, web search, and memory retrieval.
-- Keep one private session across clients (Discord DM, TUI, menubar) so context stays consistent.
+- Keep a default personal profile for daily chat and a second profile for coding, research, or automation.
+- Run scheduled jobs and heartbeat checks with profile-specific memory and delivery targets.
+- Route tool work to Docker sandboxes or external nodes.
+- Use Discord DMs, public Discord channels, TUI, and the macOS menubar app with the same backend.
+- Give one profile a dedicated Discord bot while other profiles still use the shared default bot.
 
 ## Typical Use Cases
 
-- Personal chief-of-staff workflows (planning, reminders, follow-ups).
-- Research and summarization pipelines with scheduled runs.
-- Task-board execution loops (for example Trello/Jira via skills).
-- Multi-machine automation where specific tasks must run on specific hosts.
+- Personal chief-of-staff workflows.
+- Research and summarization pipelines.
+- Coding agent workflows with sandboxed execution.
+- Multi-profile setups such as `default`, `coder`, and `community-bot`.
+- Public Discord channel assistants with mention-gated replies.
 
 ## What’s Included
 
-- API server (`FastAPI` + `LangGraph`) for runtime orchestration.
-- Tooling layer with approvals, secrets, and run limits.
-- Executors:
-  - Docker executors (auto-managed, per-user).
-  - External node executors (`skitter-node`) on macOS/Linux.
-- Clients:
-  - Discord (DM-only),
-  - Terminal UI (`skitter-tui`),
-  - macOS menubar app (`skitter-menubar`).
-- Admin web UI for sessions, tool runs, jobs, users, config, and system state.
+- API server (`FastAPI` + runtime orchestration)
+- admin web UI
+- profile-aware sessions and memory
+- tools, approvals, secrets, and run tracing
+- Docker sandbox execution
+- external executor nodes
+- clients:
+  - Discord
+  - TUI
+  - macOS menubar
 
-## Why It Feels Different
+## Current Model
 
-- It is stateful: sessions, memory, jobs, and approvals are persisted.
-- It is controllable: you set limits, approval rules, and model/provider routing.
-- It is extensible: skills and executor nodes let you grow capabilities without rewriting core runtime logic.
+- `User` = the human account
+- `AgentProfile` = one agent identity and workspace
+- `Session` = one conversation thread for one profile
+- `TransportAccount` = one bot/account identity for a transport
+
+## Discord in Practice
+
+- The `discord` section in `config.yaml` defines the shared default bot.
+- A profile can optionally override that with its own dedicated Discord bot token.
+- Public Discord channels are opt-in through channel bindings in the admin web UI.
+- Busy public channels are serialized per session and backlog is coalesced into one follow-up turn.
 
 ## Next Steps
 
-- Fast local setup: [Manual Setup](manual-setup.md)
-- Containerized core stack: [Docker Compose](docker-compose.md)
-- Configuration reference: [Configuration](configuration.md)
+- [Manual Setup](manual-setup.md)
+- [Docker Compose](docker-compose.md)
+- [Configuration](configuration.md)
+- [Discord Transport](../components/discord-transport.md)
+- [Profiles and Transports](../core-concepts/profiles-and-transports.md)
