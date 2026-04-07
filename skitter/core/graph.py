@@ -63,6 +63,7 @@ _CURRENT_CHANNEL_ID: ContextVar[str] = ContextVar("skitter_channel_id", default=
 _CURRENT_USER_ID: ContextVar[str] = ContextVar("skitter_user_id", default="default")
 _CURRENT_ORIGIN: ContextVar[str] = ContextVar("skitter_origin", default="unknown")
 _CURRENT_TRANSPORT_ACCOUNT_KEY: ContextVar[str] = ContextVar("skitter_transport_account_key", default="")
+_CURRENT_GUILD_ID: ContextVar[str] = ContextVar("skitter_guild_id", default="")
 _CURRENT_SCOPE_TYPE: ContextVar[str] = ContextVar("skitter_scope_type", default="private")
 _CURRENT_SCOPE_ID: ContextVar[str] = ContextVar("skitter_scope_id", default="default")
 _CURRENT_RUN_ID: ContextVar[str] = ContextVar("skitter_run_id", default="")
@@ -107,6 +108,14 @@ def set_current_transport_account_key(transport_account_key: str) -> Token:
 
 def reset_current_transport_account_key(token: Token) -> None:
     _CURRENT_TRANSPORT_ACCOUNT_KEY.reset(token)
+
+
+def set_current_guild_id(guild_id: str) -> Token:
+    return _CURRENT_GUILD_ID.set(str(guild_id or ""))
+
+
+def reset_current_guild_id(token: Token) -> None:
+    _CURRENT_GUILD_ID.reset(token)
 
 
 def set_current_scope_type(scope_type: str) -> Token:
@@ -158,6 +167,10 @@ def _origin() -> str:
 
 def _transport_account_key() -> str:
     return _CURRENT_TRANSPORT_ACCOUNT_KEY.get()
+
+
+def _guild_id() -> str:
+    return _CURRENT_GUILD_ID.get()
 
 
 def _scope_type() -> str:
@@ -231,6 +244,7 @@ def build_graph(
     scheduler_service: SchedulerService | None = None,
     job_service=None,
     event_bus=None,
+    discord_mention_service=None,
     model_name: str | None = None,
     purpose: str = "main",
     include_subagent_tools: bool = True,
@@ -249,6 +263,7 @@ def build_graph(
                 scheduler_service=scheduler_service,
                 job_service=None,
                 event_bus=event_bus,
+                discord_mention_service=discord_mention_service,
                 model_name=worker_model,
                 purpose="main",
                 include_subagent_tools=False,
@@ -1685,6 +1700,54 @@ def build_graph(
         await _complete_tool_run(tool_run_id, "completed", output)
         return json.dumps(output)
 
+    @tool("discord_resolve_mentions")
+    async def discord_resolve_mentions(
+        query: str,
+        kind: str = "user",
+        guild_id: Optional[str] = None,
+        limit: int = 5,
+    ) -> str:
+        """Resolve Discord mention tokens for users, roles, or channels in the current Discord context. Use this before mentioning someone in a Discord reply."""
+        payload: dict[str, Any] = {
+            "query": query,
+            "kind": kind,
+            "guild_id": guild_id,
+            "limit": limit,
+        }
+        budget_message = await _enforce_tool_budget("discord_resolve_mentions", payload)
+        if budget_message:
+            return budget_message
+        tool_run_id = await _create_auto_tool_run("discord_resolve_mentions", payload)
+        if _origin() != "discord":
+            await _complete_tool_run(tool_run_id, "failed", {"error": "not in a Discord context"})
+            return "discord_resolve_mentions error: this tool is only available in Discord contexts"
+        if discord_mention_service is None:
+            await _complete_tool_run(tool_run_id, "failed", {"error": "mention service unavailable"})
+            return "discord_resolve_mentions error: mention service unavailable"
+        account_key = _transport_account_key().strip()
+        if not account_key:
+            await _complete_tool_run(tool_run_id, "failed", {"error": "transport account unavailable"})
+            return "discord_resolve_mentions error: transport account unavailable"
+        try:
+            matches = await discord_mention_service.resolve_mentions(
+                account_key=account_key,
+                kind=kind,
+                query=query,
+                guild_id=(guild_id or _guild_id() or None),
+                limit=max(1, min(int(limit or 5), 20)),
+            )
+        except Exception as exc:
+            await _complete_tool_run(tool_run_id, "failed", {"error": str(exc)})
+            return f"discord_resolve_mentions error: {exc}"
+        output = {
+            "query": query,
+            "kind": kind,
+            "guild_id": guild_id or _guild_id() or None,
+            "matches": matches,
+        }
+        await _complete_tool_run(tool_run_id, "completed", output)
+        return json.dumps(output)
+
     @tool("ask_user")
     async def ask_user(
         question: str,
@@ -2368,6 +2431,7 @@ def build_graph(
         create_secret,
         list_secrets,
         model_list,
+        discord_resolve_mentions,
         mcp_list_tools,
         mcp_call,
         memory_search,

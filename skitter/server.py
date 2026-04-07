@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import logging
 from datetime import UTC, datetime
 
 import uvicorn
@@ -9,7 +10,8 @@ import uvicorn
 from .api.app import create_app
 from .core.command_service import command_service
 from .core.config import settings
-from .core.conversation_scope import resolve_conversation_scope
+from .core.conversation_scope import group_scope_id, resolve_conversation_scope
+from .core.discord_mentions import DiscordMentionService
 from .core.graph import build_graph
 from .core.heartbeat import HeartbeatService
 from .core.jobs import JobService
@@ -19,6 +21,7 @@ from .core.runtime import AgentRuntime
 from .core.scheduler import SchedulerService
 from .core.secrets import SecretsManager
 from .core.session_finalizer import SessionFinalizerService
+from .core.session_run_queue import SessionRunQueue, SessionRunWork
 from .core.sessions import SessionManager
 from .core.transport_accounts import (
     DEFAULT_DISCORD_ACCOUNT_KEY,
@@ -32,6 +35,8 @@ from .data.repositories import Repository
 from .transports.discord import DiscordTransport
 from .transports.manager import TransportManager
 from .tools.sandbox_manager import sandbox_manager
+
+_logger = logging.getLogger(__name__)
 
 
 def _serialize_attachments(attachments: list) -> list[dict]:
@@ -67,6 +72,7 @@ async def main() -> None:
             scheduler_service=scheduler,
             job_service=None,
             event_bus=app.state.event_bus,
+            discord_mention_service=app.state.discord_mention_service,
             model_name=worker_model,
             purpose="main",
             include_subagent_tools=False,
@@ -77,6 +83,8 @@ async def main() -> None:
     app.state.session_finalizer_service = session_finalizer_service
     runtime.set_job_service(job_service)
     session_manager = SessionManager(runtime)
+    session_run_queue = SessionRunQueue()
+    app.state.session_run_queue = session_run_queue
     app.state.transport_runtime_states = {}
     if sandbox_manager is not None:
         await sandbox_manager.start()
@@ -119,6 +127,8 @@ async def main() -> None:
 
     manager = TransportManager(runtime_state_notifier=_persist_transport_runtime_state)
     app.state.transport_manager = manager
+    app.state.discord_mention_service = DiscordMentionService(manager)
+    runtime.set_discord_mention_service(app.state.discord_mention_service)
 
     async def _submit_prompt_reply(
         prompt_id: str,
@@ -135,7 +145,17 @@ async def main() -> None:
                 return
             prompt_session = await repo.get_session(prompt.session_id)
             user = await repo.get_user_by_transport_id(transport_user_id)
-            if prompt_session is None or user is None or user.id != prompt_session.user_id or not user.approved:
+            if prompt_session is None or user is None or not user.approved:
+                return
+            if user.id != prompt_session.user_id:
+                expected_group_scope = group_scope_id("discord", transport_account_key, channel_id)
+                if prompt_session.scope_type != "group" or (prompt_session.scope_id or "") != expected_group_scope:
+                    return
+            if prompt_session.scope_type == "group" and (prompt_session.scope_id or "") != group_scope_id(
+                "discord",
+                transport_account_key,
+                channel_id,
+            ):
                 return
         envelope = MessageEnvelope(
             message_id=f"prompt:{prompt_id}:{int(datetime.now(UTC).timestamp() * 1000)}",
@@ -328,11 +348,25 @@ async def main() -> None:
             with contextlib.suppress(Exception):
                 await task
 
-    def _build_message_metadata(envelope: MessageEnvelope, internal_user_id: str) -> dict:
+    def _observe_queued_turn(future: asyncio.Future[dict[str, object]]) -> None:
+        def _done(done: asyncio.Future[dict[str, object]]) -> None:
+            with contextlib.suppress(asyncio.CancelledError):
+                exc = done.exception()
+                if exc is not None:
+                    _logger.exception("Queued session run failed", exc_info=exc)
+
+        future.add_done_callback(_done)
+
+    def _build_message_metadata(
+        envelope: MessageEnvelope,
+        owner_internal_user_id: str,
+        sender_internal_user_id: str | None = None,
+    ) -> dict:
         metadata = dict(envelope.metadata)
         metadata.update(
             {
-                "internal_user_id": internal_user_id,
+                "internal_user_id": owner_internal_user_id,
+                "sender_internal_user_id": sender_internal_user_id or owner_internal_user_id,
                 "message_id": envelope.message_id,
                 "origin": envelope.origin,
                 "transport_account_key": envelope.transport_account_key,
@@ -345,14 +379,20 @@ async def main() -> None:
                 envelope.metadata["attachments"] = attachments_meta
         return metadata
 
-    async def _persist_user_message(session_id: str, envelope: MessageEnvelope, internal_user_id: str):
-        metadata = _build_message_metadata(envelope, internal_user_id)
+    async def _persist_user_message(
+        session_id: str,
+        envelope: MessageEnvelope,
+        owner_internal_user_id: str,
+        sender_internal_user_id: str | None = None,
+    ):
+        answered_by = sender_internal_user_id or owner_internal_user_id
+        metadata = _build_message_metadata(envelope, owner_internal_user_id, sender_internal_user_id)
         async with SessionLocal() as session:
             repo = Repository(session)
             answered_prompt = await repo.answer_pending_user_prompt_for_session(
                 session_id,
                 answer=envelope.text,
-                answered_by=internal_user_id,
+                answered_by=answered_by,
             )
             if answered_prompt is not None:
                 metadata["answered_prompt_id"] = answered_prompt.id
@@ -364,10 +404,15 @@ async def main() -> None:
                 title="User prompt answered",
                 message=envelope.text or "The user answered a pending prompt.",
                 session_id=session_id,
-                user_id=internal_user_id,
-                data={"prompt_id": answered_prompt.id},
+                user_id=owner_internal_user_id,
+                data={"prompt_id": answered_prompt.id, "answered_by": answered_by},
             )
         return answered_prompt
+
+    async def _session_has_pending_user_prompt(session_id: str) -> bool:
+        async with SessionLocal() as session:
+            repo = Repository(session)
+            return await repo.get_pending_user_prompt_for_session(session_id) is not None
 
     async def _persist_assistant_message(
         session_id: str,
@@ -417,13 +462,13 @@ async def main() -> None:
 
     async def _resolve_profile_for_envelope(
         repo: Repository,
-        internal_user_id: str,
+        sender_internal_user_id: str,
         envelope: MessageEnvelope,
     ) -> tuple[object | None, str | None]:
         if envelope.origin != "discord":
             profile = await profile_service.current_surface_profile(
                 repo,
-                internal_user_id,
+                sender_internal_user_id,
                 origin=envelope.origin,
                 channel_id=envelope.channel_id,
                 agent_profile_id=str(envelope.metadata.get("agent_profile_id") or "").strip() or None,
@@ -436,19 +481,19 @@ async def main() -> None:
             pinned_profile_id = str(envelope.metadata.get("pinned_profile_id") or "").strip()
             if pinned_profile_id:
                 profile = await repo.get_agent_profile(pinned_profile_id)
-                if profile is None or profile.user_id != internal_user_id or profile.status == "archived":
+                if profile is None or profile.user_id != sender_internal_user_id or profile.status == "archived":
                     return None, None
                 return profile, None
             profile, notice = await transport_account_service.resolve_shared_default_dm_profile(
                 repo,
-                user_id=internal_user_id,
+                user_id=sender_internal_user_id,
                 channel_id=envelope.channel_id,
                 origin="discord",
                 transport_account_key=envelope.transport_account_key or DEFAULT_DISCORD_ACCOUNT_KEY,
             )
             if profile is not None and notice:
                 await repo.upsert_surface_profile_override(
-                    user_id=internal_user_id,
+                    user_id=sender_internal_user_id,
                     agent_profile_id=profile.id,
                     origin="discord",
                     transport_account_key=envelope.transport_account_key or DEFAULT_DISCORD_ACCOUNT_KEY,
@@ -482,7 +527,7 @@ async def main() -> None:
             if not (explicit or mentions_bot or reply_to_bot):
                 return None, None
         profile = await repo.get_agent_profile(binding.agent_profile_id)
-        if profile is None or profile.user_id != internal_user_id or profile.status == "archived":
+        if profile is None or profile.status == "archived":
             return None, None
         if is_shared_default_account_key(envelope.transport_account_key):
             explicit_account = await repo.get_transport_account_for_profile(profile.id, "discord")
@@ -566,58 +611,24 @@ async def main() -> None:
             await transport.send_message(envelope.channel_id, result.message)
         return True
 
-    async def handler(envelope: MessageEnvelope) -> None:
-        account_key = envelope.transport_account_key or DEFAULT_DISCORD_ACCOUNT_KEY
-        transport = manager.get(account_key)
-        if transport is None or not isinstance(transport, DiscordTransport):
-            return
-
-        internal_user_id = await _resolve_internal_user_id(envelope, transport)
-        if internal_user_id is None:
-            return
-
-        async with SessionLocal() as session:
-            repo = Repository(session)
-            profile, routing_notice = await _resolve_profile_for_envelope(repo, internal_user_id, envelope)
-        if profile is None:
-            return
-        if routing_notice:
-            with contextlib.suppress(Exception):
-                await transport.send_message(envelope.channel_id, routing_notice)
-
-        envelope.metadata["agent_profile_id"] = profile.id
-        envelope.metadata["agent_profile_slug"] = profile.slug
-        envelope.metadata["transport_account_key"] = account_key
-        scope = resolve_conversation_scope(
-            origin=envelope.origin,
-            channel_id=envelope.channel_id,
-            internal_user_id=profile.id,
-            metadata=envelope.metadata,
-        )
-        envelope.metadata["internal_user_id"] = internal_user_id
-        envelope.metadata["scope_type"] = scope.scope_type
-        envelope.metadata["scope_id"] = scope.scope_id
-        envelope.metadata["is_private"] = scope.is_private
-
-        await _update_user_last_seen(internal_user_id, profile, envelope, scope)
-
+    async def _process_runtime_turn(
+        *,
+        session_id: str,
+        envelope: MessageEnvelope,
+        transport: DiscordTransport,
+        owner_internal_user_id: str,
+    ) -> dict[str, object]:
+        sender_internal_user_id = None
+        if not envelope.metadata.get("coalesced_messages"):
+            sender_internal_user_id = str(envelope.metadata.get("sender_internal_user_id") or "").strip() or None
         await transport.send_typing(envelope.channel_id)
-        handled = await _handle_discord_command(envelope, transport, scope, internal_user_id, profile)
-        if handled:
-            return
-
-        session_id = await session_manager.get_or_create_session_for_scope(
-            user_id=internal_user_id,
-            agent_profile_id=profile.id,
-            agent_profile_slug=profile.slug,
-            scope_type=scope.scope_type,
-            scope_id=scope.scope_id,
-            origin=envelope.origin,
-            cache_key=scope.scope_id if scope.is_private else f"{account_key}:{envelope.channel_id}",
-        )
-
         progress_stop, progress_task = await _start_progress_tracking(envelope, transport, session_id)
-        answered_prompt = await _persist_user_message(session_id, envelope, internal_user_id)
+        answered_prompt = await _persist_user_message(
+            session_id,
+            envelope,
+            owner_internal_user_id,
+            sender_internal_user_id,
+        )
         if answered_prompt is not None:
             await transport.clear_user_prompt(answered_prompt.id)
 
@@ -647,6 +658,86 @@ async def main() -> None:
                 attachments=response.attachments,
                 extra_metadata=prompt_metadata,
             )
+        return {
+            "pending_prompt": bool(response.pending_prompt is not None),
+            "response_sent": bool(response.text or response.attachments),
+        }
+
+    async def handler(envelope: MessageEnvelope) -> None:
+        account_key = envelope.transport_account_key or DEFAULT_DISCORD_ACCOUNT_KEY
+        transport = manager.get(account_key)
+        if transport is None or not isinstance(transport, DiscordTransport):
+            return
+
+        sender_internal_user_id = await _resolve_internal_user_id(envelope, transport)
+        if sender_internal_user_id is None:
+            return
+
+        async with SessionLocal() as session:
+            repo = Repository(session)
+            profile, routing_notice = await _resolve_profile_for_envelope(repo, sender_internal_user_id, envelope)
+        if profile is None:
+            return
+        if routing_notice:
+            with contextlib.suppress(Exception):
+                await transport.send_message(envelope.channel_id, routing_notice)
+
+        owner_internal_user_id = profile.user_id
+        envelope.metadata["agent_profile_id"] = profile.id
+        envelope.metadata["agent_profile_slug"] = profile.slug
+        envelope.metadata["transport_account_key"] = account_key
+        scope = resolve_conversation_scope(
+            origin=envelope.origin,
+            channel_id=envelope.channel_id,
+            internal_user_id=profile.id,
+            metadata=envelope.metadata,
+        )
+        envelope.metadata["internal_user_id"] = owner_internal_user_id
+        envelope.metadata["sender_internal_user_id"] = sender_internal_user_id
+        envelope.metadata["scope_type"] = scope.scope_type
+        envelope.metadata["scope_id"] = scope.scope_id
+        envelope.metadata["is_private"] = scope.is_private
+
+        await _update_user_last_seen(sender_internal_user_id, profile, envelope, scope)
+
+        handled = await _handle_discord_command(envelope, transport, scope, owner_internal_user_id, profile)
+        if handled:
+            return
+
+        session_id = await session_manager.get_or_create_session_for_scope(
+            user_id=owner_internal_user_id,
+            agent_profile_id=profile.id,
+            agent_profile_slug=profile.slug,
+            scope_type=scope.scope_type,
+            scope_id=scope.scope_id,
+            origin=envelope.origin,
+            cache_key=scope.scope_id if scope.is_private else f"{account_key}:{envelope.channel_id}",
+        )
+        coalescible = (
+            envelope.origin == "discord"
+            and not scope.is_private
+            and not envelope.command
+            and not envelope.attachments
+            and not bool(envelope.metadata.get("interaction_response"))
+            and not bool(envelope.metadata.get("is_explicit_interaction"))
+            and bool(str(envelope.text or "").strip())
+            and not await _session_has_pending_user_prompt(session_id)
+        )
+
+        queued_future = await session_run_queue.submit(
+            SessionRunWork(
+                session_id=session_id,
+                envelope=envelope,
+                process=lambda queued_envelope: _process_runtime_turn(
+                    session_id=session_id,
+                    envelope=queued_envelope,
+                    transport=transport,
+                    owner_internal_user_id=owner_internal_user_id,
+                ),
+                coalescible=coalescible,
+            )
+        )
+        _observe_queued_turn(queued_future)
 
     await _reconcile_transports()
     manager.on_event(handler)

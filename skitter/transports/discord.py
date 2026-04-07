@@ -250,12 +250,14 @@ class UserPromptView(discord.ui.View):
         prompt_id: str,
         choices: list[str],
         allow_free_text: bool,
+        account_key: str,
         responder: UserPromptResponder | None,
         on_closed: UserPromptClosed | None = None,
     ) -> None:
         super().__init__(timeout=900)
         self.prompt_id = prompt_id
         self.choices = choices[:4]
+        self.account_key = str(account_key or "").strip()
         self.responder = responder
         self.on_closed = on_closed
         self.message: Optional[discord.Message] = None
@@ -298,6 +300,30 @@ class UserPromptView(discord.ui.View):
             )
 
         return _handler
+
+
+def _discord_sender_metadata(user: discord.abc.User, *, guild_member: object | None = None) -> dict[str, object]:
+    display_name = str(getattr(user, "display_name", None) or getattr(user, "name", "") or "").strip()
+    username = str(getattr(user, "name", "") or "").strip()
+    avatar = getattr(user, "display_avatar", None)
+    avatar_url = str(getattr(avatar, "url", "") or "").strip() or None
+    raw_roles = getattr(guild_member, "roles", None) or []
+    role_names = [
+        str(getattr(role, "name", "") or "").strip()
+        for role in raw_roles
+        if not bool(getattr(role, "is_default", lambda: False)())
+        and str(getattr(role, "name", "") or "").strip()
+    ]
+    user_id = str(getattr(user, "id", "") or "").strip()
+    return {
+        "sender_transport_user_id": user_id,
+        "sender_display_name": display_name,
+        "sender_username": username,
+        "sender_avatar_url": avatar_url,
+        "sender_is_bot": bool(getattr(user, "bot", False)),
+        "sender_mention": f"<@{user_id}>" if user_id else "",
+        "sender_role_names": role_names,
+    }
 
 class DiscordTransport(TransportAdapter):
     def __init__(
@@ -380,6 +406,7 @@ class DiscordTransport(TransportAdapter):
                     "mentions_bot": mentions_bot,
                     "reply_to_bot": reply_to_bot,
                     "pinned_profile_id": self.pinned_profile_id,
+                    **_discord_sender_metadata(message.author, guild_member=message.author if not is_private else None),
                 },
             )
             await self._handler(envelope)
@@ -619,6 +646,7 @@ class DiscordTransport(TransportAdapter):
                 prompt_id,
                 choices[:4],
                 allow_free_text,
+                self.account_key,
                 self._user_prompt_responder,
                 self._forget_user_prompt_message,
             )
@@ -658,6 +686,7 @@ class DiscordTransport(TransportAdapter):
                     else None
                 ),
                 "pinned_profile_id": self.pinned_profile_id,
+                **_discord_sender_metadata(interaction.user, guild_member=interaction.user if not is_private else None),
             }
         )
         envelope = MessageEnvelope(

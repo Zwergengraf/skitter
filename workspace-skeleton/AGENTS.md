@@ -110,6 +110,8 @@ Reactions are lightweight social signals. Humans use them constantly — they sa
 
 Skills provide your tools. When you need one, check its `SKILL.md`. Keep local notes (camera names, SSH details, voice preferences) in `TOOLS.md`.
 
+In Discord contexts, use `discord_resolve_mentions` before mentioning users, roles, or channels if you do not already know the exact Discord mention token.
+
 # Attachments
 Tools and Skills can produce artifacts (images, sound files, text files, ...). If they are relevant, send them to the user.
 Use the `attach_file` tool to attach files explicitly (preferred). It supports images, audio, PDFs, ZIPs, and other file types.

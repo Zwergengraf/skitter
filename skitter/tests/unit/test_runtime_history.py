@@ -162,6 +162,79 @@ def test_messages_for_invoke_merges_non_consecutive_system_messages_for_anthropi
     assert isinstance(prepared[2], AIMessage)
 
 
+def test_prepare_envelope_content_renders_sender_context_for_public_discord_messages() -> None:
+    runtime = _runtime()
+    envelope = MessageEnvelope(
+        message_id="msg-1",
+        channel_id="chan-1",
+        user_id="transport-user",
+        timestamp=datetime.now(UTC),
+        text="Can you summarize this?",
+        origin="discord",
+        metadata={
+            "is_private": False,
+            "sender_transport_user_id": "123",
+            "sender_display_name": "Alice",
+            "sender_username": "alice",
+            "sender_mention": "<@123>",
+            "sender_is_bot": False,
+            "sender_role_names": ["Moderator", "Builder"],
+        },
+    )
+
+    content, is_command, attachments_meta = runtime._prepare_envelope_content(envelope)
+
+    assert is_command is False
+    assert attachments_meta == []
+    assert content.startswith("[Discord sender: Alice | @alice | <@123> | roles: Moderator, Builder]\n")
+    assert content.endswith("Can you summarize this?")
+
+
+def test_prepare_envelope_content_renders_coalesced_public_discord_messages() -> None:
+    runtime = _runtime()
+    envelope = MessageEnvelope(
+        message_id="batch-1",
+        channel_id="chan-1",
+        user_id="transport-user",
+        timestamp=datetime.now(UTC),
+        text="[Alice] first\n[Bob] second",
+        origin="discord",
+        metadata={
+            "is_private": False,
+            "coalesced_messages": [
+                {
+                    "origin": "discord",
+                    "is_private": False,
+                    "text": "first",
+                    "sender_transport_user_id": "123",
+                    "sender_display_name": "Alice",
+                    "sender_username": "alice",
+                    "sender_mention": "<@123>",
+                },
+                {
+                    "origin": "discord",
+                    "is_private": False,
+                    "text": "second",
+                    "sender_transport_user_id": "456",
+                    "sender_display_name": "Bob",
+                    "sender_username": "bob",
+                    "sender_mention": "<@456>",
+                },
+            ],
+        },
+    )
+
+    content, is_command, attachments_meta = runtime._prepare_envelope_content(envelope)
+
+    assert is_command is False
+    assert attachments_meta == []
+    assert content.startswith("[Messages received while you were busy. Reply once to the full batch.]")
+    assert "Alice | @alice | <@123>" in content
+    assert "Bob | @bob | <@456>" in content
+    assert "first" in content
+    assert "second" in content
+
+
 class _ApiStatusError(Exception):
     def __init__(self, status_code: int) -> None:
         super().__init__(f"status={status_code}")

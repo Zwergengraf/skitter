@@ -31,6 +31,7 @@ from .graph import (
     build_graph,
     current_user_id,
     reset_current_channel_id,
+    reset_current_guild_id,
     reset_current_origin,
     reset_current_transport_account_key,
     reset_current_scope_id,
@@ -40,6 +41,7 @@ from .graph import (
     reset_current_message_id,
     reset_current_run_id,
     set_current_channel_id,
+    set_current_guild_id,
     set_current_message_id,
     set_current_origin,
     set_current_transport_account_key,
@@ -87,18 +89,21 @@ class AgentRuntime:
         user_prompt_service=None,
         scheduler_service=None,
         job_service=None,
+        discord_mention_service=None,
     ) -> None:
         self.event_bus = event_bus
         self._approval_service = approval_service
         self._user_prompt_service = user_prompt_service
         self._scheduler_service = scheduler_service
         self._job_service = job_service
+        self._discord_mention_service = discord_mention_service
         self._session_memory_service = None
         self._fixed_graph = graph
         self._graphs: dict[tuple[str, str, str, str, str], object] = {}
         self._tool_client = ToolRunnerClient()
         self._history: dict[str, list[BaseMessage]] = defaultdict(list)
         self._session_models: dict[str, str] = {}
+        self._session_locks: dict[str, asyncio.Lock] = {}
 
     def set_scheduler_service(self, scheduler_service) -> None:
         self._scheduler_service = scheduler_service
@@ -112,6 +117,10 @@ class AgentRuntime:
 
     def set_user_prompt_service(self, user_prompt_service) -> None:
         self._user_prompt_service = user_prompt_service
+        self._graphs.clear()
+
+    def set_discord_mention_service(self, discord_mention_service) -> None:
+        self._discord_mention_service = discord_mention_service
         self._graphs.clear()
 
     def set_session_memory_service(self, session_memory_service) -> None:
@@ -136,7 +145,68 @@ class AgentRuntime:
             content = f"/{envelope.command} {envelope.metadata}".strip()
         elif envelope.attachments:
             attachments_meta = self._serialize_attachments(envelope.attachments)
+        coalesced_messages = envelope.metadata.get("coalesced_messages")
+        if isinstance(coalesced_messages, list) and coalesced_messages:
+            content = self._render_coalesced_sender_context(content, coalesced_messages, origin=envelope.origin)
+            return content, is_command, attachments_meta
+        content = self._render_sender_context(content, envelope.metadata, origin=envelope.origin)
         return content, is_command, attachments_meta
+
+    def _render_coalesced_sender_context(
+        self,
+        fallback_content: str,
+        coalesced_messages: list[object],
+        *,
+        origin: str | None = None,
+    ) -> str:
+        rendered_parts: list[str] = []
+        for item in coalesced_messages:
+            if not isinstance(item, dict):
+                continue
+            part_text = str(item.get("text") or "").strip()
+            rendered = self._render_sender_context(part_text, item, origin=origin)
+            if rendered:
+                rendered_parts.append(rendered)
+        if not rendered_parts:
+            return fallback_content
+        header = "[Messages received while you were busy. Reply once to the full batch.]"
+        return header + "\n\n" + "\n\n".join(rendered_parts)
+
+    def _render_sender_context(
+        self,
+        content: str,
+        metadata: dict[str, object] | None,
+        *,
+        origin: str | None = None,
+    ) -> str:
+        meta = metadata or {}
+        message_origin = str(origin or meta.get("origin") or "").strip().lower()
+        if message_origin != "discord":
+            return content
+        coalesced_messages = meta.get("coalesced_messages")
+        if isinstance(coalesced_messages, list) and coalesced_messages:
+            return self._render_coalesced_sender_context(content, coalesced_messages, origin=message_origin)
+        if bool(meta.get("is_private")):
+            return content
+        sender_id = str(meta.get("sender_transport_user_id") or "").strip()
+        display_name = str(meta.get("sender_display_name") or "").strip()
+        username = str(meta.get("sender_username") or "").strip()
+        mention = str(meta.get("sender_mention") or "").strip()
+        role_names = [str(item).strip() for item in (meta.get("sender_role_names") or []) if str(item).strip()]
+        if not (sender_id or display_name or username or mention or role_names):
+            return content
+        label = display_name or username or sender_id or "unknown"
+        parts = [label]
+        if username and username != label:
+            parts.append(f"@{username}")
+        if mention:
+            parts.append(mention)
+        if bool(meta.get("sender_is_bot")):
+            parts.append("bot")
+        if role_names:
+            parts.append(f"roles: {', '.join(role_names[:6])}")
+        header = "[Discord sender: " + " | ".join(parts) + "]"
+        return f"{header}\n{content}" if content else header
 
     def _push_request_context(
         self,
@@ -158,6 +228,7 @@ class AgentRuntime:
             "profile_slug": set_current_agent_profile_slug(agent_profile_slug),
             "origin": set_current_origin(envelope.origin),
             "transport_account_key": set_current_transport_account_key(envelope.transport_account_key),
+            "guild_id": set_current_guild_id(str(envelope.metadata.get("guild_id") or "")),
             "run_id": set_current_run_id(run_id),
             "message_id": set_current_message_id(envelope.message_id),
             "scope_type": set_current_scope_type(scope_type),
@@ -170,6 +241,7 @@ class AgentRuntime:
         reset_current_scope_type(tokens["scope_type"])
         reset_current_origin(tokens["origin"])
         reset_current_transport_account_key(tokens["transport_account_key"])
+        reset_current_guild_id(tokens["guild_id"])
         reset_current_agent_profile_slug(tokens["profile_slug"])
         reset_current_agent_profile_id(tokens["profile_id"])
         reset_current_user_id(tokens["user"])
@@ -375,6 +447,11 @@ class AgentRuntime:
         return cleaned, attachments
 
     async def handle_message(self, session_id: str, envelope: MessageEnvelope) -> AgentResponse:
+        lock = self._session_locks.setdefault(session_id, asyncio.Lock())
+        async with lock:
+            return await self._handle_message_locked(session_id, envelope)
+
+    async def _handle_message_locked(self, session_id: str, envelope: MessageEnvelope) -> AgentResponse:
         if not envelope.text and not envelope.command and not envelope.attachments:
             return AgentResponse(text="")
         if not list_models():
@@ -960,6 +1037,7 @@ class AgentRuntime:
                 scheduler_service=self._scheduler_service,
                 job_service=self._job_service,
                 event_bus=self.event_bus,
+                discord_mention_service=self._discord_mention_service,
                 model_name=resolved.name,
                 purpose=purpose,
                 include_user_prompt_tools=include_user_prompt_tools,
@@ -1782,10 +1860,15 @@ Each bullet must be self-contained, explicit, and searchable.
                 if role == "user":
                     attachments_meta = meta.get("attachments")
                     if isinstance(attachments_meta, list) and attachments_meta:
-                        blocks = self._build_content_blocks(content, attachments_meta)
+                        blocks = self._build_content_blocks(self._render_sender_context(content, meta), attachments_meta)
                         history.append(HumanMessage(content_blocks=blocks, additional_kwargs=meta))
                     else:
-                        history.append(HumanMessage(content=content, additional_kwargs=meta))
+                        history.append(
+                            HumanMessage(
+                                content=self._render_sender_context(content, meta),
+                                additional_kwargs=meta,
+                            )
+                        )
                 elif role == "assistant":
                     if meta.get("user_prompt"):
                         history.append(
