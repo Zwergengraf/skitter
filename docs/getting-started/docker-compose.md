@@ -60,6 +60,8 @@ Dedicated per-profile Discord bot overrides are configured after startup in the 
 docker compose --profile sandbox build
 ```
 
+The Python-based images install dependencies with `uv` into an internal virtualenv during the Docker build. No extra `pip` setup is required on the host.
+
 ## Start Core Services
 
 ```bash

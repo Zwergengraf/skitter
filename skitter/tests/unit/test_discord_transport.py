@@ -1,10 +1,14 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
 
 from skitter.transports.discord import (
     ApprovalView,
     DISCORD_MESSAGE_CHAR_LIMIT,
+    _remember_internal_message,
+    _should_ignore_inbound_message,
     _append_status_suffix,
     _build_approval_request_content,
 )
@@ -52,3 +56,22 @@ async def test_approval_view_has_approve_and_deny_buttons() -> None:
 
     assert "Approve" in labels
     assert "Deny" in labels
+
+
+def test_should_ignore_inbound_message_for_same_bot_user() -> None:
+    message = SimpleNamespace(id=101, author=SimpleNamespace(id=55))
+
+    assert _should_ignore_inbound_message(message, own_bot_user_id=55) is True
+
+
+def test_should_ignore_inbound_message_for_registered_internal_message() -> None:
+    message = SimpleNamespace(id=202, author=SimpleNamespace(id=77))
+    _remember_internal_message(message)
+
+    assert _should_ignore_inbound_message(message, own_bot_user_id=99) is True
+
+
+def test_should_not_ignore_other_bot_message_without_registry() -> None:
+    message = SimpleNamespace(id=303, author=SimpleNamespace(id=88))
+
+    assert _should_ignore_inbound_message(message, own_bot_user_id=99) is False

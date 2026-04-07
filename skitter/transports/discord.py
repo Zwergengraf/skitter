@@ -4,6 +4,7 @@ import contextlib
 import io
 import json
 import re
+import time
 from datetime import UTC, datetime
 from typing import Awaitable, Callable, Iterable, Optional
 
@@ -23,6 +24,39 @@ URL_PATTERN = re.compile(r"https?://[^\s<>]+")
 UNWRAPPED_URL_PATTERN = re.compile(r"(?<!<)(https?://[^\s<>]+)(?!>)")
 PARAGRAPH_BREAK_PATTERN = re.compile(r"\n{2,}")
 SENTENCE_BREAK_PATTERN = re.compile(r"[.!?](?:[\"')\]]+)?\s+")
+INTERNAL_MESSAGE_TTL_SECONDS = 900.0
+_IGNORED_INBOUND_MESSAGE_IDS: dict[int, float] = {}
+
+
+def _prune_ignored_inbound_messages(now: float | None = None) -> None:
+    current = now if now is not None else time.monotonic()
+    stale_ids = [
+        message_id
+        for message_id, created_at in _IGNORED_INBOUND_MESSAGE_IDS.items()
+        if current - created_at > INTERNAL_MESSAGE_TTL_SECONDS
+    ]
+    for message_id in stale_ids:
+        _IGNORED_INBOUND_MESSAGE_IDS.pop(message_id, None)
+
+
+def _remember_internal_message(message: object | None) -> None:
+    message_id = getattr(message, "id", None)
+    if message_id is None:
+        return
+    _prune_ignored_inbound_messages()
+    _IGNORED_INBOUND_MESSAGE_IDS[int(message_id)] = time.monotonic()
+
+
+def _should_ignore_inbound_message(message: object, *, own_bot_user_id: int | None) -> bool:
+    author = getattr(message, "author", None)
+    author_id = getattr(author, "id", None)
+    if own_bot_user_id is not None and author_id == own_bot_user_id:
+        return True
+    message_id = getattr(message, "id", None)
+    if message_id is None:
+        return False
+    _prune_ignored_inbound_messages()
+    return int(message_id) in _IGNORED_INBOUND_MESSAGE_IDS
 
 
 def _parse_text_command(text: str) -> tuple[str | None, dict[str, object]]:
@@ -366,7 +400,7 @@ class DiscordTransport(TransportAdapter):
         @self.client.event
         async def on_message(message: discord.Message) -> None:
             bot_user = self.client.user
-            if bot_user is not None and getattr(message.author, "id", None) == bot_user.id:
+            if _should_ignore_inbound_message(message, own_bot_user_id=getattr(bot_user, "id", None)):
                 return
             is_private = isinstance(message.channel, discord.DMChannel)
             if self._handler is None:
@@ -517,6 +551,8 @@ class DiscordTransport(TransportAdapter):
         channel: discord.abc.Messageable,
         content: str,
         files: list[discord.File] | None = None,
+        *,
+        suppress_agent_processing: bool = False,
     ) -> None:
         # Discord messages are capped at 2000 chars.
         # Files (if any) are attached only to the first chunk.
@@ -525,9 +561,11 @@ class DiscordTransport(TransportAdapter):
         chunks = _split_discord_content(prepared, DISCORD_MESSAGE_CHAR_LIMIT)
         for i, chunk in enumerate(chunks):
             if i == 0:
-                await channel.send(chunk, files=files)
+                sent = await channel.send(chunk, files=files)
             else:
-                await channel.send(chunk)
+                sent = await channel.send(chunk)
+            if suppress_agent_processing:
+                _remember_internal_message(sent)
 
     async def send_message(
         self,
@@ -546,10 +584,20 @@ class DiscordTransport(TransportAdapter):
                     files.append(discord.File(io.BytesIO(attachment.bytes_data), filename=attachment.filename))
                 elif attachment.path:
                     files.append(discord.File(attachment.path))
+        suppress_agent_processing = bool((metadata or {}).get("suppress_agent_processing"))
         if files:
-            await self._send_split_message(channel, content or "Screenshot:", files=files)
+            await self._send_split_message(
+                channel,
+                content or "Screenshot:",
+                files=files,
+                suppress_agent_processing=suppress_agent_processing,
+            )
         else:
-            await self._send_split_message(channel, content)
+            await self._send_split_message(
+                channel,
+                content,
+                suppress_agent_processing=suppress_agent_processing,
+            )
 
     async def send_user_message(
         self,
@@ -569,10 +617,20 @@ class DiscordTransport(TransportAdapter):
                     files.append(discord.File(io.BytesIO(attachment.bytes_data), filename=attachment.filename))
                 elif attachment.path:
                     files.append(discord.File(attachment.path))
+        suppress_agent_processing = bool((metadata or {}).get("suppress_agent_processing"))
         if files:
-            await self._send_split_message(channel, content or "Screenshot:", files=files)
+            await self._send_split_message(
+                channel,
+                content or "Screenshot:",
+                files=files,
+                suppress_agent_processing=suppress_agent_processing,
+            )
         else:
-            await self._send_split_message(channel, content)
+            await self._send_split_message(
+                channel,
+                content,
+                suppress_agent_processing=suppress_agent_processing,
+            )
 
     async def send_typing(self, channel_id: str) -> None:
         channel = await self.client.fetch_channel(int(channel_id))
@@ -588,7 +646,9 @@ class DiscordTransport(TransportAdapter):
         if not isinstance(channel, (discord.DMChannel, discord.TextChannel, discord.Thread)):
             return None
         try:
-            return await channel.send(content)
+            message = await channel.send(content)
+            _remember_internal_message(message)
+            return message
         except Exception:
             return None
 
@@ -623,6 +683,7 @@ class DiscordTransport(TransportAdapter):
         view = ApprovalView(tool_run_id, self._approval_service)
         content = _build_approval_request_content(tool_name, payload)
         message = await channel.send(content, view=view)
+        _remember_internal_message(message)
         view.message = message
 
     async def send_user_prompt_request(
@@ -651,13 +712,15 @@ class DiscordTransport(TransportAdapter):
                 self._forget_user_prompt_message,
             )
             message = await channel.send(content, view=view)
+            _remember_internal_message(message)
             view.message = message
             self._user_prompt_messages[prompt_id] = message
             return
         suffix = "\n\nPlease reply with your answer."
         if allow_free_text:
             suffix = "\n\nPlease reply in chat with your answer."
-        await channel.send(content + suffix)
+        message = await channel.send(content + suffix)
+        _remember_internal_message(message)
 
     async def _handle_command(
         self,
@@ -704,12 +767,17 @@ class DiscordTransport(TransportAdapter):
         await self._handler(envelope)
         ephemeral_response = envelope.metadata.get("ephemeral_response")
         if ephemeral_response:
-            await interaction.followup.send(str(ephemeral_response), ephemeral=True)
+            if ephemeral:
+                await interaction.followup.send(str(ephemeral_response), ephemeral=True)
+            else:
+                sent = await interaction.followup.send(str(ephemeral_response), wait=True)
+                _remember_internal_message(sent)
             return
         if envelope.metadata.get("suppress_ack"):
             return
         if interaction.response.is_done():
-            await interaction.followup.send("Command received.")
+            sent = await interaction.followup.send("Command received.", wait=True)
+            _remember_internal_message(sent)
 
     async def _record_user_channel(self, message: discord.Message, is_private: bool) -> None:
         display_name = getattr(message.author, "display_name", None) or message.author.name

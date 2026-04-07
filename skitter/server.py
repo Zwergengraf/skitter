@@ -57,6 +57,32 @@ def _serialize_attachments(attachments: list) -> list[dict]:
     return serialized
 
 
+async def _load_transport_account_token(
+    *,
+    repo: Repository,
+    row,
+    secrets_manager: SecretsManager | None,
+    secrets_error: str | None = None,
+) -> tuple[str, str | None]:
+    if secrets_manager is None:
+        return "", f"Transport secrets are unavailable: {secrets_error or 'unknown error'}"
+    if not str(getattr(row, "credential_secret_name", "") or "").strip():
+        return "", "Transport account is missing its credential secret."
+    secret = await repo.get_secret_exact(
+        row.user_id,
+        row.credential_secret_name,
+        agent_profile_id=row.agent_profile_id,
+    )
+    if secret is None:
+        return "", "Transport account credential secret was not found."
+    try:
+        token = secrets_manager.decrypt(secret.value_encrypted)
+        await repo.touch_secret(secret)
+        return token, None
+    except Exception as exc:
+        return "", f"Transport account credential decryption failed: {exc}"
+
+
 async def main() -> None:
     app = create_app()
     runtime: AgentRuntime = app.state.runtime
@@ -198,26 +224,12 @@ async def main() -> None:
             for row in rows:
                 if not row.enabled:
                     continue
-                token = ""
-                error: str | None = None
-                if secrets_manager is None:
-                    error = f"Transport secrets are unavailable: {secrets_error or 'unknown error'}"
-                elif not str(row.credential_secret_name or "").strip():
-                    error = "Transport account is missing its credential secret."
-                else:
-                    secret = await repo.get_secret_exact(
-                        row.user_id,
-                        row.credential_secret_name,
-                        agent_profile_id=row.agent_profile_id,
-                    )
-                    if secret is None:
-                        error = "Transport account credential secret was not found."
-                    else:
-                        try:
-                            token = secrets_manager.decrypt(secret.value)
-                            await repo.touch_secret(secret)
-                        except Exception as exc:
-                            error = f"Transport account credential decryption failed: {exc}"
+                token, error = await _load_transport_account_token(
+                    repo=repo,
+                    row=row,
+                    secrets_manager=secrets_manager,
+                    secrets_error=secrets_error,
+                )
                 if error:
                     await repo.update_transport_account(row.account_key, status="error", last_error=error)
                     continue
@@ -454,6 +466,7 @@ async def main() -> None:
                         await transport.send_message(
                             envelope.channel_id,
                             "Your account is not yet approved. An admin has to approve it first.",
+                            metadata={"suppress_agent_processing": True},
                         )
                         await repo.mark_user_notified(user.id, envelope.transport_account_key)
                 envelope.metadata["suppress_ack"] = True
@@ -602,13 +615,21 @@ async def main() -> None:
                     envelope.metadata["ephemeral_response"] = str(exc)
                     envelope.metadata["suppress_ack"] = True
                 else:
-                    await transport.send_message(envelope.channel_id, str(exc))
+                    await transport.send_message(
+                        envelope.channel_id,
+                        str(exc),
+                        metadata={"suppress_agent_processing": True},
+                    )
                 return True
         if envelope.metadata.get("interaction_response"):
             envelope.metadata["ephemeral_response"] = result.message or "Command completed."
             envelope.metadata["suppress_ack"] = True
         elif result.message:
-            await transport.send_message(envelope.channel_id, result.message)
+            await transport.send_message(
+                envelope.channel_id,
+                result.message,
+                metadata={"suppress_agent_processing": True},
+            )
         return True
 
     async def _process_runtime_turn(
@@ -680,7 +701,11 @@ async def main() -> None:
             return
         if routing_notice:
             with contextlib.suppress(Exception):
-                await transport.send_message(envelope.channel_id, routing_notice)
+                await transport.send_message(
+                    envelope.channel_id,
+                    routing_notice,
+                    metadata={"suppress_agent_processing": True},
+                )
 
         owner_internal_user_id = profile.user_id
         envelope.metadata["agent_profile_id"] = profile.id

@@ -1,12 +1,15 @@
 FROM ubuntu:latest
 
+# Install UV from the official image
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
+
 RUN useradd -m -s /bin/bash linuxbrew && \
     mkdir -p /home/linuxbrew/.linuxbrew && \
     chown -R linuxbrew:linuxbrew /home/linuxbrew
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     bash build-essential curl file git gnupg ca-certificates zip jq procps tmux \
-    python3 python3-pip \
+    python3 python3-venv \
     nodejs npm && \
     curl -fsSLo /usr/share/keyrings/brave-browser-archive-keyring.gpg \
       https://brave-browser-apt-release.s3.brave.com/brave-browser-archive-keyring.gpg && \
@@ -20,11 +23,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       > /usr/local/bin/brew && \
     chmod +x /usr/local/bin/brew && \
     rm -rf /var/lib/apt/lists/* && \
-    pip install --break-system-packages fastapi uvicorn httpx pydantic playwright Pillow && \
-    python3 -m playwright install --with-deps chromium
-
-# Install UV from the official image
-COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
+    uv venv /opt/venv && \
+    uv pip install --python /opt/venv/bin/python --no-cache fastapi uvicorn httpx pydantic playwright Pillow && \
+    /opt/venv/bin/python -m playwright install --with-deps chromium
 
 # Install Codex using Homebrew
 RUN brew install codex
@@ -44,7 +45,8 @@ ENV HOMEBREW_CELLAR=/home/linuxbrew/.linuxbrew/Cellar
 ENV HOMEBREW_REPOSITORY=/home/linuxbrew/.linuxbrew/Homebrew
 ENV HOMEBREW_NO_ANALYTICS=1
 ENV HOMEBREW_NO_AUTO_UPDATE=1
-ENV PATH=/home/linuxbrew/.linuxbrew/bin:/home/linuxbrew/.linuxbrew/sbin:$PATH
+ENV VIRTUAL_ENV=/opt/venv
+ENV PATH=/opt/venv/bin:/home/linuxbrew/.linuxbrew/bin:/home/linuxbrew/.linuxbrew/sbin:$PATH
 
 EXPOSE 9080
 
