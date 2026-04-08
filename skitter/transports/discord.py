@@ -3,6 +3,7 @@ import asyncio
 import contextlib
 import io
 import json
+import logging
 import re
 import time
 from datetime import UTC, datetime
@@ -26,6 +27,8 @@ PARAGRAPH_BREAK_PATTERN = re.compile(r"\n{2,}")
 SENTENCE_BREAK_PATTERN = re.compile(r"[.!?](?:[\"')\]]+)?\s+")
 INTERNAL_MESSAGE_TTL_SECONDS = 900.0
 _IGNORED_INBOUND_MESSAGE_IDS: dict[int, float] = {}
+_RECORDED_OUTBOUND_MESSAGE_METADATA: dict[int, tuple[float, dict[str, object]]] = {}
+_logger = logging.getLogger(__name__)
 
 
 def _prune_ignored_inbound_messages(now: float | None = None) -> None:
@@ -39,6 +42,17 @@ def _prune_ignored_inbound_messages(now: float | None = None) -> None:
         _IGNORED_INBOUND_MESSAGE_IDS.pop(message_id, None)
 
 
+def _prune_recorded_outbound_messages(now: float | None = None) -> None:
+    current = now if now is not None else time.monotonic()
+    stale_ids = [
+        message_id
+        for message_id, (created_at, _) in _RECORDED_OUTBOUND_MESSAGE_METADATA.items()
+        if current - created_at > INTERNAL_MESSAGE_TTL_SECONDS
+    ]
+    for message_id in stale_ids:
+        _RECORDED_OUTBOUND_MESSAGE_METADATA.pop(message_id, None)
+
+
 def _remember_internal_message(message: object | None) -> None:
     message_id = getattr(message, "id", None)
     if message_id is None:
@@ -47,16 +61,82 @@ def _remember_internal_message(message: object | None) -> None:
     _IGNORED_INBOUND_MESSAGE_IDS[int(message_id)] = time.monotonic()
 
 
-def _should_ignore_inbound_message(message: object, *, own_bot_user_id: int | None) -> bool:
+def _remember_outbound_message_metadata(message: object | None, metadata: dict[str, object] | None = None) -> None:
+    message_id = getattr(message, "id", None)
+    if message_id is None or not metadata:
+        return
+    tracked = {
+        key: value
+        for key, value in dict(metadata).items()
+        if value is not None
+        and key
+        in {
+            "skitter_sender_internal_user_id",
+            "skitter_sender_profile_id",
+            "skitter_sender_profile_slug",
+            "skitter_transport_account_key",
+            "skitter_message_kind",
+        }
+    }
+    if not tracked:
+        return
+    _prune_recorded_outbound_messages()
+    _RECORDED_OUTBOUND_MESSAGE_METADATA[int(message_id)] = (time.monotonic(), tracked)
+
+
+def _lookup_outbound_message_metadata(message: object | None) -> dict[str, object] | None:
+    message_id = getattr(message, "id", None)
+    if message_id is None:
+        return None
+    _prune_recorded_outbound_messages()
+    entry = _RECORDED_OUTBOUND_MESSAGE_METADATA.get(int(message_id))
+    if entry is None:
+        return None
+    return dict(entry[1])
+
+
+def _ignored_inbound_reason(message: object, *, own_bot_user_id: int | None) -> str | None:
+    message_id = getattr(message, "id", None)
+    if message_id is not None:
+        _prune_ignored_inbound_messages()
+        if int(message_id) in _IGNORED_INBOUND_MESSAGE_IDS:
+            return "internal_message"
     author = getattr(message, "author", None)
     author_id = getattr(author, "id", None)
     if own_bot_user_id is not None and author_id == own_bot_user_id:
-        return True
-    message_id = getattr(message, "id", None)
-    if message_id is None:
-        return False
-    _prune_ignored_inbound_messages()
-    return int(message_id) in _IGNORED_INBOUND_MESSAGE_IDS
+        return "own_bot_user"
+    return None
+
+
+def _should_ignore_inbound_message(message: object, *, own_bot_user_id: int | None) -> bool:
+    return _ignored_inbound_reason(message, own_bot_user_id=own_bot_user_id) is not None
+
+
+def _truncate_for_log(content: str, max_len: int = 140) -> str:
+    text = str(content or "").strip()
+    if len(text) <= max_len:
+        return text
+    if max_len <= 3:
+        return text[:max_len]
+    return f"{text[: max_len - 3]}..."
+
+
+def _log_inbound_drop(reason: str, message: object, *, account_key: str) -> None:
+    author = getattr(message, "author", None)
+    channel = getattr(message, "channel", None)
+    guild = getattr(message, "guild", None)
+    _logger.info(
+        "Dropped Discord inbound before handler: reason=%s account=%s message_id=%s channel_id=%s guild_id=%s "
+        "author_id=%s author_bot=%s text=%r",
+        reason,
+        account_key,
+        getattr(message, "id", None),
+        getattr(channel, "id", None),
+        getattr(guild, "id", None),
+        getattr(author, "id", None),
+        bool(getattr(author, "bot", False)),
+        _truncate_for_log(str(getattr(message, "content", "") or "")),
+    )
 
 
 def _parse_text_command(text: str) -> tuple[str | None, dict[str, object]]:
@@ -400,10 +480,13 @@ class DiscordTransport(TransportAdapter):
         @self.client.event
         async def on_message(message: discord.Message) -> None:
             bot_user = self.client.user
-            if _should_ignore_inbound_message(message, own_bot_user_id=getattr(bot_user, "id", None)):
+            ignored_reason = _ignored_inbound_reason(message, own_bot_user_id=getattr(bot_user, "id", None))
+            if ignored_reason is not None:
+                _log_inbound_drop(ignored_reason, message, account_key=self.account_key)
                 return
             is_private = isinstance(message.channel, discord.DMChannel)
             if self._handler is None:
+                _log_inbound_drop("handler_not_configured", message, account_key=self.account_key)
                 return
             await self._record_user_channel(message, is_private=is_private)
             command, command_meta = _parse_text_command(message.content)
@@ -441,6 +524,7 @@ class DiscordTransport(TransportAdapter):
                     "reply_to_bot": reply_to_bot,
                     "pinned_profile_id": self.pinned_profile_id,
                     **_discord_sender_metadata(message.author, guild_member=message.author if not is_private else None),
+                    **(_lookup_outbound_message_metadata(message) or {}),
                 },
             )
             await self._handler(envelope)
@@ -553,6 +637,7 @@ class DiscordTransport(TransportAdapter):
         files: list[discord.File] | None = None,
         *,
         suppress_agent_processing: bool = False,
+        tracking_metadata: dict[str, object] | None = None,
     ) -> None:
         # Discord messages are capped at 2000 chars.
         # Files (if any) are attached only to the first chunk.
@@ -566,6 +651,8 @@ class DiscordTransport(TransportAdapter):
                 sent = await channel.send(chunk)
             if suppress_agent_processing:
                 _remember_internal_message(sent)
+            if i == 0:
+                _remember_outbound_message_metadata(sent, tracking_metadata)
 
     async def send_message(
         self,
@@ -584,19 +671,22 @@ class DiscordTransport(TransportAdapter):
                     files.append(discord.File(io.BytesIO(attachment.bytes_data), filename=attachment.filename))
                 elif attachment.path:
                     files.append(discord.File(attachment.path))
-        suppress_agent_processing = bool((metadata or {}).get("suppress_agent_processing"))
+        outgoing_metadata = dict(metadata or {})
+        suppress_agent_processing = bool(outgoing_metadata.get("suppress_agent_processing"))
         if files:
             await self._send_split_message(
                 channel,
                 content or "Screenshot:",
                 files=files,
                 suppress_agent_processing=suppress_agent_processing,
+                tracking_metadata=outgoing_metadata,
             )
         else:
             await self._send_split_message(
                 channel,
                 content,
                 suppress_agent_processing=suppress_agent_processing,
+                tracking_metadata=outgoing_metadata,
             )
 
     async def send_user_message(
@@ -617,19 +707,22 @@ class DiscordTransport(TransportAdapter):
                     files.append(discord.File(io.BytesIO(attachment.bytes_data), filename=attachment.filename))
                 elif attachment.path:
                     files.append(discord.File(attachment.path))
-        suppress_agent_processing = bool((metadata or {}).get("suppress_agent_processing"))
+        outgoing_metadata = dict(metadata or {})
+        suppress_agent_processing = bool(outgoing_metadata.get("suppress_agent_processing"))
         if files:
             await self._send_split_message(
                 channel,
                 content or "Screenshot:",
                 files=files,
                 suppress_agent_processing=suppress_agent_processing,
+                tracking_metadata=outgoing_metadata,
             )
         else:
             await self._send_split_message(
                 channel,
                 content,
                 suppress_agent_processing=suppress_agent_processing,
+                tracking_metadata=outgoing_metadata,
             )
 
     async def send_typing(self, channel_id: str) -> None:

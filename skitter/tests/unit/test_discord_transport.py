@@ -7,7 +7,9 @@ import pytest
 from skitter.transports.discord import (
     ApprovalView,
     DISCORD_MESSAGE_CHAR_LIMIT,
+    _lookup_outbound_message_metadata,
     _remember_internal_message,
+    _remember_outbound_message_metadata,
     _should_ignore_inbound_message,
     _append_status_suffix,
     _build_approval_request_content,
@@ -75,3 +77,26 @@ def test_should_not_ignore_other_bot_message_without_registry() -> None:
     message = SimpleNamespace(id=303, author=SimpleNamespace(id=88))
 
     assert _should_ignore_inbound_message(message, own_bot_user_id=99) is False
+
+
+def test_lookup_outbound_message_metadata_returns_trusted_sender_fields() -> None:
+    message = SimpleNamespace(id=404, author=SimpleNamespace(id=12))
+    _remember_outbound_message_metadata(
+        message,
+        {
+            "skitter_sender_internal_user_id": "user-1",
+            "skitter_sender_profile_id": "profile-1",
+            "skitter_sender_profile_slug": "assistant",
+            "skitter_transport_account_key": "discord:profile:profile-1",
+            "skitter_message_kind": "agent_reply",
+            "ignored_field": "nope",
+        },
+    )
+
+    assert _lookup_outbound_message_metadata(message) == {
+        "skitter_sender_internal_user_id": "user-1",
+        "skitter_sender_profile_id": "profile-1",
+        "skitter_sender_profile_slug": "assistant",
+        "skitter_transport_account_key": "discord:profile:profile-1",
+        "skitter_message_kind": "agent_reply",
+    }

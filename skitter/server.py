@@ -57,6 +57,33 @@ def _serialize_attachments(attachments: list) -> list[dict]:
     return serialized
 
 
+def _truncate_log_text(content: str | None, max_len: int = 160) -> str:
+    text = str(content or "").strip()
+    if len(text) <= max_len:
+        return text
+    if max_len <= 3:
+        return text[:max_len]
+    return f"{text[: max_len - 3]}..."
+
+
+def _log_discord_drop(reason: str, envelope: MessageEnvelope, **extra: object) -> None:
+    payload = {
+        "reason": reason,
+        "account": envelope.transport_account_key or DEFAULT_DISCORD_ACCOUNT_KEY,
+        "message_id": envelope.message_id,
+        "channel_id": envelope.channel_id,
+        "guild_id": envelope.metadata.get("guild_id"),
+        "user_id": envelope.user_id,
+        "sender_is_bot": bool(envelope.metadata.get("sender_is_bot")),
+        "is_private": bool(envelope.metadata.get("is_private")),
+        "command": envelope.command or "",
+        "text": _truncate_log_text(envelope.text),
+    }
+    payload.update(extra)
+    ordered = " ".join(f"{key}={value!r}" for key, value in payload.items())
+    _logger.info("Dropped Discord inbound after handler handoff: %s", ordered)
+
+
 async def _load_transport_account_token(
     *,
     repo: Repository,
@@ -81,6 +108,39 @@ async def _load_transport_account_token(
         return token, None
     except Exception as exc:
         return "", f"Transport account credential decryption failed: {exc}"
+
+
+async def _resolve_trusted_discord_sender_internal_user_id(
+    *,
+    repo: Repository,
+    envelope: MessageEnvelope,
+    runtime_states: dict[str, dict[str, object]] | None = None,
+) -> str | None:
+    tracked_user_id = str(envelope.metadata.get("skitter_sender_internal_user_id") or "").strip()
+    if tracked_user_id:
+        return tracked_user_id
+    if not bool(envelope.metadata.get("sender_is_bot")):
+        return None
+    external_account_id = str(envelope.user_id or "").strip()
+    row = await repo.get_transport_account_by_external_account_id("discord", external_account_id)
+    if row is None and runtime_states:
+        for account_key, state in runtime_states.items():
+            if str(state.get("external_account_id") or "").strip() != external_account_id:
+                continue
+            envelope.metadata["trusted_transport_bot"] = True
+            envelope.metadata["skitter_transport_account_key"] = account_key
+            if is_shared_default_account_key(account_key):
+                return None
+            row = await repo.get_transport_account_by_key(account_key)
+            if row is not None:
+                break
+    if row is None or not bool(getattr(row, "enabled", True)):
+        return None
+    envelope.metadata["trusted_transport_bot"] = True
+    envelope.metadata["skitter_sender_internal_user_id"] = row.user_id
+    envelope.metadata["skitter_sender_profile_id"] = row.agent_profile_id
+    envelope.metadata["skitter_transport_account_key"] = row.account_key
+    return str(row.user_id or "").strip() or None
 
 
 async def main() -> None:
@@ -375,10 +435,13 @@ async def main() -> None:
         sender_internal_user_id: str | None = None,
     ) -> dict:
         metadata = dict(envelope.metadata)
+        sender_value = sender_internal_user_id or owner_internal_user_id
+        if sender_internal_user_id is None and bool(envelope.metadata.get("trusted_transport_bot")):
+            sender_value = None
         metadata.update(
             {
                 "internal_user_id": owner_internal_user_id,
-                "sender_internal_user_id": sender_internal_user_id or owner_internal_user_id,
+                "sender_internal_user_id": sender_value,
                 "message_id": envelope.message_id,
                 "origin": envelope.origin,
                 "transport_account_key": envelope.transport_account_key,
@@ -458,6 +521,15 @@ async def main() -> None:
             return envelope.user_id
         async with SessionLocal() as session:
             repo = Repository(session)
+            trusted_user_id = await _resolve_trusted_discord_sender_internal_user_id(
+                repo=repo,
+                envelope=envelope,
+                runtime_states=manager.snapshot_states(),
+            )
+            if trusted_user_id:
+                return trusted_user_id
+            if bool(envelope.metadata.get("trusted_transport_bot")):
+                return None
             user = await repo.get_or_create_user(envelope.user_id)
             if not user.approved:
                 if bool(envelope.metadata.get("is_private")):
@@ -469,16 +541,19 @@ async def main() -> None:
                             metadata={"suppress_agent_processing": True},
                         )
                         await repo.mark_user_notified(user.id, envelope.transport_account_key)
+                _log_discord_drop("unapproved_sender", envelope, internal_user_id=user.id)
                 envelope.metadata["suppress_ack"] = True
                 return None
             return user.id
 
     async def _resolve_profile_for_envelope(
         repo: Repository,
-        sender_internal_user_id: str,
+        sender_internal_user_id: str | None,
         envelope: MessageEnvelope,
     ) -> tuple[object | None, str | None]:
         if envelope.origin != "discord":
+            if not sender_internal_user_id:
+                return None, None
             profile = await profile_service.current_surface_profile(
                 repo,
                 sender_internal_user_id,
@@ -491,10 +566,19 @@ async def main() -> None:
             return profile, None
 
         if bool(envelope.metadata.get("is_private")):
+            if not sender_internal_user_id:
+                _log_discord_drop("trusted_transport_bot_private_message_unsupported", envelope)
+                return None, None
             pinned_profile_id = str(envelope.metadata.get("pinned_profile_id") or "").strip()
             if pinned_profile_id:
                 profile = await repo.get_agent_profile(pinned_profile_id)
                 if profile is None or profile.user_id != sender_internal_user_id or profile.status == "archived":
+                    _log_discord_drop(
+                        "pinned_profile_unavailable",
+                        envelope,
+                        pinned_profile_id=pinned_profile_id,
+                        sender_internal_user_id=sender_internal_user_id,
+                    )
                     return None, None
                 return profile, None
             profile, notice = await transport_account_service.resolve_shared_default_dm_profile(
@@ -513,6 +597,12 @@ async def main() -> None:
                     surface_kind=discord_surface_kind(),
                     surface_id=envelope.channel_id,
                 )
+            if profile is None:
+                _log_discord_drop(
+                    "shared_default_dm_profile_unavailable",
+                    envelope,
+                    sender_internal_user_id=sender_internal_user_id,
+                )
             return profile, notice
 
         binding = await repo.get_transport_surface_binding_for_surface(
@@ -521,6 +611,7 @@ async def main() -> None:
             surface_kind=discord_surface_kind(),
             surface_id=envelope.channel_id,
         )
+        binding_surface_id = envelope.channel_id
         if binding is None:
             parent_channel_id = str(envelope.metadata.get("parent_channel_id") or "").strip()
             if parent_channel_id:
@@ -530,7 +621,13 @@ async def main() -> None:
                     surface_kind=discord_surface_kind(),
                     surface_id=parent_channel_id,
                 )
-        if binding is None or not binding.enabled:
+                if binding is not None:
+                    binding_surface_id = parent_channel_id
+        if binding is None:
+            _log_discord_drop("no_channel_binding", envelope)
+            return None, None
+        if not binding.enabled:
+            _log_discord_drop("channel_binding_disabled", envelope, binding_surface_id=binding_surface_id)
             return None, None
         mode = str(binding.mode or SURFACE_MODE_ALL_MESSAGES).strip().lower()
         if mode != SURFACE_MODE_ALL_MESSAGES:
@@ -538,17 +635,49 @@ async def main() -> None:
             mentions_bot = bool(envelope.metadata.get("mentions_bot"))
             reply_to_bot = bool(envelope.metadata.get("reply_to_bot"))
             if not (explicit or mentions_bot or reply_to_bot):
+                _log_discord_drop(
+                    "mention_only_not_triggered",
+                    envelope,
+                    binding_surface_id=binding_surface_id,
+                    mode=mode,
+                    mentions_bot=mentions_bot,
+                    reply_to_bot=reply_to_bot,
+                    explicit=explicit,
+                )
                 return None, None
         profile = await repo.get_agent_profile(binding.agent_profile_id)
-        if profile is None or profile.status == "archived":
+        if profile is None:
+            _log_discord_drop(
+                "bound_profile_missing",
+                envelope,
+                binding_surface_id=binding_surface_id,
+                profile_id=binding.agent_profile_id,
+            )
+            return None, None
+        if profile.status == "archived":
+            _log_discord_drop(
+                "bound_profile_archived",
+                envelope,
+                binding_surface_id=binding_surface_id,
+                profile_id=profile.id,
+            )
             return None, None
         if is_shared_default_account_key(envelope.transport_account_key):
             explicit_account = await repo.get_transport_account_for_profile(profile.id, "discord")
             if explicit_account is not None and explicit_account.enabled:
+                _log_discord_drop(
+                    "shared_default_blocked_by_dedicated_bot",
+                    envelope,
+                    binding_surface_id=binding_surface_id,
+                    profile_id=profile.id,
+                    dedicated_account_key=explicit_account.account_key,
+                )
                 return None, None
         return profile, None
 
     async def _update_user_last_seen(internal_user_id: str, profile, envelope: MessageEnvelope, scope) -> None:
+        if not internal_user_id:
+            return
         if envelope.origin != "discord":
             return
         async with SessionLocal() as session:
@@ -668,7 +797,18 @@ async def main() -> None:
                 "user_prompt_allow_free_text": bool(response.pending_prompt.allow_free_text),
             }
         if response.pending_prompt is None and (response.text or response.attachments):
-            await transport.send_message(envelope.channel_id, response.text, attachments=response.attachments)
+            await transport.send_message(
+                envelope.channel_id,
+                response.text,
+                attachments=response.attachments,
+                metadata={
+                    "skitter_sender_internal_user_id": owner_internal_user_id,
+                    "skitter_sender_profile_id": str(envelope.metadata.get("agent_profile_id") or "").strip() or None,
+                    "skitter_sender_profile_slug": str(envelope.metadata.get("agent_profile_slug") or "").strip() or None,
+                    "skitter_transport_account_key": envelope.transport_account_key,
+                    "skitter_message_kind": "agent_reply",
+                },
+            )
         if response.text or response.attachments:
             await _persist_assistant_message(
                 session_id,
@@ -688,10 +828,12 @@ async def main() -> None:
         account_key = envelope.transport_account_key or DEFAULT_DISCORD_ACCOUNT_KEY
         transport = manager.get(account_key)
         if transport is None or not isinstance(transport, DiscordTransport):
+            if envelope.origin == "discord":
+                _log_discord_drop("missing_transport_instance", envelope, requested_account_key=account_key)
             return
 
         sender_internal_user_id = await _resolve_internal_user_id(envelope, transport)
-        if sender_internal_user_id is None:
+        if sender_internal_user_id is None and not bool(envelope.metadata.get("trusted_transport_bot")):
             return
 
         async with SessionLocal() as session:

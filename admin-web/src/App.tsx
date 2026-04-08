@@ -91,6 +91,28 @@ const views: Record<NavItemId, string> = {
   settings: "Settings",
 };
 
+type ProfileMetricCardProps = {
+  icon?: ReactNode;
+  label: string;
+  value: string | number;
+  hint: string;
+};
+
+const ProfileMetricCard = ({ icon, label, value, hint }: ProfileMetricCardProps) => (
+  <div className="rounded-2xl border border-border bg-muted/30 p-4">
+    <div className="flex items-start justify-between gap-3">
+      <div>
+        <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-mutedForeground">{label}</p>
+        <p className="mt-3 text-2xl font-semibold tracking-tight text-foreground">{value}</p>
+      </div>
+      {icon ? (
+        <div className="rounded-2xl border border-border bg-card p-2 text-mutedForeground shadow-sm">{icon}</div>
+      ) : null}
+    </div>
+    <p className="mt-2 text-xs leading-relaxed text-mutedForeground">{hint}</p>
+  </div>
+);
+
 type OverviewRange = "today" | "24h" | "week" | "month" | "year";
 type TableRange = "all" | "today" | "week" | "month";
 type SettingsTabId = "core" | "models" | "automation" | "execution" | "integrations" | "advanced";
@@ -599,9 +621,12 @@ export default function App() {
   const [profileCreateSourceSlug, setProfileCreateSourceSlug] = useState<string>("blank");
   const [profileCreateMode, setProfileCreateMode] = useState<"blank" | "settings" | "all">("blank");
   const [profileCreateMakeDefault, setProfileCreateMakeDefault] = useState<boolean>(false);
+  const [profileComposerOpen, setProfileComposerOpen] = useState<boolean>(false);
+  const [profileListTab, setProfileListTab] = useState<"active" | "archived">("active");
   const [profileSaving, setProfileSaving] = useState<boolean>(false);
   const [profileActionLoading, setProfileActionLoading] = useState<Record<string, boolean>>({});
   const [profileRenameDrafts, setProfileRenameDrafts] = useState<Record<string, string>>({});
+  const [expandedProfileSections, setExpandedProfileSections] = useState<Record<string, boolean>>({});
   const [transportAccountsByUserId, setTransportAccountsByUserId] = useState<Record<string, TransportAccountItem[]>>({});
   const [transportAccountsLoadingByUserId, setTransportAccountsLoadingByUserId] = useState<Record<string, boolean>>({});
   const [transportAccountsErrorByUserId, setTransportAccountsErrorByUserId] = useState<Record<string, string | null>>({});
@@ -613,6 +638,7 @@ export default function App() {
   const [bindingDrafts, setBindingDrafts] = useState<
     Record<string, { guild_id: string; surface_id: string; mode: string; agent_profile_id: string }>
   >({});
+  const [sharedDefaultBindingsExpanded, setSharedDefaultBindingsExpanded] = useState<boolean>(false);
   const [sandboxStatus, setSandboxStatus] = useState<SandboxStatus | null>(null);
   const [executorsData, setExecutorsData] = useState<ExecutorItem[]>([]);
   const [sandboxLoading, setSandboxLoading] = useState<boolean>(false);
@@ -1557,12 +1583,16 @@ export default function App() {
     setProfileCreateSourceSlug("blank");
     setProfileCreateMode("blank");
     setProfileCreateMakeDefault(false);
+    setProfileComposerOpen(false);
   };
 
   const openProfileManager = (userId: string) => {
     setActive("profiles");
     setProfileManagerUserId(userId);
     resetProfileCreateState();
+    setProfileListTab("active");
+    setExpandedProfileSections({});
+    setSharedDefaultBindingsExpanded(false);
     void refreshProfilesForUser(userId, true);
     void refreshTransportAccountsForUser(userId, true);
   };
@@ -1592,6 +1622,7 @@ export default function App() {
       setProfileCreateSourceSlug("blank");
       setProfileCreateMode("blank");
       setProfileCreateMakeDefault(false);
+      setProfileComposerOpen(false);
       await refreshProfilesForUser(userId, true);
       refreshUsers();
     } catch (error) {
@@ -2474,8 +2505,61 @@ export default function App() {
   const secretProfiles = activeProfilesForUser(secretUserId);
   const profileManagerUserIdValue = profileManagerUserId ?? "";
   const profileManagerProfiles = profilesForUser(profileManagerUserId);
+  const profileManagerActiveProfiles = profileManagerProfiles.filter((profile) => profile.status !== "archived");
+  const profileManagerArchivedProfiles = profileManagerProfiles.filter((profile) => profile.status === "archived");
   const profileManagerSharedDefaultDiscord = sharedDefaultDiscordAccount(profileManagerUserId);
+  const profileManagerDedicatedDiscordAccounts = transportAccountsForUser(profileManagerUserId).filter(
+    (account) => !account.is_shared_default && account.transport === "discord"
+  );
+  const profileManagerSharedBindings = profileManagerSharedDefaultDiscord
+    ? bindingsByAccountKey[profileManagerSharedDefaultDiscord.account_key] ?? []
+    : [];
+  const profileManagerTotalBindings =
+    profileManagerSharedBindings.length +
+    profileManagerDedicatedDiscordAccounts.reduce(
+      (count, account) => count + (bindingsByAccountKey[account.account_key] ?? []).length,
+      0
+    );
+  const profileManagerSharedDefaultEligibleProfiles = profileManagerActiveProfiles.filter(
+    (profile) => !explicitDiscordAccountForProfile(profileManagerUserIdValue, profile.id)
+  );
+  const profileManagerVisibleProfiles =
+    profileListTab === "archived" ? profileManagerArchivedProfiles : profileManagerActiveProfiles;
   const profileManagerUserLabel = profileManagerUserId ? userLabelFor(profileManagerUserId) : "";
+  const bindingModeLabel = (mode?: string | null) =>
+    mode === "all_messages" ? "All messages" : "Mentions only";
+  const bindingDraftFor = (accountKey: string, fallbackProfileId = "") =>
+    bindingDrafts[accountKey] ?? {
+      guild_id: "",
+      surface_id: "",
+      mode: "mention_only",
+      agent_profile_id: fallbackProfileId,
+    };
+  const setBindingDraftFor = (
+    accountKey: string,
+    updates: Partial<{ guild_id: string; surface_id: string; mode: string; agent_profile_id: string }>,
+    fallbackProfileId = ""
+  ) => {
+    setBindingDrafts((current) => ({
+      ...current,
+      [accountKey]: {
+        ...(current[accountKey] ?? {
+          guild_id: "",
+          surface_id: "",
+          mode: "mention_only",
+          agent_profile_id: fallbackProfileId,
+        }),
+        ...updates,
+      },
+    }));
+  };
+  const isProfileSectionExpanded = (profile: AgentProfile) => expandedProfileSections[profile.id] ?? false;
+  const toggleProfileSection = (profile: AgentProfile) => {
+    setExpandedProfileSections((current) => ({
+      ...current,
+      [profile.id]: !(current[profile.id] ?? false),
+    }));
+  };
   const visibleSecrets = useMemo(() => {
     const filtered = secretsData.filter((secret) => {
       if (!secretProfileId) {
@@ -3886,6 +3970,269 @@ export default function App() {
       ),
     })
   );
+
+  const renderBindingManager = ({
+    userId,
+    account,
+    bindings,
+    helperText,
+    emptyText,
+    fallbackProfileId,
+    selectableProfiles,
+    expanded = true,
+    onToggleExpanded,
+  }: {
+    userId: string;
+    account: TransportAccountItem;
+    bindings: TransportBindingItem[];
+    helperText: string;
+    emptyText: string;
+    fallbackProfileId?: string;
+    selectableProfiles?: AgentProfile[];
+    expanded?: boolean;
+    onToggleExpanded?: () => void;
+  }) => {
+    const draft = bindingDraftFor(account.account_key, fallbackProfileId ?? "");
+    const guildOptions = guildOptionsForAccount(account.account_key);
+    const channelOptions = channelOptionsForAccount(account.account_key, draft.guild_id);
+    const showProfileSelect = selectableProfiles !== undefined;
+    const busy = Boolean(transportActionLoading[account.account_key]);
+    const bindingCount = bindings.length;
+    const canCreateBinding = Boolean(draft.surface_id) && (!showProfileSelect || Boolean(draft.agent_profile_id));
+
+    return (
+      <div className="rounded-2xl border border-border bg-muted/20">
+        <div className="flex flex-wrap items-start justify-between gap-3 border-b border-border/70 px-4 py-4">
+          <div className="space-y-1">
+            <div className="flex flex-wrap items-center gap-2">
+              <p className="text-sm font-semibold text-foreground">Server channel bindings</p>
+              <Badge variant="outline">{bindingCount} active</Badge>
+            </div>
+            <p className="text-xs leading-relaxed text-mutedForeground">{helperText}</p>
+          </div>
+          {onToggleExpanded ? (
+            <Button size="sm" variant="ghost" onClick={onToggleExpanded} className="gap-2">
+              {expanded ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
+              {expanded ? "Hide channels" : "Show channels"}
+            </Button>
+          ) : null}
+        </div>
+        {expanded ? (
+          <div className="space-y-4 p-4">
+            <div className="rounded-2xl border border-border bg-card p-4">
+              <div className="grid gap-4 xl:grid-cols-2">
+                <div className="grid gap-2">
+                  <label className="text-[11px] font-semibold uppercase tracking-[0.2em] text-mutedForeground">
+                    Server
+                  </label>
+                  <Select
+                    value={draft.guild_id}
+                    onValueChange={(value) =>
+                      setBindingDraftFor(
+                        account.account_key,
+                        {
+                          guild_id: value,
+                          surface_id: "",
+                        },
+                        fallbackProfileId ?? ""
+                      )
+                    }
+                  >
+                    <SelectTrigger>
+                      <SelectValue placeholder="Choose a Discord server" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {guildOptions.length ? (
+                        guildOptions.map((guild) => (
+                          <SelectItem key={guild.guild_id} value={guild.guild_id}>
+                            {guild.guild_name}
+                          </SelectItem>
+                        ))
+                      ) : (
+                        <SelectItem value="__none__" disabled>
+                          No servers discovered yet
+                        </SelectItem>
+                      )}
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div className="grid gap-2">
+                  <label className="text-[11px] font-semibold uppercase tracking-[0.2em] text-mutedForeground">
+                    Channel
+                  </label>
+                  <Select
+                    value={draft.surface_id}
+                    onValueChange={(value) =>
+                      setBindingDraftFor(
+                        account.account_key,
+                        {
+                          surface_id: value,
+                        },
+                        fallbackProfileId ?? ""
+                      )
+                    }
+                  >
+                    <SelectTrigger>
+                      <SelectValue placeholder={draft.guild_id ? "Choose a channel" : "Select a server first"} />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {channelOptions.length ? (
+                        channelOptions.map((channel) => (
+                          <SelectItem key={channel.id} value={channel.id}>
+                            {channel.label}
+                          </SelectItem>
+                        ))
+                      ) : (
+                        <SelectItem value="__none__" disabled>
+                          {draft.guild_id ? "No channels found for this server" : "Select a server first"}
+                        </SelectItem>
+                      )}
+                    </SelectContent>
+                  </Select>
+                </div>
+                {showProfileSelect ? (
+                  <div className="grid gap-2">
+                    <label className="text-[11px] font-semibold uppercase tracking-[0.2em] text-mutedForeground">
+                      Profile
+                    </label>
+                    <Select
+                      value={draft.agent_profile_id}
+                      onValueChange={(value) =>
+                        setBindingDraftFor(
+                          account.account_key,
+                          {
+                            agent_profile_id: value,
+                          },
+                          fallbackProfileId ?? ""
+                        )
+                      }
+                    >
+                      <SelectTrigger>
+                        <SelectValue placeholder="Choose a profile" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {(selectableProfiles ?? []).length ? (
+                          (selectableProfiles ?? []).map((profile) => (
+                            <SelectItem key={profile.id} value={profile.id}>
+                              {profile.name} · {profile.slug}
+                            </SelectItem>
+                          ))
+                        ) : (
+                          <SelectItem value="__none__" disabled>
+                            No eligible profiles available
+                          </SelectItem>
+                        )}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                ) : null}
+                <div className="grid gap-2">
+                  <label className="text-[11px] font-semibold uppercase tracking-[0.2em] text-mutedForeground">
+                    Trigger mode
+                  </label>
+                  <Select
+                    value={draft.mode}
+                    onValueChange={(value) =>
+                      setBindingDraftFor(
+                        account.account_key,
+                        {
+                          mode: value,
+                        },
+                        fallbackProfileId ?? ""
+                      )
+                    }
+                  >
+                    <SelectTrigger>
+                      <SelectValue placeholder="Choose a trigger mode" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="mention_only">Mentions only</SelectItem>
+                      <SelectItem value="all_messages">All messages</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+              </div>
+              <div className="mt-4 flex flex-wrap items-center justify-between gap-3">
+                <p className="text-xs text-mutedForeground">
+                  {showProfileSelect
+                    ? "Use the shared bot for profiles that do not have their own dedicated Discord override."
+                    : "This dedicated bot only handles the channels bound here."}
+                </p>
+                <Button
+                  size="sm"
+                  onClick={() => void handleBindingCreate(userId, account, fallbackProfileId)}
+                  disabled={busy || !canCreateBinding}
+                >
+                  Bind channel
+                </Button>
+              </div>
+            </div>
+
+            {bindingsLoadingByAccountKey[account.account_key] ? (
+              <div className="rounded-2xl border border-dashed border-border bg-muted/30 px-4 py-4 text-sm text-mutedForeground">
+                Loading channel bindings...
+              </div>
+            ) : bindingCount ? (
+              <div className="space-y-3">
+                {bindings.map((binding) => (
+                  <div
+                    key={binding.id}
+                    className="flex flex-wrap items-start justify-between gap-3 rounded-2xl border border-border bg-card px-4 py-4"
+                  >
+                    <div className="space-y-1">
+                      <p className="text-sm font-semibold text-foreground">
+                        {channelLabelFor(binding.surface_id, binding.transport_account_key)}
+                      </p>
+                      <div className="flex flex-wrap items-center gap-2 text-xs text-mutedForeground">
+                        <span>{bindingModeLabel(binding.mode)}</span>
+                        {showProfileSelect ? (
+                          <>
+                            <span>·</span>
+                            <span>
+                              Profile {profileLabelFor(binding.user_id, binding.agent_profile_id, binding.agent_profile_slug)}
+                            </span>
+                          </>
+                        ) : null}
+                      </div>
+                    </div>
+                    <div className="flex flex-wrap items-center gap-2">
+                      <Badge variant={binding.mode === "all_messages" ? "warning" : "secondary"}>
+                        {bindingModeLabel(binding.mode)}
+                      </Badge>
+                      <div className="flex items-center gap-2 rounded-full border border-border bg-muted/30 px-3 py-1.5">
+                        <span className="text-xs text-mutedForeground">Enabled</span>
+                        <Switch
+                          checked={binding.enabled}
+                          onCheckedChange={(value) =>
+                            void handleBindingUpdate(userId, binding, {
+                              enabled: value,
+                            })
+                          }
+                          disabled={Boolean(transportActionLoading[binding.id])}
+                        />
+                      </div>
+                      <Button
+                        size="sm"
+                        variant="danger"
+                        onClick={() => void handleBindingDelete(userId, binding)}
+                        disabled={Boolean(transportActionLoading[binding.id])}
+                      >
+                        Delete
+                      </Button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div className="rounded-2xl border border-dashed border-border bg-muted/30 px-4 py-4 text-sm text-mutedForeground">
+                {emptyText}
+              </div>
+            )}
+          </div>
+        ) : null}
+      </div>
+    );
+  };
 
   return (
     <div className="app-shell">
@@ -7239,15 +7586,13 @@ export default function App() {
         {active === "profiles" && (
           <div className="grid gap-6">
             <Card>
-              <CardHeader>
+              <CardHeader className="gap-5">
                 <SectionHeader
                   title="Profiles"
-                  subtitle="Create, clone, rename, archive, and manage Discord access for each user's profiles."
+                  subtitle="Manage each user's agent profiles, dedicated Discord bots, and channel bindings without getting lost in the details."
                 />
-              </CardHeader>
-              <CardContent className="space-y-6">
-                <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-end">
-                  <div className="grid max-w-xl gap-2">
+                <div className="grid gap-4 xl:grid-cols-[minmax(0,360px)_1fr] xl:items-end">
+                  <div className="grid gap-2">
                     <label className="text-xs font-semibold uppercase tracking-[0.2em] text-mutedForeground">
                       User
                     </label>
@@ -7272,26 +7617,52 @@ export default function App() {
                             </SelectItem>
                           ))
                         ) : (
-                          <SelectItem value="none">
-                            {usersLoading ? "Loading users..." : "No users available"}
-                          </SelectItem>
+                          <SelectItem value="none">{usersLoading ? "Loading users..." : "No users available"}</SelectItem>
                         )}
                       </SelectContent>
                     </Select>
                     <p className="text-xs text-mutedForeground">
                       {profileManagerUserIdValue
-                        ? `Managing profiles for ${profileManagerUserLabel} (${profileManagerUserIdValue}).`
-                        : "Choose a user to manage their profiles and transport assignments."}
+                        ? `Currently managing ${profileManagerUserLabel} (${profileManagerUserIdValue}).`
+                        : "Choose a user to start managing their profiles and Discord routing."}
                     </p>
                   </div>
-                  <div className="flex flex-wrap items-center gap-2">
-                    <Button variant="outline" onClick={refreshUsers} disabled={usersLoading}>
-                      {usersLoading ? "Refreshing users..." : "Refresh users"}
-                    </Button>
-                    <Button variant="outline" onClick={() => setActive("users")}>
-                      View users
-                    </Button>
+                  <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+                    <ProfileMetricCard
+                      icon={<Bot className="h-4 w-4" />}
+                      label="Active Profiles"
+                      value={profileManagerUserIdValue ? profileManagerActiveProfiles.length : "—"}
+                      hint="Profiles available for new sessions and client switching."
+                    />
+                    <ProfileMetricCard
+                      icon={<Cable className="h-4 w-4" />}
+                      label="Dedicated Bots"
+                      value={profileManagerUserIdValue ? profileManagerDedicatedDiscordAccounts.length : "—"}
+                      hint="Profiles with their own Discord token instead of the shared default bot."
+                    />
+                    <ProfileMetricCard
+                      icon={<Globe className="h-4 w-4" />}
+                      label="Bound Channels"
+                      value={profileManagerUserIdValue ? profileManagerTotalBindings : "—"}
+                      hint="Server channels currently routed to this user's bots."
+                    />
+                    <ProfileMetricCard
+                      icon={<Clock3 className="h-4 w-4" />}
+                      label="Archived"
+                      value={profileManagerUserIdValue ? profileManagerArchivedProfiles.length : "—"}
+                      hint="Profiles that are hidden from normal use but can still be restored."
+                    />
                   </div>
+                </div>
+              </CardHeader>
+              <CardContent className="space-y-6">
+                <div className="flex flex-wrap items-center justify-end gap-2">
+                  <Button variant="outline" onClick={refreshUsers} disabled={usersLoading}>
+                    {usersLoading ? "Refreshing users..." : "Refresh users"}
+                  </Button>
+                  <Button variant="outline" onClick={() => setActive("users")}>
+                    View users
+                  </Button>
                 </div>
 
                 {!usersData.length ? (
@@ -7300,667 +7671,575 @@ export default function App() {
                   </div>
                 ) : !profileManagerUserIdValue ? (
                   <div className="rounded-2xl border border-dashed border-border bg-muted/40 px-4 py-6 text-sm text-mutedForeground">
-                    Select a user to manage profiles, Discord bots, and channel bindings.
+                    Select a user to open their profile workspace.
                   </div>
                 ) : (
-                  <div className="grid gap-6">
-                <div className="rounded-2xl border border-border bg-muted/30 p-4">
-                  <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
-                    <div className="grid gap-2 xl:col-span-2">
-                      <label className="text-xs font-semibold uppercase tracking-[0.2em] text-mutedForeground">
-                        Profile name
-                      </label>
-                      <Input
-                        value={profileCreateName}
-                        onChange={(event) => setProfileCreateName(event.target.value)}
-                        placeholder="Research Assistant"
-                      />
-                    </div>
-                    <div className="grid gap-2">
-                      <label className="text-xs font-semibold uppercase tracking-[0.2em] text-mutedForeground">
-                        Source
-                      </label>
-                      <Select
-                        value={profileCreateSourceSlug}
-                        onValueChange={(value) => {
-                          setProfileCreateSourceSlug(value);
-                          setProfileCreateMode(value === "blank" ? "blank" : profileCreateMode === "blank" ? "settings" : profileCreateMode);
-                        }}
-                      >
-                        <SelectTrigger>
-                          <SelectValue placeholder="Blank" />
-                        </SelectTrigger>
-                        <SelectContent>
-                          <SelectItem value="blank">Blank profile</SelectItem>
-                          {profileManagerProfiles.map((profile) => (
-                            <SelectItem key={profile.id} value={profile.slug}>
-                              {profile.name} · {profile.slug}
-                            </SelectItem>
-                          ))}
-                        </SelectContent>
-                      </Select>
-                    </div>
-                    <div className="grid gap-2">
-                      <label className="text-xs font-semibold uppercase tracking-[0.2em] text-mutedForeground">
-                        Clone mode
-                      </label>
-                      <Select
-                        value={profileCreateMode}
-                        onValueChange={(value) => setProfileCreateMode(value as "blank" | "settings" | "all")}
-                        disabled={profileCreateSourceSlug === "blank"}
-                      >
-                        <SelectTrigger>
-                          <SelectValue placeholder="Blank" />
-                        </SelectTrigger>
-                        <SelectContent>
-                          <SelectItem value="blank">Blank</SelectItem>
-                          <SelectItem value="settings">Settings only</SelectItem>
-                          <SelectItem value="all">Everything</SelectItem>
-                        </SelectContent>
-                      </Select>
-                    </div>
-                  </div>
-                  <div className="mt-4 flex flex-wrap items-center justify-between gap-4">
-                    <div className="flex items-center gap-3">
-                      <Switch
-                        checked={profileCreateMakeDefault}
-                        onCheckedChange={setProfileCreateMakeDefault}
-                      />
-                      <div>
-                        <p className="text-sm font-semibold">Make default</p>
-                        <p className="text-xs text-mutedForeground">
-                          New sessions and clients fall back to this profile.
-                        </p>
-                      </div>
-                    </div>
-                    <div className="flex items-center gap-2">
-                      <Button
-                        size="sm"
-                        variant="outline"
-                        onClick={() => void refreshProfilesForUser(profileManagerUserIdValue, true)}
-                      >
-                        Refresh list
-                      </Button>
-                      <Button onClick={handleProfileCreate} disabled={profileSaving}>
-                        {profileSaving
-                          ? "Saving..."
-                          : profileCreateSourceSlug === "blank"
-                            ? "Create profile"
-                            : "Clone profile"}
-                      </Button>
-                    </div>
-                  </div>
-                </div>
-
-                {profilesErrorByUserId[profileManagerUserIdValue] ? (
-                  <div className="rounded-2xl border border-dashed border-border bg-muted/40 px-4 py-4 text-sm text-mutedForeground">
-                    {profilesErrorByUserId[profileManagerUserIdValue]}
-                  </div>
-                ) : null}
-                {transportAccountsErrorByUserId[profileManagerUserIdValue] ? (
-                  <div className="rounded-2xl border border-dashed border-border bg-muted/40 px-4 py-4 text-sm text-mutedForeground">
-                    {transportAccountsErrorByUserId[profileManagerUserIdValue]}
-                  </div>
-                ) : null}
-
-                <div className="space-y-4">
-                    {profileManagerSharedDefaultDiscord ? (
-                      <div className="rounded-2xl border border-border bg-muted/20 p-4">
-                        <div className="flex flex-wrap items-center justify-between gap-3">
-                          <div>
+                  <div className="space-y-6">
+                    <Card>
+                      <CardHeader className="gap-4">
+                        <div className="flex flex-wrap items-start justify-between gap-4">
+                          <div className="max-w-3xl">
+                            <CardTitle>Shared Default Discord Bot</CardTitle>
+                            <CardDescription>
+                              Profiles without a dedicated override use the shared bot from <code>config.yaml</code> for DMs and any server channels you bind here.
+                            </CardDescription>
+                          </div>
+                          {profileManagerSharedDefaultDiscord ? (
                             <div className="flex flex-wrap items-center gap-2">
-                              <p className="text-sm font-semibold">Shared default Discord bot</p>
                               <Badge variant="secondary">{profileManagerSharedDefaultDiscord.status}</Badge>
                               {profileManagerSharedDefaultDiscord.external_label ? (
                                 <Badge variant="outline">{profileManagerSharedDefaultDiscord.external_label}</Badge>
                               ) : null}
                             </div>
-                            <p className="mt-2 text-xs text-mutedForeground">
-                              Profiles without their own Discord override can use this shared bot in DMs and in
-                              explicitly bound server channels.
-                            </p>
-                            {profileManagerSharedDefaultDiscord.last_error ? (
-                              <p className="mt-2 text-xs text-danger">
-                                {profileManagerSharedDefaultDiscord.last_error}
-                              </p>
-                            ) : null}
-                          </div>
-                        </div>
-                        <div className="mt-4 grid gap-3">
-                          <div className="grid gap-2 md:grid-cols-[220px_minmax(0,1fr)_220px_220px_auto]">
-                            <Select
-                              value={bindingDrafts[profileManagerSharedDefaultDiscord.account_key]?.guild_id ?? ""}
-                              onValueChange={(value) =>
-                                setBindingDrafts((current) => ({
-                                  ...current,
-                                  [profileManagerSharedDefaultDiscord.account_key]: {
-                                    guild_id: value,
-                                    surface_id: "",
-                                    mode:
-                                      current[profileManagerSharedDefaultDiscord.account_key]?.mode ?? "mention_only",
-                                    agent_profile_id:
-                                      current[profileManagerSharedDefaultDiscord.account_key]?.agent_profile_id ??
-                                      profileManagerProfiles.find(
-                                        (profile) =>
-                                          profile.status !== "archived" &&
-                                          !explicitDiscordAccountForProfile(profileManagerUserIdValue, profile.id)
-                                      )?.id ??
-                                      "",
-                                  },
-                                }))
-                              }
-                            >
-                              <SelectTrigger>
-                                <SelectValue placeholder="Choose a server" />
-                              </SelectTrigger>
-                              <SelectContent>
-                                {guildOptionsForAccount(profileManagerSharedDefaultDiscord.account_key).map((guild) => (
-                                  <SelectItem key={guild.guild_id} value={guild.guild_id}>
-                                    {guild.guild_name}
-                                  </SelectItem>
-                                ))}
-                              </SelectContent>
-                            </Select>
-                            <Select
-                              value={bindingDrafts[profileManagerSharedDefaultDiscord.account_key]?.surface_id ?? ""}
-                              onValueChange={(value) =>
-                                setBindingDrafts((current) => ({
-                                  ...current,
-                                  [profileManagerSharedDefaultDiscord.account_key]: {
-                                    guild_id:
-                                      current[profileManagerSharedDefaultDiscord.account_key]?.guild_id ?? "",
-                                    surface_id: value,
-                                    mode:
-                                      current[profileManagerSharedDefaultDiscord.account_key]?.mode ?? "mention_only",
-                                    agent_profile_id:
-                                      current[profileManagerSharedDefaultDiscord.account_key]?.agent_profile_id ??
-                                      profileManagerProfiles.find(
-                                        (profile) =>
-                                          profile.status !== "archived" &&
-                                          !explicitDiscordAccountForProfile(profileManagerUserIdValue, profile.id)
-                                      )?.id ??
-                                      "",
-                                  },
-                                }))
-                              }
-                            >
-                              <SelectTrigger>
-                                <SelectValue placeholder="Choose a server channel" />
-                              </SelectTrigger>
-                              <SelectContent>
-                                {channelOptionsForAccount(
-                                  profileManagerSharedDefaultDiscord.account_key,
-                                  bindingDrafts[profileManagerSharedDefaultDiscord.account_key]?.guild_id ?? ""
-                                ).map((channel) => (
-                                  <SelectItem key={channel.id} value={channel.id}>
-                                    {channel.label}
-                                  </SelectItem>
-                                ))}
-                              </SelectContent>
-                            </Select>
-                            <Select
-                              value={bindingDrafts[profileManagerSharedDefaultDiscord.account_key]?.agent_profile_id ?? ""}
-                              onValueChange={(value) =>
-                                setBindingDrafts((current) => ({
-                                  ...current,
-                                  [profileManagerSharedDefaultDiscord.account_key]: {
-                                    guild_id:
-                                      current[profileManagerSharedDefaultDiscord.account_key]?.guild_id ?? "",
-                                    surface_id:
-                                      current[profileManagerSharedDefaultDiscord.account_key]?.surface_id ?? "",
-                                    mode:
-                                      current[profileManagerSharedDefaultDiscord.account_key]?.mode ?? "mention_only",
-                                    agent_profile_id: value,
-                                  },
-                                }))
-                              }
-                            >
-                              <SelectTrigger>
-                                <SelectValue placeholder="Choose a profile" />
-                              </SelectTrigger>
-                              <SelectContent>
-                                {profileManagerProfiles
-                                  .filter(
-                                    (profile) =>
-                                      profile.status !== "archived" &&
-                                      !explicitDiscordAccountForProfile(profileManagerUserIdValue, profile.id)
-                                  )
-                                  .map((profile) => (
-                                    <SelectItem key={profile.id} value={profile.id}>
-                                      {profile.name} · {profile.slug}
-                                    </SelectItem>
-                                  ))}
-                              </SelectContent>
-                            </Select>
-                            <Select
-                              value={bindingDrafts[profileManagerSharedDefaultDiscord.account_key]?.mode ?? "mention_only"}
-                              onValueChange={(value) =>
-                                setBindingDrafts((current) => ({
-                                  ...current,
-                                  [profileManagerSharedDefaultDiscord.account_key]: {
-                                    guild_id:
-                                      current[profileManagerSharedDefaultDiscord.account_key]?.guild_id ?? "",
-                                    surface_id:
-                                      current[profileManagerSharedDefaultDiscord.account_key]?.surface_id ?? "",
-                                    mode: value,
-                                    agent_profile_id:
-                                      current[profileManagerSharedDefaultDiscord.account_key]?.agent_profile_id ?? "",
-                                  },
-                                }))
-                              }
-                            >
-                              <SelectTrigger>
-                                <SelectValue placeholder="Mode" />
-                              </SelectTrigger>
-                              <SelectContent>
-                                <SelectItem value="mention_only">Mentions only</SelectItem>
-                                <SelectItem value="all_messages">All messages</SelectItem>
-                              </SelectContent>
-                            </Select>
-                            <Button
-                              size="sm"
-                              onClick={() =>
-                                void handleBindingCreate(
-                                  profileManagerUserIdValue,
-                                  profileManagerSharedDefaultDiscord,
-                                )
-                              }
-                              disabled={transportActionLoading[profileManagerSharedDefaultDiscord.account_key]}
-                            >
-                              Bind channel
-                            </Button>
-                          </div>
-                          {(bindingsByAccountKey[profileManagerSharedDefaultDiscord.account_key] ?? []).length ? (
-                            <div className="space-y-2">
-                              {(bindingsByAccountKey[profileManagerSharedDefaultDiscord.account_key] ?? []).map(
-                                (binding) => (
-                                  <div
-                                    key={binding.id}
-                                    className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-border bg-card px-4 py-3"
-                                  >
-                                    <div>
-                                      <p className="text-sm font-semibold">
-                                        {channelLabelFor(binding.surface_id, binding.transport_account_key)}
-                                      </p>
-                                      <p className="text-xs text-mutedForeground">
-                                        Profile {profileLabelFor(binding.user_id, binding.agent_profile_id, binding.agent_profile_slug)}
-                                      </p>
-                                    </div>
-                                    <div className="flex flex-wrap items-center gap-2">
-                                      <Badge variant={binding.mode === "all_messages" ? "warning" : "secondary"}>
-                                        {binding.mode === "all_messages" ? "all messages" : "mentions only"}
-                                      </Badge>
-                                      <Switch
-                                        checked={binding.enabled}
-                                        onCheckedChange={(value) =>
-                                          void handleBindingUpdate(profileManagerUserIdValue, binding, {
-                                            enabled: value,
-                                          })
-                                        }
-                                      />
-                                      <Button
-                                        size="sm"
-                                        variant="danger"
-                                        onClick={() => void handleBindingDelete(profileManagerUserIdValue, binding)}
-                                      >
-                                        Delete
-                                      </Button>
-                                    </div>
-                                  </div>
-                                )
-                              )}
-                            </div>
                           ) : (
-                            <div className="rounded-2xl border border-dashed border-border bg-muted/30 px-4 py-4 text-sm text-mutedForeground">
-                              No server channels are bound to the shared default bot yet.
-                            </div>
+                            <Badge variant="outline">Disabled</Badge>
                           )}
                         </div>
-                      </div>
-                    ) : null}
-                    {profilesLoadingByUserId[profileManagerUserIdValue] && !profileManagerProfiles.length ? (
-                      <div className="rounded-2xl border border-dashed border-border bg-muted/40 px-4 py-6 text-sm text-mutedForeground">
-                        Loading profiles...
-                      </div>
-                    ) : profileManagerProfiles.length ? (
-                      profileManagerProfiles.map((profile) => {
-                        const loading = profileActionLoading[profile.id];
-                        const dedicatedDiscord = explicitDiscordAccountForProfile(profileManagerUserIdValue, profile.id);
-                        const dedicatedBindings = dedicatedDiscord
-                          ? bindingsByAccountKey[dedicatedDiscord.account_key] ?? []
-                          : [];
-                        const transportDraftKey = dedicatedDiscord?.account_key ?? profile.id;
-                        return (
-                          <div key={profile.id} className="rounded-2xl border border-border bg-muted/20 p-4">
-                            <div className="flex flex-wrap items-start justify-between gap-3">
-                              <div>
-                                <div className="flex flex-wrap items-center gap-2">
-                                  <p className="text-sm font-semibold">{profile.name}</p>
-                                  <Badge variant="outline">{profile.slug}</Badge>
-                                  {profile.is_default ? <Badge variant="success">Default</Badge> : null}
-                                  <Badge variant={profile.status === "archived" ? "warning" : "secondary"}>
-                                    {profile.status}
-                                  </Badge>
-                                </div>
-                                <p className="mt-2 text-xs text-mutedForeground">
-                                  Created {formatRelativeTime(profile.created_at)} · Updated {formatRelativeTime(profile.updated_at)}
-                                </p>
-                              </div>
+                        {profileManagerSharedDefaultDiscord ? (
+                          <div className="grid gap-3 lg:grid-cols-3">
+                            <div className="rounded-2xl border border-border bg-muted/20 p-4">
+                              <p className="text-[11px] font-semibold uppercase tracking-[0.2em] text-mutedForeground">
+                                Eligible profiles
+                              </p>
+                              <p className="mt-3 text-2xl font-semibold text-foreground">
+                                {profileManagerSharedDefaultEligibleProfiles.length}
+                              </p>
+                              <p className="mt-2 text-xs text-mutedForeground">
+                                Profiles that can still use the shared bot because they do not have a dedicated override.
+                              </p>
                             </div>
-                            <div className="mt-4 grid gap-4 lg:grid-cols-[minmax(0,1fr)_auto]">
-                              <div className="grid gap-2">
-                                <label className="text-xs font-semibold uppercase tracking-[0.2em] text-mutedForeground">
-                                  Display name
-                                </label>
-                                <Input
-                                  value={profileRenameDrafts[profile.id] ?? profile.name}
-                                  onChange={(event) =>
-                                    setProfileRenameDrafts((current) => ({
-                                      ...current,
-                                      [profile.id]: event.target.value,
-                                    }))
-                                  }
-                                  disabled={loading || profile.status === "archived"}
-                                />
-                              </div>
-                              <div className="flex flex-wrap items-end gap-2">
-                                {profile.status === "archived" ? (
-                                  <>
-                                    <Button
-                                      size="sm"
-                                      variant="outline"
-                                      onClick={() =>
-                                        void handleProfileArchiveToggle(
-                                          profileManagerUserIdValue,
-                                          profile,
-                                          false,
-                                        )
-                                      }
-                                      disabled={loading}
-                                    >
-                                      Restore
-                                    </Button>
-                                    <Button
-                                      size="sm"
-                                      variant="danger"
-                                      onClick={() => void handleProfileDelete(profileManagerUserIdValue, profile)}
-                                      disabled={loading}
-                                    >
-                                      Delete permanently
-                                    </Button>
-                                  </>
-                                ) : (
-                                  <>
-                                    <Button
-                                      size="sm"
-                                      variant="outline"
-                                      onClick={() => void handleProfileRename(profileManagerUserIdValue, profile)}
-                                      disabled={loading}
-                                    >
-                                      {loading ? "Saving..." : "Save name"}
-                                    </Button>
-                                    <Button
-                                      size="sm"
-                                      variant="outline"
-                                      onClick={() => void handleProfileSetDefault(profileManagerUserIdValue, profile)}
-                                      disabled={loading || profile.is_default}
-                                    >
-                                      Set default
-                                    </Button>
-                                    <Button
-                                      size="sm"
-                                      variant="danger"
-                                      onClick={() =>
-                                        void handleProfileArchiveToggle(
-                                          profileManagerUserIdValue,
-                                          profile,
-                                          true,
-                                        )
-                                      }
-                                      disabled={loading || profile.is_default}
-                                    >
-                                      Archive
-                                    </Button>
-                                  </>
-                                )}
-                              </div>
+                            <div className="rounded-2xl border border-border bg-muted/20 p-4">
+                              <p className="text-[11px] font-semibold uppercase tracking-[0.2em] text-mutedForeground">
+                                Bound channels
+                              </p>
+                              <p className="mt-3 text-2xl font-semibold text-foreground">
+                                {profileManagerSharedBindings.length}
+                              </p>
+                              <p className="mt-2 text-xs text-mutedForeground">
+                                Shared-bot server channels with explicit profile routing.
+                              </p>
                             </div>
-                            <div className="mt-4 rounded-2xl border border-border bg-card p-4">
-                              <div className="flex flex-wrap items-start justify-between gap-3">
-                                <div>
-                                  <div className="flex flex-wrap items-center gap-2">
-                                    <p className="text-sm font-semibold">Dedicated Discord bot</p>
-                                    {dedicatedDiscord ? (
-                                      <>
-                                        <Badge variant={dedicatedDiscord.enabled ? "success" : "secondary"}>
-                                          {dedicatedDiscord.enabled ? "enabled" : "disabled"}
-                                        </Badge>
-                                        <Badge variant="secondary">{dedicatedDiscord.status}</Badge>
-                                      </>
-                                    ) : (
-                                      <Badge variant="outline">Using shared default</Badge>
-                                    )}
-                                  </div>
-                                  <p className="mt-2 text-xs text-mutedForeground">
-                                    Give this profile its own bot token to make it exclusive on Discord.
-                                  </p>
-                                  {dedicatedDiscord?.last_error ? (
-                                    <p className="mt-2 text-xs text-danger">{dedicatedDiscord.last_error}</p>
-                                  ) : null}
-                                </div>
-                              </div>
-                              <div className="mt-4 grid gap-3 md:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto]">
-                                <Input
-                                  value={
-                                    transportDisplayNameDrafts[transportDraftKey] ??
-                                    dedicatedDiscord?.display_name ??
-                                    `${profile.name} Discord`
-                                  }
-                                  onChange={(event) =>
-                                    setTransportDisplayNameDrafts((current) => ({
-                                      ...current,
-                                      [transportDraftKey]: event.target.value,
-                                    }))
-                                  }
-                                  placeholder={`${profile.name} Discord`}
-                                  disabled={profile.status === "archived"}
-                                />
-                                <Input
-                                  type="password"
-                                  value={transportTokenDrafts[profile.id] ?? ""}
-                                  onChange={(event) =>
-                                    setTransportTokenDrafts((current) => ({
-                                      ...current,
-                                      [profile.id]: event.target.value,
-                                    }))
-                                  }
-                                  placeholder={dedicatedDiscord ? "Paste a new token to rotate it" : "Discord bot token"}
-                                  disabled={profile.status === "archived"}
-                                />
-                                <div className="flex flex-wrap items-center gap-2">
-                                  {dedicatedDiscord ? (
-                                    <>
-                                      <Switch
-                                        checked={dedicatedDiscord.enabled}
-                                        onCheckedChange={(value) =>
-                                          void handleTransportAccountEnabled(
-                                            profileManagerUserIdValue,
-                                            dedicatedDiscord,
-                                            value
-                                          )
-                                        }
-                                        disabled={transportActionLoading[dedicatedDiscord.account_key]}
-                                      />
-                                      <Button
-                                        size="sm"
-                                        variant="outline"
-                                        onClick={() => void handleTransportAccountSave(profileManagerUserIdValue, profile)}
-                                        disabled={profile.status === "archived" || transportActionLoading[dedicatedDiscord.account_key]}
-                                      >
-                                        Save bot
-                                      </Button>
-                                      <Button
-                                        size="sm"
-                                        variant="danger"
-                                        onClick={() =>
-                                          void handleTransportAccountDelete(profileManagerUserIdValue, dedicatedDiscord)
-                                        }
-                                        disabled={transportActionLoading[dedicatedDiscord.account_key]}
-                                      >
-                                        Remove bot
-                                      </Button>
-                                    </>
-                                  ) : (
-                                    <Button
-                                      size="sm"
-                                      onClick={() => void handleTransportAccountSave(profileManagerUserIdValue, profile)}
-                                      disabled={profile.status === "archived" || transportActionLoading[transportDraftKey]}
-                                    >
-                                      Create bot
-                                    </Button>
-                                  )}
-                                </div>
-                              </div>
-                              {dedicatedDiscord ? (
-                                <div className="mt-4 space-y-3">
-                                  <div className="grid gap-2 md:grid-cols-[220px_minmax(0,1fr)_220px_auto]">
-                                    <Select
-                                      value={bindingDrafts[dedicatedDiscord.account_key]?.guild_id ?? ""}
-                                      onValueChange={(value) =>
-                                        setBindingDrafts((current) => ({
-                                          ...current,
-                                          [dedicatedDiscord.account_key]: {
-                                            guild_id: value,
-                                            surface_id: "",
-                                            mode: current[dedicatedDiscord.account_key]?.mode ?? "mention_only",
-                                            agent_profile_id: profile.id,
-                                          },
-                                        }))
-                                      }
-                                    >
-                                      <SelectTrigger>
-                                        <SelectValue placeholder="Choose a server" />
-                                      </SelectTrigger>
-                                      <SelectContent>
-                                        {guildOptionsForAccount(dedicatedDiscord.account_key).map((guild) => (
-                                          <SelectItem key={guild.guild_id} value={guild.guild_id}>
-                                            {guild.guild_name}
-                                          </SelectItem>
-                                        ))}
-                                      </SelectContent>
-                                    </Select>
-                                    <Select
-                                      value={bindingDrafts[dedicatedDiscord.account_key]?.surface_id ?? ""}
-                                      onValueChange={(value) =>
-                                        setBindingDrafts((current) => ({
-                                          ...current,
-                                          [dedicatedDiscord.account_key]: {
-                                            guild_id: current[dedicatedDiscord.account_key]?.guild_id ?? "",
-                                            surface_id: value,
-                                            mode: current[dedicatedDiscord.account_key]?.mode ?? "mention_only",
-                                            agent_profile_id: profile.id,
-                                          },
-                                        }))
-                                      }
-                                    >
-                                      <SelectTrigger>
-                                        <SelectValue placeholder="Choose a server channel" />
-                                      </SelectTrigger>
-                                      <SelectContent>
-                                        {channelOptionsForAccount(
-                                          dedicatedDiscord.account_key,
-                                          bindingDrafts[dedicatedDiscord.account_key]?.guild_id ?? ""
-                                        ).map((channel) => (
-                                          <SelectItem key={channel.id} value={channel.id}>
-                                            {channel.label}
-                                          </SelectItem>
-                                        ))}
-                                      </SelectContent>
-                                    </Select>
-                                    <Select
-                                      value={bindingDrafts[dedicatedDiscord.account_key]?.mode ?? "mention_only"}
-                                      onValueChange={(value) =>
-                                        setBindingDrafts((current) => ({
-                                          ...current,
-                                          [dedicatedDiscord.account_key]: {
-                                            guild_id: current[dedicatedDiscord.account_key]?.guild_id ?? "",
-                                            surface_id: current[dedicatedDiscord.account_key]?.surface_id ?? "",
-                                            mode: value,
-                                            agent_profile_id: profile.id,
-                                          },
-                                        }))
-                                      }
-                                    >
-                                      <SelectTrigger>
-                                        <SelectValue placeholder="Mode" />
-                                      </SelectTrigger>
-                                      <SelectContent>
-                                        <SelectItem value="mention_only">Mentions only</SelectItem>
-                                        <SelectItem value="all_messages">All messages</SelectItem>
-                                      </SelectContent>
-                                    </Select>
-                                    <Button
-                                      size="sm"
-                                      onClick={() =>
-                                        void handleBindingCreate(profileManagerUserIdValue, dedicatedDiscord, profile.id)
-                                      }
-                                      disabled={transportActionLoading[dedicatedDiscord.account_key]}
-                                    >
-                                      Bind channel
-                                    </Button>
-                                  </div>
-                                  {dedicatedBindings.length ? (
-                                    <div className="space-y-2">
-                                      {dedicatedBindings.map((binding) => (
-                                        <div
-                                          key={binding.id}
-                                          className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-border bg-muted/20 px-4 py-3"
-                                        >
-                                          <div>
-                                            <p className="text-sm font-semibold">
-                                              {channelLabelFor(binding.surface_id, binding.transport_account_key)}
-                                            </p>
-                                            <p className="text-xs text-mutedForeground">
-                                              {binding.mode === "all_messages" ? "All messages" : "Mentions and replies"}
-                                            </p>
-                                          </div>
-                                          <div className="flex flex-wrap items-center gap-2">
-                                            <Switch
-                                              checked={binding.enabled}
-                                              onCheckedChange={(value) =>
-                                                void handleBindingUpdate(profileManagerUserIdValue, binding, {
-                                                  enabled: value,
-                                                })
-                                              }
-                                            />
-                                            <Button
-                                              size="sm"
-                                              variant="danger"
-                                              onClick={() => void handleBindingDelete(profileManagerUserIdValue, binding)}
-                                            >
-                                              Delete
-                                            </Button>
-                                          </div>
-                                        </div>
-                                      ))}
-                                    </div>
-                                  ) : (
-                                    <div className="rounded-2xl border border-dashed border-border bg-muted/30 px-4 py-4 text-sm text-mutedForeground">
-                                      No server channels are bound to this dedicated bot yet.
-                                    </div>
-                                  )}
-                                </div>
-                              ) : null}
+                            <div className="rounded-2xl border border-border bg-muted/20 p-4">
+                              <p className="text-[11px] font-semibold uppercase tracking-[0.2em] text-mutedForeground">
+                                Bot identity
+                              </p>
+                              <p className="mt-3 text-base font-semibold text-foreground">
+                                {profileManagerSharedDefaultDiscord.external_label || "Connected bot"}
+                              </p>
+                              <p className="mt-2 text-xs text-mutedForeground">
+                                This bot is shared across profiles that do not bring their own Discord token.
+                              </p>
                             </div>
                           </div>
-                        );
-                      })
-                    ) : (
-                      <div className="rounded-2xl border border-dashed border-border bg-muted/40 px-4 py-6 text-sm text-mutedForeground">
-                        No profiles found for this user.
-                      </div>
-                    )}
-                </div>
+                        ) : null}
+                      </CardHeader>
+                      <CardContent className="space-y-4">
+                        {profileManagerSharedDefaultDiscord ? (
+                          <>
+                            {!profileManagerSharedDefaultEligibleProfiles.length ? (
+                              <div className="rounded-2xl border border-dashed border-border bg-muted/30 px-4 py-4 text-sm text-mutedForeground">
+                                Every active profile for this user already has its own dedicated Discord bot, so the shared bot cannot be bound to additional channels for them.
+                              </div>
+                            ) : null}
+                            {profileManagerSharedDefaultDiscord.last_error ? (
+                              <div className="rounded-2xl border border-rose-200/70 bg-rose-500/5 px-4 py-3 text-sm text-rose-700 dark:border-rose-900/50 dark:text-rose-300">
+                                {profileManagerSharedDefaultDiscord.last_error}
+                              </div>
+                            ) : null}
+                            {renderBindingManager({
+                              userId: profileManagerUserIdValue,
+                              account: profileManagerSharedDefaultDiscord,
+                              bindings: profileManagerSharedBindings,
+                              helperText:
+                                "Use the shared bot for server channels when a profile does not need its own dedicated bot token.",
+                              emptyText: "No server channels are bound to the shared default bot yet.",
+                              selectableProfiles: profileManagerSharedDefaultEligibleProfiles,
+                              expanded: sharedDefaultBindingsExpanded,
+                              onToggleExpanded: () => setSharedDefaultBindingsExpanded((current) => !current),
+                            })}
+                          </>
+                        ) : (
+                          <div className="rounded-2xl border border-dashed border-border bg-muted/30 px-4 py-4 text-sm text-mutedForeground">
+                            The shared default Discord bot is disabled or has no token configured in <code>config.yaml</code>.
+                          </div>
+                        )}
+                      </CardContent>
+                    </Card>
+
+                    <Card>
+                      <CardHeader className="gap-4">
+                        <div className="flex flex-wrap items-start justify-between gap-3">
+                          <div>
+                            <CardTitle>Profile Workspace</CardTitle>
+                            <CardDescription>
+                              Keep the working area focused on the profiles you are editing, and open the create flow only when you need it.
+                            </CardDescription>
+                          </div>
+                          <div className="flex flex-wrap items-center gap-2">
+                            <Button
+                              size="sm"
+                              variant={profileComposerOpen ? "secondary" : "default"}
+                              onClick={() => {
+                                if (profileComposerOpen) {
+                                  resetProfileCreateState();
+                                  return;
+                                }
+                                setProfileComposerOpen(true);
+                              }}
+                            >
+                              <Plus className="mr-2 h-4 w-4" />
+                              {profileComposerOpen ? "Hide add profile" : "Add profile"}
+                            </Button>
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              onClick={() => {
+                                void refreshProfilesForUser(profileManagerUserIdValue, true);
+                                void refreshTransportAccountsForUser(profileManagerUserIdValue, true);
+                              }}
+                            >
+                              <RefreshCcw className="mr-2 h-4 w-4" />
+                              Refresh everything
+                            </Button>
+                          </div>
+                        </div>
+                        <Tabs value={profileListTab} onValueChange={(value) => setProfileListTab(value as "active" | "archived")}>
+                          <TabsList>
+                            <TabsTrigger value="active">Active</TabsTrigger>
+                            <TabsTrigger value="archived">Archived</TabsTrigger>
+                          </TabsList>
+                        </Tabs>
+                      </CardHeader>
+                      <CardContent className="space-y-4">
+                        {profileComposerOpen ? (
+                          <div className="rounded-3xl border border-border bg-muted/15 p-5">
+                            <div className="flex flex-wrap items-start justify-between gap-3">
+                              <div>
+                                <p className="text-base font-semibold text-foreground">Create or clone profile</p>
+                                <p className="mt-1 text-sm text-mutedForeground">
+                                  Start from a clean workspace skeleton or copy another profile’s setup without leaving this page.
+                                </p>
+                              </div>
+                              <Button size="sm" variant="ghost" onClick={resetProfileCreateState}>
+                                Hide
+                              </Button>
+                            </div>
+                            <div className="mt-5 grid gap-4 xl:grid-cols-[minmax(0,1.4fr)_minmax(220px,0.8fr)_minmax(220px,0.8fr)]">
+                              <div className="grid gap-2">
+                                <label className="text-[11px] font-semibold uppercase tracking-[0.2em] text-mutedForeground">
+                                  Profile name
+                                </label>
+                                <Input
+                                  value={profileCreateName}
+                                  onChange={(event) => setProfileCreateName(event.target.value)}
+                                  placeholder="Research Assistant"
+                                />
+                              </div>
+                              <div className="grid gap-2">
+                                <label className="text-[11px] font-semibold uppercase tracking-[0.2em] text-mutedForeground">
+                                  Starting point
+                                </label>
+                                <Select
+                                  value={profileCreateSourceSlug}
+                                  onValueChange={(value) => {
+                                    setProfileCreateSourceSlug(value);
+                                    setProfileCreateMode(
+                                      value === "blank"
+                                        ? "blank"
+                                        : profileCreateMode === "blank"
+                                          ? "settings"
+                                          : profileCreateMode
+                                    );
+                                  }}
+                                >
+                                  <SelectTrigger>
+                                    <SelectValue placeholder="Blank profile" />
+                                  </SelectTrigger>
+                                  <SelectContent>
+                                    <SelectItem value="blank">Blank profile</SelectItem>
+                                    {profileManagerProfiles.map((profile) => (
+                                      <SelectItem key={profile.id} value={profile.slug}>
+                                        {profile.name} · {profile.slug}
+                                      </SelectItem>
+                                    ))}
+                                  </SelectContent>
+                                </Select>
+                              </div>
+                              <div className="grid gap-2">
+                                <label className="text-[11px] font-semibold uppercase tracking-[0.2em] text-mutedForeground">
+                                  Clone mode
+                                </label>
+                                <Select
+                                  value={profileCreateMode}
+                                  onValueChange={(value) => setProfileCreateMode(value as "blank" | "settings" | "all")}
+                                  disabled={profileCreateSourceSlug === "blank"}
+                                >
+                                  <SelectTrigger>
+                                    <SelectValue placeholder="Blank" />
+                                  </SelectTrigger>
+                                  <SelectContent>
+                                    <SelectItem value="blank">Blank</SelectItem>
+                                    <SelectItem value="settings">Settings only</SelectItem>
+                                    <SelectItem value="all">Everything</SelectItem>
+                                  </SelectContent>
+                                </Select>
+                              </div>
+                            </div>
+                            <div className="mt-4 flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-border bg-background/70 px-4 py-3">
+                              <div className="flex items-center gap-3">
+                                <Switch checked={profileCreateMakeDefault} onCheckedChange={setProfileCreateMakeDefault} />
+                                <div>
+                                  <p className="text-sm font-semibold text-foreground">Make this the default profile</p>
+                                  <p className="text-xs text-mutedForeground">
+                                    New sessions and clients will fall back to it automatically.
+                                  </p>
+                                </div>
+                              </div>
+                              <Button onClick={handleProfileCreate} disabled={profileSaving}>
+                                {profileSaving
+                                  ? "Saving..."
+                                  : profileCreateSourceSlug === "blank"
+                                    ? "Create profile"
+                                    : "Clone profile"}
+                              </Button>
+                            </div>
+                          </div>
+                        ) : (
+                          <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-dashed border-border bg-muted/20 px-4 py-4">
+                            <div>
+                              <p className="text-sm font-semibold text-foreground">Create a new agent profile when you need one</p>
+                              <p className="mt-1 text-sm text-mutedForeground">
+                                Keep this page focused on active profiles, and open the add flow only when you are ready to create or clone one.
+                              </p>
+                            </div>
+                            <Button size="sm" onClick={() => setProfileComposerOpen(true)}>
+                              <Plus className="mr-2 h-4 w-4" />
+                              Add profile
+                            </Button>
+                          </div>
+                        )}
+                        {profilesErrorByUserId[profileManagerUserIdValue] ? (
+                          <div className="rounded-2xl border border-dashed border-border bg-muted/40 px-4 py-4 text-sm text-mutedForeground">
+                            {profilesErrorByUserId[profileManagerUserIdValue]}
+                          </div>
+                        ) : null}
+                        {transportAccountsErrorByUserId[profileManagerUserIdValue] ? (
+                          <div className="rounded-2xl border border-dashed border-border bg-muted/40 px-4 py-4 text-sm text-mutedForeground">
+                            {transportAccountsErrorByUserId[profileManagerUserIdValue]}
+                          </div>
+                        ) : null}
+
+                        {profilesLoadingByUserId[profileManagerUserIdValue] && !profileManagerProfiles.length ? (
+                          <div className="rounded-2xl border border-dashed border-border bg-muted/40 px-4 py-6 text-sm text-mutedForeground">
+                            Loading profiles...
+                          </div>
+                        ) : profileManagerVisibleProfiles.length ? (
+                          <div className="space-y-4">
+                            {profileManagerVisibleProfiles.map((profile) => {
+                              const loading = profileActionLoading[profile.id];
+                              const dedicatedDiscord = explicitDiscordAccountForProfile(profileManagerUserIdValue, profile.id);
+                              const dedicatedBindings = dedicatedDiscord
+                                ? bindingsByAccountKey[dedicatedDiscord.account_key] ?? []
+                                : [];
+                              const transportDraftKey = dedicatedDiscord?.account_key ?? profile.id;
+                              const detailsExpanded = isProfileSectionExpanded(profile);
+                              return (
+                                <div key={profile.id} className="overflow-hidden rounded-2xl border border-border bg-muted/20">
+                                  <div className="flex flex-wrap items-start justify-between gap-4 px-5 py-5">
+                                    <div className="space-y-3">
+                                      <div className="flex flex-wrap items-center gap-3">
+                                        <span
+                                          className={`h-2.5 w-2.5 rounded-full ${
+                                            profile.status === "archived" ? "bg-amber-500" : "bg-emerald-500"
+                                          }`}
+                                        />
+                                        <p className="text-base font-semibold text-foreground">{profile.name}</p>
+                                        <Badge variant="outline">{profile.slug}</Badge>
+                                        {profile.is_default ? <Badge variant="success">Default</Badge> : null}
+                                        <Badge variant={profile.status === "archived" ? "warning" : "secondary"}>
+                                          {profile.status}
+                                        </Badge>
+                                      </div>
+                                      <div className="flex flex-wrap items-center gap-2 text-xs text-mutedForeground">
+                                        <span>Created {formatRelativeTime(profile.created_at)}</span>
+                                        <span>·</span>
+                                        <span>Updated {formatRelativeTime(profile.updated_at)}</span>
+                                        <span>·</span>
+                                        <span>{dedicatedDiscord ? "Dedicated Discord bot" : "Shared Discord bot"}</span>
+                                        <span>·</span>
+                                        <span>
+                                          {dedicatedDiscord ? dedicatedBindings.length : 0} dedicated channel
+                                          {dedicatedDiscord && dedicatedBindings.length === 1 ? "" : "s"}
+                                        </span>
+                                      </div>
+                                    </div>
+                                    <div className="flex flex-wrap items-center gap-2">
+                                      <Button
+                                        size="sm"
+                                        variant="ghost"
+                                        onClick={() => toggleProfileSection(profile)}
+                                        className="gap-2"
+                                      >
+                                        {detailsExpanded ? (
+                                          <ChevronDown className="h-4 w-4" />
+                                        ) : (
+                                          <ChevronRight className="h-4 w-4" />
+                                        )}
+                                        {detailsExpanded ? "Hide details" : "Show details"}
+                                      </Button>
+                                      {profile.status === "archived" ? (
+                                        <>
+                                          <Button
+                                            size="sm"
+                                            variant="outline"
+                                            onClick={() =>
+                                              void handleProfileArchiveToggle(profileManagerUserIdValue, profile, false)
+                                            }
+                                            disabled={loading}
+                                          >
+                                            Restore
+                                          </Button>
+                                          <Button
+                                            size="sm"
+                                            variant="danger"
+                                            onClick={() => void handleProfileDelete(profileManagerUserIdValue, profile)}
+                                            disabled={loading}
+                                          >
+                                            Delete permanently
+                                          </Button>
+                                        </>
+                                      ) : (
+                                        <>
+                                          {!profile.is_default ? (
+                                            <Button
+                                              size="sm"
+                                              variant="outline"
+                                              onClick={() => void handleProfileSetDefault(profileManagerUserIdValue, profile)}
+                                              disabled={loading}
+                                            >
+                                              Set default
+                                            </Button>
+                                          ) : null}
+                                          <Button
+                                            size="sm"
+                                            variant="danger"
+                                            onClick={() =>
+                                              void handleProfileArchiveToggle(profileManagerUserIdValue, profile, true)
+                                            }
+                                            disabled={loading || profile.is_default}
+                                          >
+                                            Archive
+                                          </Button>
+                                        </>
+                                      )}
+                                    </div>
+                                  </div>
+
+                                  {detailsExpanded ? (
+                                    <div className="border-t border-border/70 bg-background/60 px-5 py-5">
+                                      {profile.status === "archived" ? (
+                                        <div className="rounded-2xl border border-dashed border-border bg-muted/30 px-4 py-4 text-sm text-mutedForeground">
+                                          Archived profiles are hidden from normal client use. Restore the profile to edit it again, or delete it permanently if it was only for testing.
+                                        </div>
+                                      ) : (
+                                        <div className="grid gap-4 2xl:grid-cols-[minmax(280px,360px)_minmax(0,1fr)]">
+                                          <div className="rounded-2xl border border-border bg-card p-4">
+                                            <div className="space-y-4">
+                                              <div>
+                                                <p className="text-sm font-semibold text-foreground">Profile settings</p>
+                                                <p className="mt-1 text-xs text-mutedForeground">
+                                                  Keep the profile name human-friendly. The slug stays stable for routing and workspace lookup.
+                                                </p>
+                                              </div>
+                                              <div className="grid gap-2">
+                                                <label className="text-[11px] font-semibold uppercase tracking-[0.2em] text-mutedForeground">
+                                                  Display name
+                                                </label>
+                                                <Input
+                                                  value={profileRenameDrafts[profile.id] ?? profile.name}
+                                                  onChange={(event) =>
+                                                    setProfileRenameDrafts((current) => ({
+                                                      ...current,
+                                                      [profile.id]: event.target.value,
+                                                    }))
+                                                  }
+                                                  disabled={loading}
+                                                />
+                                              </div>
+                                              <div className="flex flex-wrap items-center gap-2">
+                                                <Button
+                                                  size="sm"
+                                                  variant="outline"
+                                                  onClick={() => void handleProfileRename(profileManagerUserIdValue, profile)}
+                                                  disabled={loading}
+                                                >
+                                                  {loading ? "Saving..." : "Save name"}
+                                                </Button>
+                                              </div>
+                                              <div className="rounded-2xl border border-border bg-muted/20 px-4 py-3 text-xs text-mutedForeground">
+                                                Workspace path and identity files stay with the profile slug. Changing the display name here will not move the profile workspace.
+                                              </div>
+                                            </div>
+                                          </div>
+
+                                          <div className="space-y-4">
+                                            <div className="rounded-2xl border border-border bg-card p-4">
+                                              <div className="flex flex-wrap items-start justify-between gap-3">
+                                                <div>
+                                                  <div className="flex flex-wrap items-center gap-2">
+                                                    <p className="text-sm font-semibold text-foreground">Dedicated Discord bot</p>
+                                                    {dedicatedDiscord ? (
+                                                      <>
+                                                        <Badge variant={dedicatedDiscord.enabled ? "success" : "secondary"}>
+                                                          {dedicatedDiscord.enabled ? "Enabled" : "Disabled"}
+                                                        </Badge>
+                                                        <Badge variant="secondary">{dedicatedDiscord.status}</Badge>
+                                                      </>
+                                                    ) : (
+                                                      <Badge variant="outline">Using shared default</Badge>
+                                                    )}
+                                                  </div>
+                                                  <p className="mt-2 text-xs text-mutedForeground">
+                                                    Give this profile its own token only when it needs to be exclusive on Discord or run in its own bound channels.
+                                                  </p>
+                                                  {dedicatedDiscord?.last_error ? (
+                                                    <p className="mt-2 text-xs text-danger">{dedicatedDiscord.last_error}</p>
+                                                  ) : null}
+                                                </div>
+                                              </div>
+                                              <div className="mt-4 grid gap-4 xl:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]">
+                                                <div className="grid gap-2">
+                                                  <label className="text-[11px] font-semibold uppercase tracking-[0.2em] text-mutedForeground">
+                                                    Bot label
+                                                  </label>
+                                                  <Input
+                                                    value={
+                                                      transportDisplayNameDrafts[transportDraftKey] ??
+                                                      dedicatedDiscord?.display_name ??
+                                                      `${profile.name} Discord`
+                                                    }
+                                                    onChange={(event) =>
+                                                      setTransportDisplayNameDrafts((current) => ({
+                                                        ...current,
+                                                        [transportDraftKey]: event.target.value,
+                                                      }))
+                                                    }
+                                                    placeholder={`${profile.name} Discord`}
+                                                  />
+                                                </div>
+                                                <div className="grid gap-2">
+                                                  <label className="text-[11px] font-semibold uppercase tracking-[0.2em] text-mutedForeground">
+                                                    Bot token
+                                                  </label>
+                                                  <Input
+                                                    type="password"
+                                                    value={transportTokenDrafts[profile.id] ?? ""}
+                                                    onChange={(event) =>
+                                                      setTransportTokenDrafts((current) => ({
+                                                        ...current,
+                                                        [profile.id]: event.target.value,
+                                                      }))
+                                                    }
+                                                    placeholder={
+                                                      dedicatedDiscord
+                                                        ? "Paste a new token to rotate it"
+                                                        : "Discord bot token"
+                                                    }
+                                                  />
+                                                </div>
+                                              </div>
+                                              <div className="mt-4 flex flex-wrap items-center justify-between gap-3">
+                                                <p className="text-xs text-mutedForeground">
+                                                  {dedicatedDiscord
+                                                    ? "Rotate the token or disable the bot without losing the profile."
+                                                    : "Without a dedicated bot, this profile continues to use the shared default bot in DMs."}
+                                                </p>
+                                                <div className="flex flex-wrap items-center gap-2">
+                                                  {dedicatedDiscord ? (
+                                                    <>
+                                                      <div className="flex items-center gap-2 rounded-full border border-border bg-muted/20 px-3 py-1.5">
+                                                        <span className="text-xs text-mutedForeground">Enabled</span>
+                                                        <Switch
+                                                          checked={dedicatedDiscord.enabled}
+                                                          onCheckedChange={(value) =>
+                                                            void handleTransportAccountEnabled(
+                                                              profileManagerUserIdValue,
+                                                              dedicatedDiscord,
+                                                              value
+                                                            )
+                                                          }
+                                                          disabled={transportActionLoading[dedicatedDiscord.account_key]}
+                                                        />
+                                                      </div>
+                                                      <Button
+                                                        size="sm"
+                                                        variant="outline"
+                                                        onClick={() =>
+                                                          void handleTransportAccountSave(profileManagerUserIdValue, profile)
+                                                        }
+                                                        disabled={transportActionLoading[dedicatedDiscord.account_key]}
+                                                      >
+                                                        Save bot
+                                                      </Button>
+                                                      <Button
+                                                        size="sm"
+                                                        variant="danger"
+                                                        onClick={() =>
+                                                          void handleTransportAccountDelete(
+                                                            profileManagerUserIdValue,
+                                                            dedicatedDiscord
+                                                          )
+                                                        }
+                                                        disabled={transportActionLoading[dedicatedDiscord.account_key]}
+                                                      >
+                                                        Remove bot
+                                                      </Button>
+                                                    </>
+                                                  ) : (
+                                                    <Button
+                                                      size="sm"
+                                                      onClick={() => void handleTransportAccountSave(profileManagerUserIdValue, profile)}
+                                                      disabled={transportActionLoading[transportDraftKey]}
+                                                    >
+                                                      Create dedicated bot
+                                                    </Button>
+                                                  )}
+                                                </div>
+                                              </div>
+                                            </div>
+
+                                            {dedicatedDiscord ? (
+                                              renderBindingManager({
+                                                userId: profileManagerUserIdValue,
+                                                account: dedicatedDiscord,
+                                                bindings: dedicatedBindings,
+                                                helperText: `Only this profile will answer in the dedicated bot's bound channels.`,
+                                                emptyText: "No server channels are bound to this dedicated bot yet.",
+                                                fallbackProfileId: profile.id,
+                                              })
+                                            ) : (
+                                              <div className="rounded-2xl border border-dashed border-border bg-muted/30 px-4 py-4 text-sm text-mutedForeground">
+                                                This profile currently uses the shared default Discord bot. Bind public channels from the shared bot card, or create a dedicated bot if this profile needs its own Discord identity.
+                                              </div>
+                                            )}
+                                          </div>
+                                        </div>
+                                      )}
+                                    </div>
+                                  ) : null}
+                                </div>
+                              );
+                            })}
+                          </div>
+                        ) : (
+                          <div className="rounded-2xl border border-dashed border-border bg-muted/40 px-4 py-6 text-sm text-mutedForeground">
+                            {profileListTab === "archived"
+                              ? "No archived profiles for this user."
+                              : "No active profiles found for this user."}
+                          </div>
+                        )}
+                      </CardContent>
+                    </Card>
                   </div>
                 )}
               </CardContent>

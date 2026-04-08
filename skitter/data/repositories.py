@@ -475,6 +475,19 @@ class Repository:
         )
         return result.scalar_one_or_none()
 
+    async def get_transport_account_by_external_account_id(
+        self,
+        transport: str,
+        external_account_id: str,
+    ) -> TransportAccount | None:
+        result = await self.session.execute(
+            select(TransportAccount).where(
+                TransportAccount.transport == transport,
+                TransportAccount.external_account_id == external_account_id,
+            )
+        )
+        return result.scalar_one_or_none()
+
     async def get_transport_account_for_profile(self, agent_profile_id: str, transport: str) -> TransportAccount | None:
         result = await self.session.execute(
             select(TransportAccount).where(
