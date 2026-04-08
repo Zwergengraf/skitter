@@ -62,6 +62,7 @@ from .models import (
 from .llm import ResolvedModel, build_llm, list_models, resolve_model, resolve_model_candidates, resolve_model_name
 from .llm_debug import ThinkingDebugCallback
 from .prompting import build_system_prompt
+from .profile_service import resolve_profile_default_model_name
 from .usage import collect_usage, record_usage
 from .run_limits import RunBudgetUsageCallback, RunLimitsState, reset_current_run_limits, set_current_run_limits
 from ..tools.approval_service import ToolApprovalService
@@ -1008,6 +1009,17 @@ class AgentRuntime:
         if record and getattr(record, "model", None):
             self._session_models[session_id] = record.model
             return record.model
+        if record is not None:
+            async with SessionLocal() as session:
+                repo = Repository(session)
+                profile_default = await resolve_profile_default_model_name(
+                    repo,
+                    getattr(record, "agent_profile_id", None),
+                    purpose="main",
+                )
+            if profile_default:
+                self._session_models[session_id] = profile_default
+                return profile_default
         default_name = resolve_model_name(None, purpose="main")
         self._session_models[session_id] = default_name
         return default_name

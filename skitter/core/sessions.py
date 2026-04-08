@@ -10,6 +10,7 @@ from ..data.repositories import Repository
 from .memory_service import MemoryService
 from .runtime import AgentRuntime
 from .llm import resolve_model_name
+from .profile_service import resolve_profile_default_model_name
 from .profiles import private_profile_scope_id
 from .workspace import ensure_profile_workspace, user_workspace_root
 
@@ -126,7 +127,10 @@ class SessionManager:
                     self._scope_session.pop(f"{agent_profile_id}:{scope_id}", None)
             active = await repo.get_active_session_by_scope(scope_type, scope_id, agent_profile_id=agent_profile_id)
             if active is None:
-                model_name = resolve_model_name(None, purpose="main")
+                model_name = (
+                    await resolve_profile_default_model_name(repo, agent_profile_id, purpose="main")
+                    or resolve_model_name(None, purpose="main")
+                )
                 active = await repo.create_session(
                     user_id,
                     agent_profile_id=agent_profile_id,
@@ -204,7 +208,10 @@ class SessionManager:
                         data={"scope_type": scope_type, "scope_id": scope_id},
                     )
                 self.runtime.clear_history(active.id)
-            model_name = resolve_model_name(None, purpose="main")
+            model_name = (
+                await resolve_profile_default_model_name(repo, agent_profile_id, purpose="main")
+                or resolve_model_name(None, purpose="main")
+            )
             new_session = await repo.create_session(
                 user_id,
                 agent_profile_id=agent_profile_id,

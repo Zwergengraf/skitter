@@ -253,9 +253,15 @@ export interface AgentProfile {
   slug: string;
   name: string;
   status: string;
+  default_model?: string | null;
   is_default: boolean;
   created_at: string;
   updated_at: string;
+}
+
+export interface ModelItem {
+  name: string;
+  model: string;
 }
 
 export interface ChannelListItem {

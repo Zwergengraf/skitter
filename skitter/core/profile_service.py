@@ -6,11 +6,37 @@ from pathlib import Path
 
 from ..data.models import AgentProfile
 from ..data.repositories import Repository
+from .llm import resolve_model_name
 from .profiles import DEFAULT_AGENT_PROFILE_NAME, DEFAULT_AGENT_PROFILE_SLUG, normalize_profile_slug
 from .transport_accounts import discord_surface_kind
 from .workspace import ensure_profile_workspace, profile_workspace_root
 
 PROFILE_SETTINGS_DIRS = ("skills",)
+
+
+def profile_default_model_value(profile: AgentProfile | None) -> str | None:
+    if profile is None:
+        return None
+    raw = str((profile.meta or {}).get("default_model") or "").strip()
+    return raw or None
+
+
+async def resolve_profile_default_model_name(
+    repo: Repository,
+    profile_id: str | None,
+    *,
+    purpose: str = "main",
+) -> str | None:
+    cleaned_profile_id = str(profile_id or "").strip()
+    if not cleaned_profile_id:
+        return None
+    raw = await repo.get_profile_default_model_name(cleaned_profile_id)
+    if not raw:
+        return None
+    try:
+        return resolve_model_name(raw, purpose=purpose)
+    except Exception:
+        return None
 
 def serialize_profile(profile: AgentProfile, *, default_profile_id: str | None = None) -> dict[str, object]:
     return {
@@ -18,6 +44,7 @@ def serialize_profile(profile: AgentProfile, *, default_profile_id: str | None =
         "slug": profile.slug,
         "name": profile.name,
         "status": profile.status,
+        "default_model": profile_default_model_value(profile),
         "is_default": bool(default_profile_id and profile.id == default_profile_id),
         "created_at": profile.created_at.isoformat(),
         "updated_at": profile.updated_at.isoformat(),
@@ -80,6 +107,14 @@ def parse_profile_command(raw: str) -> dict[str, object]:
         if len(rest) < 2:
             raise ValueError("`rename` requires a profile slug and a new name.")
         return {"action": "rename", "slug": rest[0], "name": " ".join(rest[1:]).strip()}
+    if action == "model":
+        if not rest:
+            return {"action": "model_show"}
+        value = " ".join(rest).strip()
+        return {
+            "action": "model_set",
+            "model_name": None if value.lower() == "default" else value,
+        }
     raise ValueError(f"Unknown profile action `{action}`.")
 
 

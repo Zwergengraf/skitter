@@ -62,6 +62,7 @@ import type {
   ConfigProviderItem,
   ExecutorItem,
   MemoryEntry,
+  ModelItem,
   OverviewResponse,
   RunTraceDetail,
   SandboxStatus,
@@ -626,7 +627,10 @@ export default function App() {
   const [profileSaving, setProfileSaving] = useState<boolean>(false);
   const [profileActionLoading, setProfileActionLoading] = useState<Record<string, boolean>>({});
   const [profileRenameDrafts, setProfileRenameDrafts] = useState<Record<string, string>>({});
+  const [profileModelDrafts, setProfileModelDrafts] = useState<Record<string, string>>({});
   const [expandedProfileSections, setExpandedProfileSections] = useState<Record<string, boolean>>({});
+  const [modelsData, setModelsData] = useState<ModelItem[]>([]);
+  const [modelsLoading, setModelsLoading] = useState<boolean>(false);
   const [transportAccountsByUserId, setTransportAccountsByUserId] = useState<Record<string, TransportAccountItem[]>>({});
   const [transportAccountsLoadingByUserId, setTransportAccountsLoadingByUserId] = useState<Record<string, boolean>>({});
   const [transportAccountsErrorByUserId, setTransportAccountsErrorByUserId] = useState<Record<string, string | null>>({});
@@ -904,11 +908,15 @@ export default function App() {
   const configModels = (Array.isArray(configDraft.models) ? configDraft.models : []) as ConfigModelItem[];
   const configMcpServers = (Array.isArray(configDraft.mcp_servers) ? configDraft.mcp_servers : []) as ConfigMcpServerItem[];
   const availableModelSelectors = useMemo(
-    () =>
-      configModels
+    () => {
+      if (modelsData.length) {
+        return modelsData.map((model) => model.name);
+      }
+      return configModels
         .filter((model) => model.provider?.trim() && model.name?.trim())
-        .map((model) => `${model.provider.trim()}/${model.name.trim()}`),
-    [configModels],
+        .map((model) => `${model.provider.trim()}/${model.name.trim()}`);
+    },
+    [configModels, modelsData],
   );
   const settingsQueryNormalized = settingsQuery.trim().toLowerCase();
   const filteredConfigCategories = useMemo(() => {
@@ -1487,6 +1495,22 @@ export default function App() {
       });
   };
 
+  const refreshModels = async (force = false): Promise<ModelItem[]> => {
+    if (!force && (modelsLoading || modelsData.length)) {
+      return modelsData;
+    }
+    setModelsLoading(true);
+    try {
+      const models = await api.getModels();
+      setModelsData(models);
+      return models;
+    } catch {
+      return [];
+    } finally {
+      setModelsLoading(false);
+    }
+  };
+
   const refreshProfilesForUser = async (userId: string, force = false): Promise<AgentProfile[]> => {
     const cleanedUserId = userId.trim();
     if (!cleanedUserId) {
@@ -1504,6 +1528,13 @@ export default function App() {
         const next = { ...current };
         for (const profile of profiles) {
           next[profile.id] = profile.name;
+        }
+        return next;
+      });
+      setProfileModelDrafts((current) => {
+        const next = { ...current };
+        for (const profile of profiles) {
+          next[profile.id] = profile.default_model ?? "__default__";
         }
         return next;
       });
@@ -1794,19 +1825,26 @@ export default function App() {
     }
   };
 
-  const handleProfileRename = async (userId: string, profile: AgentProfile) => {
+  const handleProfileSettingsSave = async (userId: string, profile: AgentProfile) => {
     const nextName = (profileRenameDrafts[profile.id] ?? profile.name).trim();
+    const nextDefaultModelDraft = profileModelDrafts[profile.id] ?? (profile.default_model ?? "__default__");
+    const nextDefaultModel = nextDefaultModelDraft === "__default__" ? null : nextDefaultModelDraft;
     if (!nextName) {
       setProfilesErrorByUserId((current) => ({ ...current, [userId]: "Profile name is required." }));
       return;
     }
-    if (nextName === profile.name) {
+    const currentDefaultModel = profile.default_model ?? null;
+    if (nextName === profile.name && nextDefaultModel === currentDefaultModel) {
       return;
     }
     setProfileActionLoading((current) => ({ ...current, [profile.id]: true }));
     setProfilesErrorByUserId((current) => ({ ...current, [userId]: null }));
     try {
-      await api.updateProfile(profile.id, { user_id: userId, name: nextName });
+      await api.updateProfile(profile.id, {
+        user_id: userId,
+        name: nextName,
+        default_model: nextDefaultModel,
+      });
       await refreshProfilesForUser(userId, true);
       refreshUsers();
     } catch (error) {
@@ -2278,6 +2316,7 @@ export default function App() {
       return;
     }
     refreshUsers();
+    void refreshModels();
   }, [active, apiReady]);
 
   useEffect(() => {
@@ -8066,18 +8105,45 @@ export default function App() {
                                                   disabled={loading}
                                                 />
                                               </div>
+                                              <div className="grid gap-2">
+                                                <label className="text-[11px] font-semibold uppercase tracking-[0.2em] text-mutedForeground">
+                                                  Default model
+                                                </label>
+                                                <Select
+                                                  value={profileModelDrafts[profile.id] ?? (profile.default_model ?? "__default__")}
+                                                  onValueChange={(value) =>
+                                                    setProfileModelDrafts((current) => ({
+                                                      ...current,
+                                                      [profile.id]: value,
+                                                    }))
+                                                  }
+                                                  disabled={loading || modelsLoading}
+                                                >
+                                                  <SelectTrigger>
+                                                    <SelectValue placeholder="Default (global)" />
+                                                  </SelectTrigger>
+                                                  <SelectContent>
+                                                    <SelectItem value="__default__">Default (global)</SelectItem>
+                                                    {availableModelSelectors.map((modelName) => (
+                                                      <SelectItem key={modelName} value={modelName}>
+                                                        {modelName}
+                                                      </SelectItem>
+                                                    ))}
+                                                  </SelectContent>
+                                                </Select>
+                                              </div>
                                               <div className="flex flex-wrap items-center gap-2">
                                                 <Button
                                                   size="sm"
                                                   variant="outline"
-                                                  onClick={() => void handleProfileRename(profileManagerUserIdValue, profile)}
+                                                  onClick={() => void handleProfileSettingsSave(profileManagerUserIdValue, profile)}
                                                   disabled={loading}
                                                 >
-                                                  {loading ? "Saving..." : "Save name"}
+                                                  {loading ? "Saving..." : "Save settings"}
                                                 </Button>
                                               </div>
                                               <div className="rounded-2xl border border-border bg-muted/20 px-4 py-3 text-xs text-mutedForeground">
-                                                Workspace path and identity files stay with the profile slug. Changing the display name here will not move the profile workspace.
+                                                Workspace path and identity files stay with the profile slug. Changing the profile default model affects new sessions and profile-owned runs; existing sessions keep their current model.
                                               </div>
                                             </div>
                                           </div>

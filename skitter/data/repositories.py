@@ -362,6 +362,18 @@ class Repository:
         updates = {"default_executor_id": executor_id or ""}
         return await self.update_agent_profile(profile_id, meta_updates=updates)
 
+    async def get_profile_default_model_name(self, profile_id: str) -> str | None:
+        profile = await self.get_agent_profile(profile_id)
+        if profile is None:
+            return None
+        meta = dict(profile.meta or {})
+        raw = str(meta.get("default_model") or "").strip()
+        return raw or None
+
+    async def set_profile_default_model_name(self, profile_id: str, model_name: str | None) -> AgentProfile | None:
+        updates = {"default_model": model_name or ""}
+        return await self.update_agent_profile(profile_id, meta_updates=updates)
+
     async def get_surface_profile_override(
         self,
         *,

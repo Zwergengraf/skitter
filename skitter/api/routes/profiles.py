@@ -6,10 +6,25 @@ from ..authz import resolve_target_user_id
 from ..deps import get_repo
 from ..schemas import AgentProfileCreateRequest, AgentProfileOut, AgentProfileUpdateRequest
 from ..security import get_auth_principal
+from ...core.llm import list_models, resolve_model_name
 from ...core.profile_service import profile_service, serialize_profile
 from ...data.repositories import Repository
 
 router = APIRouter(prefix="/v1/profiles", tags=["profiles"])
+
+
+def _normalize_profile_default_model(value: str | None) -> str | None:
+    raw = str(value or "").strip()
+    if not raw or raw.lower() == "default":
+        return None
+    available = list_models()
+    if not available:
+        raise HTTPException(status_code=400, detail="No models configured")
+    normalized = resolve_model_name(raw, purpose="main")
+    match = next((model for model in available if model.name.lower() == normalized.lower()), None)
+    if match is None:
+        raise HTTPException(status_code=400, detail=f"Unknown model '{value}'")
+    return match.name
 
 
 @router.get("", response_model=list[AgentProfileOut])
@@ -74,8 +89,10 @@ async def update_profile(
     if current is None:
         raise HTTPException(status_code=404, detail="Profile not found")
     owner_user_id = _profile_owner_user_id(request, current)
+    fields_set = getattr(payload, "model_fields_set", set()) or set()
+    default_model_provided = "default_model" in fields_set
 
-    if payload.archived is None and payload.make_default is None and payload.name is None:
+    if payload.archived is None and payload.make_default is None and payload.name is None and not default_model_provided:
         raise HTTPException(status_code=400, detail="No profile updates were provided.")
     if payload.archived and payload.make_default:
         raise HTTPException(status_code=400, detail="Archived profiles cannot be set as default.")
@@ -91,6 +108,9 @@ async def update_profile(
             updated = await profile_service.rename_profile(repo, owner_user_id, updated.slug, payload.name)
         if payload.make_default:
             updated = await profile_service.set_default_profile(repo, owner_user_id, updated.slug)
+        if default_model_provided:
+            normalized_default_model = _normalize_profile_default_model(payload.default_model)
+            updated = await repo.set_profile_default_model_name(updated.id, normalized_default_model) or updated
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc) or "Invalid request") from exc
     except RuntimeError as exc:

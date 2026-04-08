@@ -14,6 +14,7 @@ from ..data.repositories import Repository
 from .config import settings
 from .conversation_scope import private_scope_id
 from .llm import resolve_model_name
+from .profile_service import resolve_profile_default_model_name
 from .transport_accounts import transport_account_service
 from .workspace import user_workspace_root
 from .models import MessageEnvelope, SKITTER_NO_REPLY
@@ -148,7 +149,10 @@ class HeartbeatService:
                         agent_profile_id=profile.id,
                     )
                     if private_session is None:
-                        model_name = resolve_model_name(None, purpose="main")
+                        model_name = (
+                            await resolve_profile_default_model_name(repo, profile.id, purpose="main")
+                            or resolve_model_name(None, purpose="main")
+                        )
                         private_session = await repo.create_session(
                             user.id,
                             agent_profile_id=profile.id,

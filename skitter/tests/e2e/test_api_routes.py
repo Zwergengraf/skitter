@@ -389,6 +389,20 @@ class _CommandsRepo:
                 setattr(row, key, value)
         return row
 
+    async def get_profile_default_model_name(self, profile_id: str) -> str | None:
+        row = await self.get_agent_profile(profile_id)
+        if row is None:
+            return None
+        raw = str(row.meta.get("default_model") or "").strip()
+        return raw or None
+
+    async def set_profile_default_model_name(self, profile_id: str, model_name: str | None):
+        row = await self.get_agent_profile(profile_id)
+        if row is None:
+            return None
+        row.meta["default_model"] = model_name or ""
+        return row
+
     async def set_default_agent_profile(self, user_id: str, profile_id: str):
         if user_id == self.user.id:
             self.user.default_profile_id = profile_id
@@ -730,6 +744,7 @@ def test_profiles_route_and_profile_commands(admin_api_key: str, monkeypatch: py
                 "slug": "default",
                 "name": "Default",
                 "status": "active",
+                "default_model": None,
                 "is_default": True,
                 "created_at": profiles[0]["created_at"],
                 "updated_at": profiles[0]["updated_at"],
@@ -769,6 +784,14 @@ def test_profiles_route_and_profile_commands(admin_api_key: str, monkeypatch: py
 
 def test_profiles_routes_support_create_and_update(admin_api_key: str, monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
     repo = _CommandsRepo(approved=True)
+    monkeypatch.setattr(
+        "skitter.api.routes.profiles.list_models",
+        lambda: [
+            _ModelRow(name="provider/main", model="model-a"),
+            _ModelRow(name="provider/fast", model="model-b"),
+        ],
+    )
+    monkeypatch.setattr("skitter.api.routes.profiles.resolve_model_name", lambda value, purpose="main": value or "provider/main")
 
     def _tmp_profile_workspace(user_id: str, profile_slug: str | None = None):
         path = tmp_path / user_id / (profile_slug or "default")
@@ -796,7 +819,16 @@ def test_profiles_routes_support_create_and_update(admin_api_key: str, monkeypat
         assert updated.status_code == 200
         updated_payload = updated.json()
         assert updated_payload["name"] == "Operations Bot"
+        assert updated_payload["default_model"] is None
         assert updated_payload["is_default"] is True
+
+        set_model = client.patch(
+            f"/v1/profiles/{created_payload['id']}",
+            headers={"x-api-key": admin_api_key},
+            json={"default_model": "provider/fast"},
+        )
+        assert set_model.status_code == 200
+        assert set_model.json()["default_model"] == "provider/fast"
 
         restored_default = client.patch(
             f"/v1/profiles/{repo.profile.id}",
@@ -844,6 +876,45 @@ def test_profiles_routes_support_create_and_update(admin_api_key: str, monkeypat
         )
         assert relisted.status_code == 200
         assert [item["slug"] for item in relisted.json()] == ["default"]
+
+
+def test_profile_command_supports_profile_default_model(admin_api_key: str, monkeypatch: pytest.MonkeyPatch) -> None:
+    repo = _CommandsRepo(approved=True)
+
+    monkeypatch.setattr(
+        command_service_module,
+        "list_models",
+        lambda: [
+            _ModelRow(name="provider/main", model="model-a"),
+            _ModelRow(name="provider/fast", model="model-b"),
+        ],
+    )
+    monkeypatch.setattr(command_service_module, "resolve_model_name", lambda value, purpose="main": value or "provider/main")
+
+    with _client_with_repo(repo) as client:
+        show_resp = client.post(
+            "/v1/commands/execute",
+            headers={"x-api-key": admin_api_key},
+            json={"command": "profile", "user_id": "user-1", "args": {"raw": "model"}},
+        )
+        assert show_resp.status_code == 200
+        assert "global default" in show_resp.json()["message"]
+
+        set_resp = client.post(
+            "/v1/commands/execute",
+            headers={"x-api-key": admin_api_key},
+            json={"command": "profile", "user_id": "user-1", "args": {"raw": "model provider/fast"}},
+        )
+        assert set_resp.status_code == 200
+        assert set_resp.json()["data"]["default_model"] == "provider/fast"
+
+        reset_resp = client.post(
+            "/v1/commands/execute",
+            headers={"x-api-key": admin_api_key},
+            json={"command": "profile", "user_id": "user-1", "args": {"raw": "model default"}},
+        )
+        assert reset_resp.status_code == 200
+        assert reset_resp.json()["data"]["default_model"] is None
 
 
 def test_users_route_includes_default_profile(admin_api_key: str) -> None:

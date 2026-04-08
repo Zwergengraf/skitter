@@ -176,6 +176,7 @@ class AgentProfileOut(BaseModel):
     slug: str
     name: str
     status: str
+    default_model: str | None = None
     is_default: bool = False
     created_at: datetime
     updated_at: datetime
@@ -194,6 +195,7 @@ class AgentProfileUpdateRequest(BaseModel):
     name: str | None = Field(default=None, min_length=1, max_length=120)
     archived: bool | None = None
     make_default: bool | None = None
+    default_model: str | None = None
 
 
 class AuthTokenOut(BaseModel):

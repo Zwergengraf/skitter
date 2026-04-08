@@ -28,6 +28,7 @@ class _FakeRepo:
         self.sessions: dict[str, _SessionRow] = {}
         self.create_calls = 0
         self.queued_summary_ids: list[str] = []
+        self.profile_default_models: dict[str, str | None] = {}
 
     async def get_session(self, session_id: str) -> _SessionRow | None:
         return self.sessions.get(session_id)
@@ -91,6 +92,9 @@ class _FakeRepo:
         self.queued_summary_ids.append(session_id)
         self.sessions[session_id] = row
         return row
+
+    async def get_profile_default_model_name(self, profile_id: str) -> str | None:
+        return self.profile_default_models.get(profile_id)
 
 
 class _SessionCtx:
@@ -233,3 +237,37 @@ async def test_start_new_session_queues_background_summary_without_blocking(
     assert repo.sessions["session-active"].status == "ended"
     assert repo.sessions["session-active"].summary_status == "pending"
     assert repo.queued_summary_ids == ["session-active"]
+
+
+@pytest.mark.asyncio
+async def test_new_sessions_use_profile_default_model_when_available(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo = _FakeRepo()
+
+    token = object()
+    monkeypatch.setattr(sessions_module, "SessionLocal", lambda: _SessionCtx(token))
+    monkeypatch.setattr(sessions_module, "Repository", lambda _session: repo)
+    monkeypatch.setattr(sessions_module, "ensure_profile_workspace", lambda _user_id, _profile_slug=None: None)
+    monkeypatch.setattr(sessions_module, "resolve_model_name", lambda value=None, purpose="main": value or f"{purpose}-model")
+    async def _profile_default_model(_repo, profile_id: str | None, *, purpose: str = "main") -> str | None:
+        _ = _repo, purpose
+        if profile_id == "profile-default":
+            return "provider/fast"
+        return None
+    monkeypatch.setattr(sessions_module, "resolve_profile_default_model_name", _profile_default_model)
+
+    manager = SessionManager(runtime=_RuntimeStub())
+
+    session_id = await manager.get_or_create_session_for_scope(
+        user_id="user-1",
+        agent_profile_id="profile-default",
+        agent_profile_slug="default",
+        scope_type="private",
+        scope_id="private:profile-default",
+        origin="discord",
+        cache_key="private:profile-default",
+    )
+
+    assert session_id == "created-1"
+    assert repo.sessions[session_id].model == "provider/fast"

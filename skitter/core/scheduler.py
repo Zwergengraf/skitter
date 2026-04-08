@@ -14,6 +14,7 @@ from ..data.repositories import Repository
 from ..data.models import SCHEDULED_JOB_MODEL_MAIN
 from .config import settings
 from .llm import resolve_model_name
+from .profile_service import resolve_profile_default_model_name
 from .models import MessageEnvelope
 
 
@@ -281,7 +282,14 @@ class SchedulerService:
             async with SessionLocal() as session:
                 repo = Repository(session)
                 model_name = (
-                    resolve_model_name(None, purpose="main")
+                    (
+                        await resolve_profile_default_model_name(
+                            repo,
+                            getattr(job, "agent_profile_id", None),
+                            purpose="main",
+                        )
+                        or resolve_model_name(None, purpose="main")
+                    )
                     if not getattr(job, "model", None) or job.model == SCHEDULED_JOB_MODEL_MAIN
                     else resolve_model_name(job.model, purpose="main")
                 )

@@ -8,6 +8,7 @@ import type {
   ExecutorItem,
   ExecutorTokenCreateOut,
   MemoryEntry,
+  ModelItem,
   OverviewResponse,
   RunTraceDetail,
   RunTraceListItem,
@@ -231,9 +232,11 @@ export const api = {
       name: string;
       archived: boolean;
       make_default: boolean;
+      default_model: string | null;
     }>
   ): Promise<AgentProfile> =>
     request(`/v1/profiles/${id}`, { method: "PATCH", body: JSON.stringify(payload) }),
+  getModels: (): Promise<ModelItem[]> => request("/v1/models"),
   deleteProfile: (id: string): Promise<{ id: string; deleted: boolean }> =>
     request(`/v1/profiles/${id}`, { method: "DELETE" }),
   updateUser: (id: string, payload: { approved: boolean }): Promise<{ id: string; approved: boolean }> =>

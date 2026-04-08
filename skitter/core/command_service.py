@@ -484,9 +484,12 @@ class CommandService:
         if action == "show":
             rows = await profile_service.list_profiles(repo, user_id, include_archived=True)
             profile_rows = [serialize_profile(row, default_profile_id=default_profile.id) for row in rows]
+            current_profile_default_model = await repo.get_profile_default_model_name(current_profile.id)
             lines = [
                 f"Current profile: `{current_profile.slug}` ({current_profile.name})",
                 f"Default profile: `{default_profile.slug}` ({default_profile.name})",
+                "Current profile default model: "
+                + (f"`{current_profile_default_model}`" if current_profile_default_model else "global default"),
                 "Profiles:",
             ]
             for item in profile_rows:
@@ -499,6 +502,8 @@ class CommandService:
                     suffix_parts.append(str(item["status"]))
                 if origin == "discord" and is_shared_default_discord and item["id"] in discord_accounts_by_profile:
                     suffix_parts.append("dedicated bot only")
+                if item.get("default_model"):
+                    suffix_parts.append(f"model: {item['default_model']}")
                 suffix = f" [{' / '.join(suffix_parts)}]" if suffix_parts else ""
                 lines.append(f"- `{item['slug']}`: {item['name']}{suffix}")
             return CommandExecutionResult(
@@ -507,6 +512,45 @@ class CommandService:
                     "profiles": profile_rows,
                     "current_profile": serialize_profile(current_profile, default_profile_id=default_profile.id),
                     "default_profile": serialize_profile(default_profile, default_profile_id=default_profile.id),
+                },
+            )
+
+        if action == "model_show":
+            current_profile_default_model = await repo.get_profile_default_model_name(current_profile.id)
+            return CommandExecutionResult(
+                message=(
+                    f"Profile `{current_profile.slug}` default model: "
+                    + (f"`{current_profile_default_model}`" if current_profile_default_model else "global default")
+                ),
+                data={
+                    "profile": serialize_profile(current_profile, default_profile_id=default_profile.id),
+                    "default_model": current_profile_default_model,
+                },
+            )
+
+        if action == "model_set":
+            requested = str(parsed.get("model_name") or "").strip()
+            normalized: str | None = None
+            if requested:
+                models = list_models()
+                if not models:
+                    raise RuntimeError("No models are configured.")
+                requested_name = resolve_model_name(requested, purpose="main")
+                match = next((m for m in models if m.name.lower() == requested_name.lower()), None)
+                if match is None:
+                    raise ValueError(f"Unknown model '{requested}'.")
+                normalized = match.name
+            updated = await repo.set_profile_default_model_name(current_profile.id, normalized)
+            final_profile = updated or current_profile
+            return CommandExecutionResult(
+                message=(
+                    f"Profile `{final_profile.slug}` now uses the global default model."
+                    if normalized is None
+                    else f"Profile `{final_profile.slug}` default model set to `{normalized}`."
+                ),
+                data={
+                    "profile": serialize_profile(final_profile, default_profile_id=default_profile.id),
+                    "default_model": normalized,
                 },
             )
 
