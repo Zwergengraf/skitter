@@ -243,6 +243,7 @@ class Settings(BaseSettings):
     mcp_servers: list[MCPServerConfig] = Field(default_factory=list)
     main_model: list[str] = Field(default_factory=list)
     heartbeat_model: list[str] = Field(default_factory=list)
+    generation_max_output_tokens: int = Field(default=32768)
     reasoning_enabled: bool = Field(default=True)
     openai_use_responses_api: bool = Field(default=True)
     openai_output_version: str = Field(default="responses/v1")

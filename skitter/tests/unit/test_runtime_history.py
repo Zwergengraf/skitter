@@ -542,6 +542,13 @@ class _PromptGraph:
         )
 
 
+class _MaxTokensGraph:
+    async def ainvoke(self, payload, **_kwargs):
+        messages = list(payload["messages"])
+        messages.append(AIMessage(content="", response_metadata={"stop_reason": "max_tokens"}))
+        return {"messages": messages}
+
+
 class _NoReplyGraph:
     async def ainvoke(self, *_args, **_kwargs):
         return {"messages": [AIMessage(content=SKITTER_NO_REPLY)]}
@@ -615,6 +622,64 @@ async def test_handle_message_returns_pending_prompt_when_ask_user_is_triggered(
         "- macbook\n"
         "Custom free-text replies were allowed."
     )
+
+
+@pytest.mark.asyncio
+async def test_handle_message_returns_fallback_when_model_stops_at_max_tokens(monkeypatch) -> None:
+    runtime = AgentRuntime(event_bus=EventBus(), graph=_MaxTokensGraph())
+
+    async def _fake_ensure_history(session_id: str) -> None:
+        runtime._history.setdefault(session_id, [SystemMessage(content="system")])
+
+    async def _noop_async(*_args, **_kwargs) -> None:
+        return None
+
+    async def _fake_get_session_model(_session_id: str, _envelope) -> str:
+        return "provider/main"
+
+    async def _fake_limit_fallback(*_args, **_kwargs) -> str:
+        return "LIMIT_REACHED (max_tokens): The model hit its output token limit before finishing."
+
+    monkeypatch.setattr("skitter.core.runtime.list_models", lambda: [object()])
+    monkeypatch.setattr("skitter.core.runtime.resolve_model_name", lambda _value=None, purpose="main": "provider/main")
+    monkeypatch.setattr("skitter.core.runtime.resolve_model_candidates", lambda _value, purpose="main": ["provider/main"])
+    monkeypatch.setattr(
+        "skitter.core.runtime.resolve_model",
+        lambda _value, purpose="main": type(
+            "Resolved",
+            (),
+            {
+                "input_cost_per_1m": 0.0,
+                "output_cost_per_1m": 0.0,
+                "provider_api_type": "anthropic",
+            },
+        )(),
+    )
+    monkeypatch.setattr("skitter.core.runtime.collect_usage", lambda _messages, _message_id: None)
+    monkeypatch.setattr(runtime, "_ensure_history", _fake_ensure_history)
+    monkeypatch.setattr(runtime, "_get_session_model", _fake_get_session_model)
+    monkeypatch.setattr(runtime, "_ensure_system_prompt", lambda history, _user_id: None)
+    monkeypatch.setattr(runtime, "_compact_history_for_context", _noop_async)
+    monkeypatch.setattr(runtime, "_trace_create", _noop_async)
+    monkeypatch.setattr(runtime, "_trace_update", _noop_async)
+    monkeypatch.setattr(runtime, "_trace_event", _noop_async)
+    monkeypatch.setattr(runtime, "_build_limit_fallback_response", _fake_limit_fallback)
+
+    envelope = MessageEnvelope(
+        message_id="msg-1",
+        channel_id="chan-1",
+        user_id="user-1",
+        timestamp=datetime.now(UTC),
+        text="Please continue.",
+        origin="tui",
+        metadata={"internal_user_id": "user-1"},
+    )
+
+    response = await runtime.handle_message("session-1", envelope)
+
+    assert response.text == "LIMIT_REACHED (max_tokens): The model hit its output token limit before finishing."
+    assert isinstance(runtime._history["session-1"][-1], AIMessage)
+    assert runtime._history["session-1"][-1].content == response.text
 
 
 @pytest.mark.asyncio

@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import sys
+import types
+
 import pytest
 
 import skitter.core.llm as llm
@@ -72,6 +75,56 @@ def test_build_llm_dispatches_by_provider_type(monkeypatch: pytest.MonkeyPatch) 
 
     assert openai_result == {"provider": "openai", "name": "openai-p/chat"}
     assert anthropic_result == {"provider": "anthropic", "name": "anthropic-p/reasoning"}
+
+
+def test_build_openai_llm_sets_default_max_output_tokens(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured: dict[str, object] = {}
+
+    class _FakeChatOpenAI:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+    monkeypatch.setattr(llm, "ChatOpenAI", _FakeChatOpenAI)
+    monkeypatch.setattr(settings, "generation_max_output_tokens", 32768)
+
+    resolved = llm.ResolvedModel(
+        name="provider/main",
+        provider="provider",
+        provider_api_type="openai",
+        model="gpt-test",
+        api_base="http://localhost",
+        api_key="secret",
+    )
+
+    llm._build_openai_llm(resolved)
+
+    assert captured["model"] == "gpt-test"
+    assert captured["max_tokens"] == 32768
+
+
+def test_build_anthropic_llm_sets_default_max_output_tokens(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured: dict[str, object] = {}
+
+    class _FakeChatAnthropic:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+    monkeypatch.setitem(sys.modules, "langchain_anthropic", types.SimpleNamespace(ChatAnthropic=_FakeChatAnthropic))
+    monkeypatch.setattr(settings, "generation_max_output_tokens", 32768)
+
+    resolved = llm.ResolvedModel(
+        name="provider/main",
+        provider="provider",
+        provider_api_type="anthropic",
+        model="claude-test",
+        api_base="http://localhost",
+        api_key="secret",
+    )
+
+    llm._build_anthropic_llm(resolved)
+
+    assert captured["model"] == "claude-test"
+    assert captured["max_tokens"] == 32768
 
 
 def test_reasoning_overrides_are_deep_merged() -> None:

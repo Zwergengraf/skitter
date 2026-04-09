@@ -290,6 +290,17 @@ FIELDS: list[ConfigFieldSpec] = [
         description="Ordered model selectors for heartbeat runs (format: provider/model). Falls back to main chain when empty.",
     ),
     ConfigFieldSpec(
+        key="generation_max_output_tokens",
+        path=("generation", "max_output_tokens"),
+        category="models",
+        label="Max output tokens",
+        field_type="number",
+        description="Default maximum output/completion tokens to request from chat models.",
+        minimum=256,
+        maximum=262144,
+        step=256,
+    ),
+    ConfigFieldSpec(
         key="reasoning_enabled",
         path=("reasoning", "enabled"),
         category="reasoning",

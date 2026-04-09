@@ -21,12 +21,40 @@ That means a job can run as one profile and deliver through the correct Discord 
 
 ## Heartbeats
 
+Heartbeats are profile-scoped.
+
+There is one shared heartbeat scheduler in the API server, but on each tick it:
+
+- lists approved users
+- lists each user's profiles
+- runs a separate heartbeat flow for each non-archived profile
+
+That means:
+
+- one user with three profiles can have three independent heartbeat runs
+- heartbeat history is not shared across profiles
+- heartbeat delivery targets are resolved per profile
+
 Heartbeats poll profiles on a cadence and can proactively act if needed.
 
 Heartbeat behavior uses:
 
 - `HEARTBEAT.md` in the profile workspace
 - profile metadata such as last private origin, destination, and transport account
+- a dedicated heartbeat session for that profile
+- that profile's private session for storing the resulting assistant message
+
+The dedicated heartbeat session uses a profile-specific system scope:
+
+```text
+system:heartbeat:<profile_id>
+```
+
+So heartbeats are isolated from:
+
+- other profiles owned by the same user
+- the profile's normal chat history
+- other public or private sessions
 
 ## `SKITTER_NO_REPLY`
 

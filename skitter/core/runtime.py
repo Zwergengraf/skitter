@@ -258,6 +258,25 @@ class AgentRuntime:
             return None, None
         return match.group(1).strip(), match.group(2).strip()
 
+    @staticmethod
+    def _message_stop_reason(msg: BaseMessage | None) -> str | None:
+        if msg is None:
+            return None
+        for attr in ("response_metadata", "additional_kwargs"):
+            payload = getattr(msg, attr, None) or {}
+            if not isinstance(payload, dict):
+                continue
+            for key in ("stop_reason", "finish_reason", "completion_reason"):
+                value = payload.get(key)
+                if isinstance(value, str) and value.strip():
+                    return value.strip().lower()
+        return None
+
+    @staticmethod
+    def _is_max_tokens_stop_reason(reason: str | None) -> bool:
+        normalized = str(reason or "").strip().lower()
+        return normalized in {"max_tokens", "length", "max_output_tokens", "model_length"}
+
     async def _publish_stream_event(self, session_id: str, event_type: str, data: dict) -> None:
         await self.event_bus.publish(
             StreamEvent(
@@ -722,10 +741,33 @@ class AgentRuntime:
                     payload={"chunks": run_reasoning},
                 )
 
-            for msg in reversed(messages):
-                if isinstance(msg, AIMessage):
-                    response = msg.content
-                    break
+            latest_new_ai_message = next((msg for msg in reversed(new_messages) if isinstance(msg, AIMessage)), None)
+            latest_ai_message = latest_new_ai_message
+            if latest_ai_message is None:
+                latest_ai_message = next((msg for msg in reversed(messages) if isinstance(msg, AIMessage)), None)
+            if latest_ai_message is not None:
+                response = latest_ai_message.content
+
+            stop_reason = self._message_stop_reason(latest_new_ai_message)
+            if self._is_max_tokens_stop_reason(stop_reason):
+                run_limit_reason = "max_tokens"
+                run_limit_detail = "The model hit its output token limit before finishing."
+                visible_response = self._message_content_to_text(response).strip()
+                if not visible_response:
+                    response = await self._build_limit_fallback_response(
+                        model_name=model_name,
+                        history=messages,
+                        reason=run_limit_reason,
+                        detail=run_limit_detail,
+                    )
+                    messages = list(messages) + [AIMessage(content=response)]
+                    self._history[session_id] = list(messages)
+                await self._trace_event(
+                    run_id=run_id,
+                    session_id=session_id,
+                    event_type="limit_reached",
+                    payload={"reason": run_limit_reason, "detail": run_limit_detail, "provider_reason": stop_reason},
+                )
 
             usage = collect_usage(messages, envelope.message_id)
             if usage is not None:
