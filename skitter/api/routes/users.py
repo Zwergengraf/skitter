@@ -9,6 +9,7 @@ from fastapi import HTTPException
 from ..schemas import UserApprovalRequest, UserListItem
 from ...data.repositories import Repository
 from ...core.config import settings
+from ...core.transport_accounts import DEFAULT_DISCORD_ACCOUNT_KEY
 
 router = APIRouter(prefix="/v1/users", tags=["users"])
 PENDING_REQUEST_TTL_MINUTES = 15
@@ -23,17 +24,22 @@ async def list_users(
     require_admin(request)
     await repo.delete_stale_pending_users(PENDING_REQUEST_TTL_MINUTES)
     users = await repo.list_users(limit=limit)
-    return [
-        UserListItem(
-            id=user.id,
-            transport_user_id=user.transport_user_id,
-            display_name=user.display_name or (user.meta or {}).get("display_name"),
-            username=(user.meta or {}).get("username"),
-            avatar_url=(user.meta or {}).get("avatar_url"),
-            approved=user.approved,
+    items: list[UserListItem] = []
+    for user in users:
+        default_profile = await repo.get_default_agent_profile(user.id)
+        items.append(
+            UserListItem(
+                id=user.id,
+                transport_user_id=user.transport_user_id,
+                display_name=user.display_name or (user.meta or {}).get("display_name"),
+                username=(user.meta or {}).get("username"),
+                avatar_url=(user.meta or {}).get("avatar_url"),
+                approved=user.approved,
+                default_profile_id=getattr(default_profile, "id", None),
+                default_profile_slug=getattr(default_profile, "slug", None),
+            )
         )
-        for user in users
-    ]
+    return items
 
 
 @router.patch("/{user_id}")
@@ -55,8 +61,21 @@ async def update_user(
         notifier = getattr(request.app.state, "user_notifier", None)
         if notifier:
             message = settings.user_approved_message
+            meta = dict(user.meta or {})
+            last_by_origin = meta.get("last_transport_account_key_by_origin")
+            account_key = DEFAULT_DISCORD_ACCOUNT_KEY
+            if isinstance(last_by_origin, dict):
+                candidate = str(last_by_origin.get("discord") or "").strip()
+                if candidate:
+                    account_key = candidate
             try:
-                await notifier(user.transport_user_id, message, attachments=None)
+                await notifier(
+                    user.transport_user_id,
+                    message,
+                    attachments=None,
+                    origin="discord",
+                    transport_account_key=account_key,
+                )
             except Exception:
                 pass
     return {"id": user.id, "approved": user.approved}

@@ -1,31 +1,42 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import contextlib
-from datetime import datetime, UTC, timedelta
+import logging
+from datetime import UTC, datetime
 
 import uvicorn
 
 from .api.app import create_app
-from .api.security import hash_pair_code, make_pair_code
-from .core.runtime import AgentRuntime
+from .core.command_service import command_service
+from .core.config import settings
+from .core.conversation_scope import group_scope_id, resolve_conversation_scope
+from .core.discord_mentions import DiscordMentionService
 from .core.graph import build_graph
-from .core.llm import list_models, resolve_model_name
-from .core.scheduler import SchedulerService
 from .core.heartbeat import HeartbeatService
 from .core.jobs import JobService
+from .core.models import MessageEnvelope
+from .core.profile_service import profile_service
+from .core.runtime import AgentRuntime
+from .core.scheduler import SchedulerService
+from .core.secrets import SecretsManager
 from .core.session_finalizer import SessionFinalizerService
-from .core.conversation_scope import resolve_conversation_scope
-from .core.config import SECRETS_APPROVAL_BYPASS_MAGIC, settings
-from .core.models import MessageEnvelope, StreamEvent
+from .core.session_run_queue import SessionRunQueue, SessionRunWork
 from .core.sessions import SessionManager
+from .core.transport_accounts import (
+    DEFAULT_DISCORD_ACCOUNT_KEY,
+    SURFACE_MODE_ALL_MESSAGES,
+    discord_surface_kind,
+    is_shared_default_account_key,
+    transport_account_service,
+)
 from .data.db import SessionLocal
 from .data.repositories import Repository
 from .transports.discord import DiscordTransport
 from .transports.manager import TransportManager
-from .tools.executors import executor_router, node_executor_hub
 from .tools.sandbox_manager import sandbox_manager
+
+_logger = logging.getLogger(__name__)
 
 
 def _serialize_attachments(attachments: list) -> list[dict]:
@@ -46,22 +57,90 @@ def _serialize_attachments(attachments: list) -> list[dict]:
     return serialized
 
 
-def _format_memory_search_results(query: str, results: list[dict]) -> str:
-    if not results:
-        return f"No memory results found for query: `{query}`"
-    lines = [f"Memory search results for `{query}`:"]
-    for idx, item in enumerate(results, start=1):
-        score = float(item.get("score", 0.0))
-        source = str(item.get("source") or "(unknown)")
-        summary = str(item.get("summary") or "").strip().replace("\n", " ")
-        if len(summary) > 260:
-            summary = summary[:257] + "..."
-        lines.append(f"{idx}. similarity={score:.4f} | source={source}")
-        lines.append(f"   {summary}")
-    text = "\n".join(lines)
-    if len(text) > 1900:
-        text = text[:1897] + "..."
-    return text
+def _truncate_log_text(content: str | None, max_len: int = 160) -> str:
+    text = str(content or "").strip()
+    if len(text) <= max_len:
+        return text
+    if max_len <= 3:
+        return text[:max_len]
+    return f"{text[: max_len - 3]}..."
+
+
+def _log_discord_drop(reason: str, envelope: MessageEnvelope, **extra: object) -> None:
+    payload = {
+        "reason": reason,
+        "account": envelope.transport_account_key or DEFAULT_DISCORD_ACCOUNT_KEY,
+        "message_id": envelope.message_id,
+        "channel_id": envelope.channel_id,
+        "guild_id": envelope.metadata.get("guild_id"),
+        "user_id": envelope.user_id,
+        "sender_is_bot": bool(envelope.metadata.get("sender_is_bot")),
+        "is_private": bool(envelope.metadata.get("is_private")),
+        "command": envelope.command or "",
+        "text": _truncate_log_text(envelope.text),
+    }
+    payload.update(extra)
+    ordered = " ".join(f"{key}={value!r}" for key, value in payload.items())
+    _logger.info("Dropped Discord inbound after handler handoff: %s", ordered)
+
+
+async def _load_transport_account_token(
+    *,
+    repo: Repository,
+    row,
+    secrets_manager: SecretsManager | None,
+    secrets_error: str | None = None,
+) -> tuple[str, str | None]:
+    if secrets_manager is None:
+        return "", f"Transport secrets are unavailable: {secrets_error or 'unknown error'}"
+    if not str(getattr(row, "credential_secret_name", "") or "").strip():
+        return "", "Transport account is missing its credential secret."
+    secret = await repo.get_secret_exact(
+        row.user_id,
+        row.credential_secret_name,
+        agent_profile_id=row.agent_profile_id,
+    )
+    if secret is None:
+        return "", "Transport account credential secret was not found."
+    try:
+        token = secrets_manager.decrypt(secret.value_encrypted)
+        await repo.touch_secret(secret)
+        return token, None
+    except Exception as exc:
+        return "", f"Transport account credential decryption failed: {exc}"
+
+
+async def _resolve_trusted_discord_sender_internal_user_id(
+    *,
+    repo: Repository,
+    envelope: MessageEnvelope,
+    runtime_states: dict[str, dict[str, object]] | None = None,
+) -> str | None:
+    tracked_user_id = str(envelope.metadata.get("skitter_sender_internal_user_id") or "").strip()
+    if tracked_user_id:
+        return tracked_user_id
+    if not bool(envelope.metadata.get("sender_is_bot")):
+        return None
+    external_account_id = str(envelope.user_id or "").strip()
+    row = await repo.get_transport_account_by_external_account_id("discord", external_account_id)
+    if row is None and runtime_states:
+        for account_key, state in runtime_states.items():
+            if str(state.get("external_account_id") or "").strip() != external_account_id:
+                continue
+            envelope.metadata["trusted_transport_bot"] = True
+            envelope.metadata["skitter_transport_account_key"] = account_key
+            if is_shared_default_account_key(account_key):
+                return None
+            row = await repo.get_transport_account_by_key(account_key)
+            if row is not None:
+                break
+    if row is None or not bool(getattr(row, "enabled", True)):
+        return None
+    envelope.metadata["trusted_transport_bot"] = True
+    envelope.metadata["skitter_sender_internal_user_id"] = row.user_id
+    envelope.metadata["skitter_sender_profile_id"] = row.agent_profile_id
+    envelope.metadata["skitter_transport_account_key"] = row.account_key
+    return str(row.user_id or "").strip() or None
 
 
 async def main() -> None:
@@ -79,6 +158,7 @@ async def main() -> None:
             scheduler_service=scheduler,
             job_service=None,
             event_bus=app.state.event_bus,
+            discord_mention_service=app.state.discord_mention_service,
             model_name=worker_model,
             purpose="main",
             include_subagent_tools=False,
@@ -88,39 +168,12 @@ async def main() -> None:
     app.state.job_service = job_service
     app.state.session_finalizer_service = session_finalizer_service
     runtime.set_job_service(job_service)
-    session_manager = SessionManager(runtime, settings.workspace_root)
+    session_manager = SessionManager(runtime)
+    session_run_queue = SessionRunQueue()
+    app.state.session_run_queue = session_run_queue
+    app.state.transport_runtime_states = {}
     if sandbox_manager is not None:
         await sandbox_manager.start()
-
-    discord_enabled = settings.discord_enabled
-
-    transports = []
-    transport_by_origin = {}
-
-    if discord_enabled:
-        discord_transport = DiscordTransport()
-        transports.append(discord_transport)
-        transport_by_origin["discord"] = discord_transport
-        approval_service.set_notifier(discord_transport.send_approval_request)
-        discord_transport.set_approval_service(approval_service)
-        user_prompt_service.set_notifier(discord_transport.send_user_prompt_request)
-        app.state.user_notifier = discord_transport.send_user_message
-
-    async def _deliver(origin: str, destination_id: str, text: str, attachments: list) -> None:
-        transport = transport_by_origin.get(origin)
-        if transport is None:
-            return
-        await transport.send_message(destination_id, text, attachments)
-
-    scheduler.set_deliver(_deliver)
-    heartbeat_service.set_deliver(_deliver)
-    job_service.set_deliver(_deliver)
-    await scheduler.start()
-    await heartbeat_service.start()
-    await session_finalizer_service.start()
-    await job_service.start()
-
-    manager = TransportManager(transports)
 
     def _to_utc_naive(value: datetime) -> datetime:
         if value.tzinfo is None:
@@ -133,15 +186,189 @@ async def main() -> None:
             tool_runs = await repo.list_tool_runs_by_session(session_id)
         started_at_naive = _to_utc_naive(started_at)
         elapsed_seconds = max(0, int((datetime.now(UTC) - started_at).total_seconds()))
-        recent_runs = [
-            run
-            for run in tool_runs
-            if _to_utc_naive(run.created_at) >= started_at_naive
-        ]
+        recent_runs = [run for run in tool_runs if _to_utc_naive(run.created_at) >= started_at_naive]
         if recent_runs:
             latest = recent_runs[-1]
             return f"Working... {elapsed_seconds}s\nLast tool: `{latest.tool_name}` ({latest.status})"
         return f"Working... {elapsed_seconds}s\nLast step: thinking"
+
+    async def _persist_transport_runtime_state(account_key: str, payload: dict[str, object]) -> None:
+        states = dict(getattr(app.state, "transport_runtime_states", {}) or {})
+        current = dict(states.get(account_key, {}) or {})
+        current.update(payload)
+        states[account_key] = current
+        app.state.transport_runtime_states = states
+        async with SessionLocal() as session:
+            repo = Repository(session)
+            row = await repo.get_transport_account_by_key(account_key)
+            if row is None:
+                return
+            fields = {
+                key: current.get(key)
+                for key in ("status", "last_error", "external_account_id", "external_label", "last_seen_at")
+                if key in current
+            }
+            if fields:
+                await repo.update_transport_account(account_key, **fields)
+
+    manager = TransportManager(runtime_state_notifier=_persist_transport_runtime_state)
+    app.state.transport_manager = manager
+    app.state.discord_mention_service = DiscordMentionService(manager)
+    runtime.set_discord_mention_service(app.state.discord_mention_service)
+
+    async def _submit_prompt_reply(
+        prompt_id: str,
+        answer: str,
+        transport_user_id: str,
+        channel_id: str,
+        transport_account_key: str,
+        is_private: bool,
+    ) -> None:
+        async with SessionLocal() as session:
+            repo = Repository(session)
+            prompt = await repo.get_user_prompt(prompt_id)
+            if prompt is None or prompt.status != "pending":
+                return
+            prompt_session = await repo.get_session(prompt.session_id)
+            user = await repo.get_user_by_transport_id(transport_user_id)
+            if prompt_session is None or user is None or not user.approved:
+                return
+            if user.id != prompt_session.user_id:
+                expected_group_scope = group_scope_id("discord", transport_account_key, channel_id)
+                if prompt_session.scope_type != "group" or (prompt_session.scope_id or "") != expected_group_scope:
+                    return
+            if prompt_session.scope_type == "group" and (prompt_session.scope_id or "") != group_scope_id(
+                "discord",
+                transport_account_key,
+                channel_id,
+            ):
+                return
+        envelope = MessageEnvelope(
+            message_id=f"prompt:{prompt_id}:{int(datetime.now(UTC).timestamp() * 1000)}",
+            channel_id=channel_id,
+            user_id=transport_user_id,
+            timestamp=datetime.now(UTC),
+            text=answer,
+            origin="discord",
+            transport_account_key=transport_account_key,
+            metadata={"is_private": is_private},
+        )
+        await handler(envelope)
+
+    def _configure_discord_transport(transport: DiscordTransport) -> None:
+        transport.set_approval_service(approval_service)
+        transport.set_user_prompt_responder(_submit_prompt_reply)
+
+    async def _build_transport_instances() -> dict[str, DiscordTransport]:
+        transports: dict[str, DiscordTransport] = {}
+        if settings.discord_enabled and str(settings.discord_token or "").strip():
+            default_transport = DiscordTransport(
+                account_key=DEFAULT_DISCORD_ACCOUNT_KEY,
+                token=str(settings.discord_token or "").strip(),
+                display_name="Shared Default Discord Bot",
+            )
+            _configure_discord_transport(default_transport)
+            transports[DEFAULT_DISCORD_ACCOUNT_KEY] = default_transport
+
+        secrets_manager: SecretsManager | None = None
+        secrets_error: str | None = None
+        try:
+            secrets_manager = SecretsManager()
+            secrets_manager.ensure_ready()
+        except Exception as exc:
+            secrets_error = str(exc)
+
+        async with SessionLocal() as session:
+            repo = Repository(session)
+            rows = await repo.list_transport_accounts(transport="discord")
+            for row in rows:
+                if not row.enabled:
+                    continue
+                token, error = await _load_transport_account_token(
+                    repo=repo,
+                    row=row,
+                    secrets_manager=secrets_manager,
+                    secrets_error=secrets_error,
+                )
+                if error:
+                    await repo.update_transport_account(row.account_key, status="error", last_error=error)
+                    continue
+                transport = DiscordTransport(
+                    account_key=row.account_key,
+                    token=token,
+                    pinned_profile_id=row.agent_profile_id,
+                    display_name=row.display_name,
+                )
+                _configure_discord_transport(transport)
+                transports[row.account_key] = transport
+                await repo.update_transport_account(row.account_key, status="configured", last_error=None)
+        return transports
+
+    async def _reconcile_transports() -> None:
+        await manager.reconcile(await _build_transport_instances())
+
+    app.state.reconcile_transports = _reconcile_transports
+
+    async def _resolve_delivery_transport(origin: str, transport_account_key: str | None) -> tuple[str, DiscordTransport]:
+        if origin != "discord":
+            raise RuntimeError(f"Unsupported delivery origin `{origin}`.")
+        account_key = str(transport_account_key or "").strip() or DEFAULT_DISCORD_ACCOUNT_KEY
+        transport = manager.get(account_key)
+        if transport is None:
+            raise RuntimeError(f"Unknown transport account `{account_key}`.")
+        if not isinstance(transport, DiscordTransport):
+            raise RuntimeError(f"Transport account `{account_key}` is not a Discord transport.")
+        return account_key, transport
+
+    async def _deliver(
+        origin: str,
+        transport_account_key: str | None,
+        destination_id: str,
+        text: str,
+        attachments: list,
+    ) -> None:
+        account_key, _ = await _resolve_delivery_transport(origin, transport_account_key)
+        await manager.send_message(account_key, destination_id, text, attachments)
+
+    async def _notify_user(
+        transport_user_id: str,
+        message: str,
+        attachments: list | None = None,
+        *,
+        origin: str = "discord",
+        transport_account_key: str | None = None,
+    ) -> None:
+        account_key, _ = await _resolve_delivery_transport(origin, transport_account_key)
+        await manager.send_user_message(account_key, transport_user_id, message, attachments=attachments)
+
+    approval_service.set_notifier(
+        lambda tool_run_id, channel_id, tool_name, account_key, payload: manager.send_approval_request(
+            tool_run_id,
+            channel_id,
+            tool_name,
+            account_key or DEFAULT_DISCORD_ACCOUNT_KEY,
+            payload,
+        )
+    )
+    user_prompt_service.set_notifier(
+        lambda prompt_id, channel_id, account_key, question, choices, allow_free_text: manager.send_user_prompt_request(
+            prompt_id,
+            channel_id,
+            account_key or DEFAULT_DISCORD_ACCOUNT_KEY,
+            question,
+            choices,
+            allow_free_text,
+        )
+    )
+    app.state.user_notifier = _notify_user
+
+    scheduler.set_deliver(_deliver)
+    heartbeat_service.set_deliver(_deliver)
+    job_service.set_deliver(_deliver)
+    await scheduler.start()
+    await heartbeat_service.start()
+    await session_finalizer_service.start()
+    await job_service.start()
 
     async def _run_progress_loop(
         transport: DiscordTransport,
@@ -167,7 +394,7 @@ async def main() -> None:
         finally:
             await transport.stop_progress_message(message)
 
-    def _should_show_progress(envelope, transport) -> bool:
+    def _should_show_progress(envelope: MessageEnvelope, transport: DiscordTransport) -> bool:
         return (
             envelope.origin == "discord"
             and isinstance(transport, DiscordTransport)
@@ -175,13 +402,15 @@ async def main() -> None:
             and settings.discord_progress_updates
         )
 
-    async def _start_progress_tracking(envelope, transport, session_id: str) -> tuple[asyncio.Event | None, asyncio.Task | None]:
+    async def _start_progress_tracking(
+        envelope: MessageEnvelope,
+        transport: DiscordTransport,
+        session_id: str,
+    ) -> tuple[asyncio.Event | None, asyncio.Task | None]:
         if not _should_show_progress(envelope, transport):
             return None, None
         stop_event = asyncio.Event()
-        task = asyncio.create_task(
-            _run_progress_loop(transport, envelope.channel_id, session_id, stop_event)
-        )
+        task = asyncio.create_task(_run_progress_loop(transport, envelope.channel_id, session_id, stop_event))
         return stop_event, task
 
     async def _stop_progress_tracking(stop_event: asyncio.Event | None, task: asyncio.Task | None) -> None:
@@ -191,10 +420,33 @@ async def main() -> None:
             with contextlib.suppress(Exception):
                 await task
 
-    def _build_message_metadata(envelope, internal_user_id: str) -> dict:
+    def _observe_queued_turn(future: asyncio.Future[dict[str, object]]) -> None:
+        def _done(done: asyncio.Future[dict[str, object]]) -> None:
+            with contextlib.suppress(asyncio.CancelledError):
+                exc = done.exception()
+                if exc is not None:
+                    _logger.exception("Queued session run failed", exc_info=exc)
+
+        future.add_done_callback(_done)
+
+    def _build_message_metadata(
+        envelope: MessageEnvelope,
+        owner_internal_user_id: str,
+        sender_internal_user_id: str | None = None,
+    ) -> dict:
         metadata = dict(envelope.metadata)
-        metadata.update({"internal_user_id": internal_user_id})
-        metadata.update({"message_id": envelope.message_id, "origin": envelope.origin})
+        sender_value = sender_internal_user_id or owner_internal_user_id
+        if sender_internal_user_id is None and bool(envelope.metadata.get("trusted_transport_bot")):
+            sender_value = None
+        metadata.update(
+            {
+                "internal_user_id": owner_internal_user_id,
+                "sender_internal_user_id": sender_value,
+                "message_id": envelope.message_id,
+                "origin": envelope.origin,
+                "transport_account_key": envelope.transport_account_key,
+            }
+        )
         if envelope.attachments:
             attachments_meta = _serialize_attachments(envelope.attachments)
             if attachments_meta:
@@ -202,14 +454,20 @@ async def main() -> None:
                 envelope.metadata["attachments"] = attachments_meta
         return metadata
 
-    async def _persist_user_message(session_id: str, envelope, internal_user_id: str):
-        metadata = _build_message_metadata(envelope, internal_user_id)
+    async def _persist_user_message(
+        session_id: str,
+        envelope: MessageEnvelope,
+        owner_internal_user_id: str,
+        sender_internal_user_id: str | None = None,
+    ):
+        answered_by = sender_internal_user_id or owner_internal_user_id
+        metadata = _build_message_metadata(envelope, owner_internal_user_id, sender_internal_user_id)
         async with SessionLocal() as session:
             repo = Repository(session)
             answered_prompt = await repo.answer_pending_user_prompt_for_session(
                 session_id,
                 answer=envelope.text,
-                answered_by=internal_user_id,
+                answered_by=answered_by,
             )
             if answered_prompt is not None:
                 metadata["answered_prompt_id"] = answered_prompt.id
@@ -221,10 +479,15 @@ async def main() -> None:
                 title="User prompt answered",
                 message=envelope.text or "The user answered a pending prompt.",
                 session_id=session_id,
-                user_id=internal_user_id,
-                data={"prompt_id": answered_prompt.id},
+                user_id=owner_internal_user_id,
+                data={"prompt_id": answered_prompt.id, "answered_by": answered_by},
             )
         return answered_prompt
+
+    async def _session_has_pending_user_prompt(session_id: str) -> bool:
+        async with SessionLocal() as session:
+            repo = Repository(session)
+            return await repo.get_pending_user_prompt_for_session(session_id) is not None
 
     async def _persist_assistant_message(
         session_id: str,
@@ -248,396 +511,282 @@ async def main() -> None:
                 metadata["attachments"] = serialized
         async with SessionLocal() as session:
             repo = Repository(session)
-            await repo.add_message(
-                session_id,
-                role="assistant",
-                content=response_text,
-                metadata=metadata,
-            )
+            await repo.add_message(session_id, role="assistant", content=response_text, metadata=metadata)
         session_memory_service = getattr(app.state, "session_memory_service", None)
         if session_memory_service is not None:
             await session_memory_service.maybe_schedule_update(session_id)
 
-    async def _submit_prompt_reply(
-        prompt_id: str,
-        answer: str,
-        transport_user_id: str,
-        channel_id: str,
-    ) -> None:
-        async with SessionLocal() as session:
-            repo = Repository(session)
-            prompt = await repo.get_user_prompt(prompt_id)
-            if prompt is None or prompt.status != "pending":
-                return
-            prompt_session = await repo.get_session(prompt.session_id)
-            user = await repo.get_user_by_transport_id(transport_user_id)
-            if prompt_session is None or user is None or user.id != prompt_session.user_id or not user.approved:
-                return
-        envelope = MessageEnvelope(
-            message_id=f"prompt:{prompt_id}:{int(datetime.now(UTC).timestamp() * 1000)}",
-            channel_id=channel_id,
-            user_id=transport_user_id,
-            timestamp=datetime.now(UTC),
-            text=answer,
-            origin="discord",
-            metadata={},
-        )
-        await handler(envelope)
-
-    async def _resolve_internal_user_id(envelope, transport) -> str | None:
+    async def _resolve_internal_user_id(envelope: MessageEnvelope, transport: DiscordTransport) -> str | None:
         if envelope.origin != "discord":
             return envelope.user_id
         async with SessionLocal() as session:
             repo = Repository(session)
+            trusted_user_id = await _resolve_trusted_discord_sender_internal_user_id(
+                repo=repo,
+                envelope=envelope,
+                runtime_states=manager.snapshot_states(),
+            )
+            if trusted_user_id:
+                return trusted_user_id
+            if bool(envelope.metadata.get("trusted_transport_bot")):
+                return None
             user = await repo.get_or_create_user(envelope.user_id)
             if not user.approved:
-                if not (user.meta or {}).get("approval_notified"):
-                    await transport.send_message(
-                        envelope.channel_id,
-                        "Your account is not yet approved. An admin has to approve it first.",
-                    )
-                    await repo.mark_user_notified(user.id)
+                if bool(envelope.metadata.get("is_private")):
+                    notified_accounts = set((user.meta or {}).get("approval_notified_accounts") or [])
+                    if envelope.transport_account_key not in notified_accounts:
+                        await transport.send_message(
+                            envelope.channel_id,
+                            "Your account is not yet approved. An admin has to approve it first.",
+                            metadata={"suppress_agent_processing": True},
+                        )
+                        await repo.mark_user_notified(user.id, envelope.transport_account_key)
+                _log_discord_drop("unapproved_sender", envelope, internal_user_id=user.id)
                 envelope.metadata["suppress_ack"] = True
                 return None
             return user.id
 
-    async def _update_user_last_seen(internal_user_id: str, envelope, scope) -> None:
+    async def _resolve_profile_for_envelope(
+        repo: Repository,
+        sender_internal_user_id: str | None,
+        envelope: MessageEnvelope,
+    ) -> tuple[object | None, str | None]:
+        if envelope.origin != "discord":
+            if not sender_internal_user_id:
+                return None, None
+            profile = await profile_service.current_surface_profile(
+                repo,
+                sender_internal_user_id,
+                origin=envelope.origin,
+                channel_id=envelope.channel_id,
+                agent_profile_id=str(envelope.metadata.get("agent_profile_id") or "").strip() or None,
+                agent_profile_slug=str(envelope.metadata.get("agent_profile_slug") or "").strip() or None,
+                transport_account_key=envelope.transport_account_key,
+            )
+            return profile, None
+
+        if bool(envelope.metadata.get("is_private")):
+            if not sender_internal_user_id:
+                _log_discord_drop("trusted_transport_bot_private_message_unsupported", envelope)
+                return None, None
+            pinned_profile_id = str(envelope.metadata.get("pinned_profile_id") or "").strip()
+            if pinned_profile_id:
+                profile = await repo.get_agent_profile(pinned_profile_id)
+                if profile is None or profile.user_id != sender_internal_user_id or profile.status == "archived":
+                    _log_discord_drop(
+                        "pinned_profile_unavailable",
+                        envelope,
+                        pinned_profile_id=pinned_profile_id,
+                        sender_internal_user_id=sender_internal_user_id,
+                    )
+                    return None, None
+                return profile, None
+            profile, notice = await transport_account_service.resolve_shared_default_dm_profile(
+                repo,
+                user_id=sender_internal_user_id,
+                channel_id=envelope.channel_id,
+                origin="discord",
+                transport_account_key=envelope.transport_account_key or DEFAULT_DISCORD_ACCOUNT_KEY,
+            )
+            if profile is not None and notice:
+                await repo.upsert_surface_profile_override(
+                    user_id=sender_internal_user_id,
+                    agent_profile_id=profile.id,
+                    origin="discord",
+                    transport_account_key=envelope.transport_account_key or DEFAULT_DISCORD_ACCOUNT_KEY,
+                    surface_kind=discord_surface_kind(),
+                    surface_id=envelope.channel_id,
+                )
+            if profile is None:
+                _log_discord_drop(
+                    "shared_default_dm_profile_unavailable",
+                    envelope,
+                    sender_internal_user_id=sender_internal_user_id,
+                )
+            return profile, notice
+
+        binding = await repo.get_transport_surface_binding_for_surface(
+            origin="discord",
+            transport_account_key=envelope.transport_account_key or DEFAULT_DISCORD_ACCOUNT_KEY,
+            surface_kind=discord_surface_kind(),
+            surface_id=envelope.channel_id,
+        )
+        binding_surface_id = envelope.channel_id
+        if binding is None:
+            parent_channel_id = str(envelope.metadata.get("parent_channel_id") or "").strip()
+            if parent_channel_id:
+                binding = await repo.get_transport_surface_binding_for_surface(
+                    origin="discord",
+                    transport_account_key=envelope.transport_account_key or DEFAULT_DISCORD_ACCOUNT_KEY,
+                    surface_kind=discord_surface_kind(),
+                    surface_id=parent_channel_id,
+                )
+                if binding is not None:
+                    binding_surface_id = parent_channel_id
+        if binding is None:
+            _log_discord_drop("no_channel_binding", envelope)
+            return None, None
+        if not binding.enabled:
+            _log_discord_drop("channel_binding_disabled", envelope, binding_surface_id=binding_surface_id)
+            return None, None
+        mode = str(binding.mode or SURFACE_MODE_ALL_MESSAGES).strip().lower()
+        if mode != SURFACE_MODE_ALL_MESSAGES:
+            explicit = bool(envelope.metadata.get("is_explicit_interaction"))
+            mentions_bot = bool(envelope.metadata.get("mentions_bot"))
+            reply_to_bot = bool(envelope.metadata.get("reply_to_bot"))
+            if not (explicit or mentions_bot or reply_to_bot):
+                _log_discord_drop(
+                    "mention_only_not_triggered",
+                    envelope,
+                    binding_surface_id=binding_surface_id,
+                    mode=mode,
+                    mentions_bot=mentions_bot,
+                    reply_to_bot=reply_to_bot,
+                    explicit=explicit,
+                )
+                return None, None
+        profile = await repo.get_agent_profile(binding.agent_profile_id)
+        if profile is None:
+            _log_discord_drop(
+                "bound_profile_missing",
+                envelope,
+                binding_surface_id=binding_surface_id,
+                profile_id=binding.agent_profile_id,
+            )
+            return None, None
+        if profile.status == "archived":
+            _log_discord_drop(
+                "bound_profile_archived",
+                envelope,
+                binding_surface_id=binding_surface_id,
+                profile_id=profile.id,
+            )
+            return None, None
+        if is_shared_default_account_key(envelope.transport_account_key):
+            explicit_account = await repo.get_transport_account_for_profile(profile.id, "discord")
+            if explicit_account is not None and explicit_account.enabled:
+                _log_discord_drop(
+                    "shared_default_blocked_by_dedicated_bot",
+                    envelope,
+                    binding_surface_id=binding_surface_id,
+                    profile_id=profile.id,
+                    dedicated_account_key=explicit_account.account_key,
+                )
+                return None, None
+        return profile, None
+
+    async def _update_user_last_seen(internal_user_id: str, profile, envelope: MessageEnvelope, scope) -> None:
+        if not internal_user_id:
+            return
         if envelope.origin != "discord":
             return
         async with SessionLocal() as session:
             repo = Repository(session)
-            updates = {
-                "last_seen_at": datetime.now(UTC).isoformat(),
-            }
-            if scope.is_private:
-                updates.update(
-                    {
+            user = await repo.get_user_by_id(internal_user_id)
+            user_meta = dict(getattr(user, "meta", {}) or {})
+            per_origin = dict(user_meta.get("last_transport_account_key_by_origin") or {})
+            per_origin[envelope.origin] = envelope.transport_account_key
+            await repo.set_user_meta(
+                internal_user_id,
+                {
+                    "last_seen_at": datetime.now(UTC).isoformat(),
+                    "last_transport_account_key_by_origin": per_origin,
+                },
+            )
+            if scope.is_private and profile is not None:
+                await repo.update_agent_profile(
+                    profile.id,
+                    meta_updates={
                         "last_private_origin": scope.target_origin,
                         "last_private_destination_id": scope.target_destination_id,
+                        "last_private_transport_account_key": envelope.transport_account_key,
                         "last_channel_id": envelope.channel_id,
                         "last_origin": envelope.origin,
-                    }
+                        "last_seen_at": datetime.now(UTC).isoformat(),
+                    },
                 )
-            await repo.set_user_meta(internal_user_id, updates)
-
-    async def _publish_session_switch(
-        old_session_id: str,
-        new_session_id: str,
-        scope,
-        initiated_by_origin: str,
-    ) -> None:
-        payload = {
-            "old_session_id": old_session_id,
-            "new_session_id": new_session_id,
-            "scope_type": scope.scope_type,
-            "scope_id": scope.scope_id,
-            "initiated_by_origin": initiated_by_origin,
-        }
-        now = datetime.utcnow()
-        await app.state.event_bus.publish(
-            StreamEvent(
-                session_id=old_session_id,
-                type="session_switched",
-                data=payload,
-                created_at=now,
-            )
-        )
-        await app.state.event_bus.publish(
-            StreamEvent(
-                session_id=new_session_id,
-                type="session_switched",
-                data=payload,
-                created_at=now,
-            )
-        )
-
-    async def _running_docker_users() -> set[str]:
-        if sandbox_manager is None:
-            return set()
-        try:
-            containers = await sandbox_manager.list_containers()
-        except Exception:
-            return set()
-        out: set[str] = set()
-        for container in containers:
-            if str(container.get("status") or "").lower() != "running":
-                continue
-            user_id = str(container.get("user_id") or "").strip()
-            if user_id:
-                out.add(user_id)
-        return out
 
     async def _handle_discord_command(
-        envelope,
+        envelope: MessageEnvelope,
         transport: DiscordTransport,
         scope,
         internal_user_id: str,
+        profile,
     ) -> bool:
         if envelope.origin != "discord" or not envelope.command:
             return False
-        if envelope.command == "new":
-            old_session_id: str | None = None
-            async with SessionLocal() as session:
-                repo = Repository(session)
-                active = await repo.get_active_session_by_scope(scope.scope_type, scope.scope_id)
-                if active is not None:
-                    old_session_id = active.id
-            _, new_session_id = await session_manager.start_new_session_for_scope(
-                user_id=internal_user_id,
-                scope_type=scope.scope_type,
-                scope_id=scope.scope_id,
-                origin=envelope.origin,
-                channel_id=envelope.channel_id,
-            )
-            if old_session_id and old_session_id != new_session_id:
-                await _publish_session_switch(
-                    old_session_id=old_session_id,
-                    new_session_id=new_session_id,
-                    scope=scope,
-                    initiated_by_origin=envelope.origin,
+        async with SessionLocal() as session:
+            repo = Repository(session)
+            user = await repo.get_user_by_id(internal_user_id)
+            if user is None:
+                return True
+            try:
+                result = await command_service.execute(
+                    repo=repo,
+                    user=user,
+                    runtime=runtime,
+                    scheduler=scheduler,
+                    event_bus=app.state.event_bus,
+                    command=envelope.command,
+                    args=envelope.metadata or {},
+                    origin=envelope.origin,
+                    agent_profile_id=profile.id,
+                    agent_profile_slug=profile.slug,
+                    scope_type=scope.scope_type,
+                    scope_id=scope.scope_id,
+                    surface_id=envelope.channel_id,
+                    persist_surface_profile=bool(scope.is_private),
+                    transport_account_key=envelope.transport_account_key,
+                    surface_is_private=scope.is_private,
                 )
-            await transport.send_message(envelope.channel_id, "Started a new session.")
-            return True
-        if envelope.command == "memory_reindex":
-            stats = await session_manager.reindex_memories(internal_user_id)
-            await transport.send_message(
-                envelope.channel_id,
-                f"Memory reindex complete. Indexed: {stats['indexed']}, skipped: {stats['skipped']}, removed: {stats['removed']}.",
-            )
-            return True
-        if envelope.command == "memory_search":
-            query = str((envelope.metadata or {}).get("query") or "").strip()
-            if not query:
-                envelope.metadata["ephemeral_response"] = "Query is required."
-                envelope.metadata["suppress_ack"] = True
-                return True
-            results = await session_manager.search_memories(internal_user_id, query, top_k=5)
-            envelope.metadata["ephemeral_response"] = _format_memory_search_results(query, results)
-            envelope.metadata["suppress_ack"] = True
-            return True
-        if envelope.command == "schedule_list":
-            jobs = await scheduler.list_jobs(internal_user_id)
-            lines = [
-                f"{j['id']} | {j['name']} | {j['cron']} | model={j.get('model') or '__main_chain__'} | {'on' if j['enabled'] else 'off'}"
-                for j in jobs
-            ]
-            await transport.send_message(envelope.channel_id, "Scheduled jobs:\n" + "\n".join(lines))
-            return True
-        if envelope.command == "tools":
-            tool_list = [item.strip() for item in settings.tool_approval_tools.split(",") if item.strip()]
-            mode = "required" if settings.tool_approval_required else "optional"
-            secrets_mode = (
-                "bypassed (unsafe)"
-                if str(settings.approval_secrets_required or "").strip() == SECRETS_APPROVAL_BYPASS_MAGIC
-                else "forced"
-            )
-            text = (
-                f"Tool approvals are {mode}.\n"
-                f"Secret-ref approvals are {secrets_mode}.\n"
-                f"Configured approval tools ({len(tool_list)}): {', '.join(tool_list) if tool_list else '(none)'}"
-            )
-            await transport.send_message(envelope.channel_id, text)
-            return True
-        if envelope.command == "model":
-            requested = envelope.metadata.get("model_name") if envelope.metadata else None
-            models = list_models()
-            if not models:
-                await transport.send_message(envelope.channel_id, "No models are configured.")
-                return True
-            if not requested:
-                async with SessionLocal() as session:
-                    repo = Repository(session)
-                    active = await repo.get_active_session_by_scope(scope.scope_type, scope.scope_id)
-                current = active.model if active and active.model else None
-                if current is None:
-                    current = resolve_model_name(None, purpose="main")
+            except (LookupError, RuntimeError, ValueError) as exc:
+                if envelope.metadata.get("interaction_response"):
+                    envelope.metadata["ephemeral_response"] = str(exc)
+                    envelope.metadata["suppress_ack"] = True
                 else:
-                    current = resolve_model_name(current, purpose="main")
-                lines = []
-                for item in models:
-                    suffix = " (active)" if current and item.name.lower() == current.lower() else ""
-                    lines.append(f"- {item.name}{suffix}")
-                await transport.send_message(envelope.channel_id, "Available models:\n" + "\n".join(lines))
-                return True
-            requested_name = resolve_model_name(str(requested), purpose="main")
-            match = None
-            for item in models:
-                if item.name.lower() == requested_name.lower():
-                    match = item
-                    break
-            if match is None:
-                await transport.send_message(
-                    envelope.channel_id,
-                    f"Unknown model `{requested}`. Use /model to list available models.",
-                )
-                return True
-            async with SessionLocal() as session:
-                repo = Repository(session)
-                active = await repo.get_active_session_by_scope(scope.scope_type, scope.scope_id)
-                if active is None:
-                    active = await repo.create_session(
-                        internal_user_id,
-                        model=match.name,
-                        origin=envelope.origin,
-                        scope_type=scope.scope_type,
-                        scope_id=scope.scope_id,
+                    await transport.send_message(
+                        envelope.channel_id,
+                        str(exc),
+                        metadata={"suppress_agent_processing": True},
                     )
-                else:
-                    await repo.set_session_model(active.id, match.name)
-            runtime.set_session_model(active.id, match.name)
+                return True
+        if envelope.metadata.get("interaction_response"):
+            envelope.metadata["ephemeral_response"] = result.message or "Command completed."
+            envelope.metadata["suppress_ack"] = True
+        elif result.message:
             await transport.send_message(
                 envelope.channel_id,
-                f"Active model set to `{match.name}`.",
+                result.message,
+                metadata={"suppress_agent_processing": True},
             )
-            return True
-        if envelope.command == "machine":
-            requested = str((envelope.metadata or {}).get("target_machine") or "").strip()
-            if requested:
-                async with SessionLocal() as session:
-                    repo = Repository(session)
-                    if requested.lower() in {"docker", "docker-default"}:
-                        if settings.executors_auto_docker_default:
-                            row = await repo.get_or_create_docker_executor(internal_user_id)
-                        else:
-                            row = await repo.get_docker_executor_for_user(internal_user_id)
-                    else:
-                        row = await repo.get_executor_for_user(internal_user_id, requested)
-                        if row is None:
-                            row = await repo.get_executor_for_user_by_name(internal_user_id, requested)
-                    if row is None:
-                        await transport.send_message(envelope.channel_id, f"Machine not found: `{requested}`.")
-                        return True
-                    if row.disabled:
-                        await transport.send_message(envelope.channel_id, f"Machine `{row.name}` is disabled.")
-                        return True
-                    await repo.set_user_default_executor(internal_user_id, row.id)
-                    active = await repo.get_active_session_by_scope(scope.scope_type, scope.scope_id)
-                if active is not None:
-                    await executor_router.set_session_default(active.id, row.id)
-                await transport.send_message(envelope.channel_id, f"Default machine set to `{row.name}`.")
-                return True
+        return True
 
-            async with SessionLocal() as session:
-                repo = Repository(session)
-                if settings.executors_auto_docker_default:
-                    await repo.get_or_create_docker_executor(internal_user_id)
-                rows = await repo.list_executors_for_user(internal_user_id, include_disabled=False)
-                user_default_id = await repo.get_user_default_executor_id(internal_user_id)
-            online_ids = set(await node_executor_hub.online_executor_ids())
-            running_docker = await _running_docker_users()
-            lines = ["Available machines:"]
-            for row in rows:
-                online = (row.id in online_ids) or (row.kind == "docker" and internal_user_id in running_docker)
-                marker = " (default)" if row.id == user_default_id else ""
-                status = "online" if online else "offline"
-                lines.append(f"- {row.name} [{row.kind}] `{row.id}` · {status}{marker}")
-            if len(lines) == 1:
-                lines.append("(none)")
-            lines.append("Use `/machine <name_or_id>` to set the default machine.")
-            await transport.send_message(envelope.channel_id, "\n".join(lines))
-            return True
-        if envelope.command == "pair":
-            code = make_pair_code()
-            expires_at = datetime.now(UTC) + timedelta(minutes=10)
-            async with SessionLocal() as session:
-                repo = Repository(session)
-                await repo.create_pair_code(
-                    hash_pair_code(code),
-                    flow_type="pair",
-                    user_id=internal_user_id,
-                    display_name=None,
-                    created_by_user_id=internal_user_id,
-                    created_via="discord",
-                    expires_at=expires_at,
-                )
-            envelope.metadata["ephemeral_response"] = (
-                f"Pair code: `{code}`\n"
-                f"Expires at: {expires_at.strftime('%Y-%m-%d %H:%M:%S UTC')}\n"
-                "Use this code in the menubar/TUI pairing flow."
-            )
-            envelope.metadata["suppress_ack"] = True
-            return True
-        if envelope.command == "info":
-            async with SessionLocal() as session:
-                repo = Repository(session)
-                active = await repo.get_active_session_by_scope(scope.scope_type, scope.scope_id)
-            if active is None:
-                await transport.send_message(envelope.channel_id, "No active session found.")
-                return True
-            model_name = active.last_model or active.model or resolve_model_name(None, purpose="main")
-            lines = [
-                f"Session: `{active.id}`",
-                f"Model: `{model_name}`",
-                f"Context tokens (last input): {active.last_input_tokens or 0}",
-                f"Last output tokens: {active.last_output_tokens or 0}",
-                f"Last total tokens: {active.last_total_tokens or 0}",
-                f"Total input tokens: {active.input_tokens or 0}",
-                f"Total output tokens: {active.output_tokens or 0}",
-                f"Total tokens: {active.total_tokens or 0}",
-                f"Total cost: ${active.total_cost or 0.0:.4f}",
-            ]
-            await transport.send_message(envelope.channel_id, "\n".join(lines))
-            return True
-        if envelope.command in {"schedule_delete", "schedule_pause", "schedule_resume"}:
-            job_id = envelope.metadata.get("job_id")
-            if not job_id:
-                await transport.send_message(envelope.channel_id, "Job id is required.")
-                return True
-            if envelope.command == "schedule_delete":
-                result = await scheduler.delete_job(job_id)
-            elif envelope.command == "schedule_pause":
-                result = await scheduler.update_job(job_id, enabled=False)
-            else:
-                result = await scheduler.update_job(job_id, enabled=True)
-            await transport.send_message(envelope.channel_id, json.dumps(result))
-            return True
-        return False
-
-    async def handler(envelope):
-        transport = transport_by_origin.get(envelope.origin)
-        if transport is None:
-            return
-
-        internal_user_id = await _resolve_internal_user_id(envelope, transport)
-        if internal_user_id is None:
-            return
-
-        scope = resolve_conversation_scope(
-            origin=envelope.origin,
-            channel_id=envelope.channel_id,
-            internal_user_id=internal_user_id,
-            metadata=envelope.metadata,
-        )
-        envelope.metadata["internal_user_id"] = internal_user_id
-        envelope.metadata["scope_type"] = scope.scope_type
-        envelope.metadata["scope_id"] = scope.scope_id
-        envelope.metadata["is_private"] = scope.is_private
-
-        await _update_user_last_seen(internal_user_id, envelope, scope)
-
+    async def _process_runtime_turn(
+        *,
+        session_id: str,
+        envelope: MessageEnvelope,
+        transport: DiscordTransport,
+        owner_internal_user_id: str,
+    ) -> dict[str, object]:
+        sender_internal_user_id = None
+        if not envelope.metadata.get("coalesced_messages"):
+            sender_internal_user_id = str(envelope.metadata.get("sender_internal_user_id") or "").strip() or None
         await transport.send_typing(envelope.channel_id)
-        if isinstance(transport, DiscordTransport):
-            handled = await _handle_discord_command(envelope, transport, scope, internal_user_id)
-            if handled:
-                return
-
-        session_id = await session_manager.get_or_create_session_for_scope(
-            user_id=internal_user_id,
-            scope_type=scope.scope_type,
-            scope_id=scope.scope_id,
-            origin=envelope.origin,
-            cache_key=scope.scope_id if scope.is_private else envelope.channel_id,
-        )
-
         progress_stop, progress_task = await _start_progress_tracking(envelope, transport, session_id)
-        answered_prompt = await _persist_user_message(session_id, envelope, internal_user_id)
-        if answered_prompt is not None and isinstance(transport, DiscordTransport):
+        answered_prompt = await _persist_user_message(
+            session_id,
+            envelope,
+            owner_internal_user_id,
+            sender_internal_user_id,
+        )
+        if answered_prompt is not None:
             await transport.clear_user_prompt(answered_prompt.id)
 
         try:
             response = await runtime.handle_message(session_id, envelope)
         finally:
             await _stop_progress_tracking(progress_stop, progress_task)
+
         prompt_metadata: dict[str, object] | None = None
         if response.pending_prompt is not None:
             prompt_metadata = {
@@ -648,7 +797,18 @@ async def main() -> None:
                 "user_prompt_allow_free_text": bool(response.pending_prompt.allow_free_text),
             }
         if response.pending_prompt is None and (response.text or response.attachments):
-            await transport.send_message(envelope.channel_id, response.text, attachments=response.attachments)
+            await transport.send_message(
+                envelope.channel_id,
+                response.text,
+                attachments=response.attachments,
+                metadata={
+                    "skitter_sender_internal_user_id": owner_internal_user_id,
+                    "skitter_sender_profile_id": str(envelope.metadata.get("agent_profile_id") or "").strip() or None,
+                    "skitter_sender_profile_slug": str(envelope.metadata.get("agent_profile_slug") or "").strip() or None,
+                    "skitter_transport_account_key": envelope.transport_account_key,
+                    "skitter_message_kind": "agent_reply",
+                },
+            )
         if response.text or response.attachments:
             await _persist_assistant_message(
                 session_id,
@@ -659,19 +819,112 @@ async def main() -> None:
                 attachments=response.attachments,
                 extra_metadata=prompt_metadata,
             )
+        return {
+            "pending_prompt": bool(response.pending_prompt is not None),
+            "response_sent": bool(response.text or response.attachments),
+        }
 
+    async def handler(envelope: MessageEnvelope) -> None:
+        account_key = envelope.transport_account_key or DEFAULT_DISCORD_ACCOUNT_KEY
+        transport = manager.get(account_key)
+        if transport is None or not isinstance(transport, DiscordTransport):
+            if envelope.origin == "discord":
+                _log_discord_drop("missing_transport_instance", envelope, requested_account_key=account_key)
+            return
+
+        sender_internal_user_id = await _resolve_internal_user_id(envelope, transport)
+        if sender_internal_user_id is None and not bool(envelope.metadata.get("trusted_transport_bot")):
+            return
+
+        async with SessionLocal() as session:
+            repo = Repository(session)
+            profile, routing_notice = await _resolve_profile_for_envelope(repo, sender_internal_user_id, envelope)
+        if profile is None:
+            return
+        if routing_notice:
+            with contextlib.suppress(Exception):
+                await transport.send_message(
+                    envelope.channel_id,
+                    routing_notice,
+                    metadata={"suppress_agent_processing": True},
+                )
+
+        owner_internal_user_id = profile.user_id
+        envelope.metadata["agent_profile_id"] = profile.id
+        envelope.metadata["agent_profile_slug"] = profile.slug
+        envelope.metadata["transport_account_key"] = account_key
+        scope = resolve_conversation_scope(
+            origin=envelope.origin,
+            channel_id=envelope.channel_id,
+            internal_user_id=profile.id,
+            metadata=envelope.metadata,
+        )
+        envelope.metadata["internal_user_id"] = owner_internal_user_id
+        envelope.metadata["sender_internal_user_id"] = sender_internal_user_id
+        envelope.metadata["scope_type"] = scope.scope_type
+        envelope.metadata["scope_id"] = scope.scope_id
+        envelope.metadata["is_private"] = scope.is_private
+
+        await _update_user_last_seen(sender_internal_user_id, profile, envelope, scope)
+
+        handled = await _handle_discord_command(envelope, transport, scope, owner_internal_user_id, profile)
+        if handled:
+            return
+
+        session_id = await session_manager.get_or_create_session_for_scope(
+            user_id=owner_internal_user_id,
+            agent_profile_id=profile.id,
+            agent_profile_slug=profile.slug,
+            scope_type=scope.scope_type,
+            scope_id=scope.scope_id,
+            origin=envelope.origin,
+            cache_key=scope.scope_id if scope.is_private else f"{account_key}:{envelope.channel_id}",
+        )
+        coalescible = (
+            envelope.origin == "discord"
+            and not scope.is_private
+            and not envelope.command
+            and not envelope.attachments
+            and not bool(envelope.metadata.get("interaction_response"))
+            and not bool(envelope.metadata.get("is_explicit_interaction"))
+            and bool(str(envelope.text or "").strip())
+            and not await _session_has_pending_user_prompt(session_id)
+        )
+
+        queued_future = await session_run_queue.submit(
+            SessionRunWork(
+                session_id=session_id,
+                envelope=envelope,
+                process=lambda queued_envelope: _process_runtime_turn(
+                    session_id=session_id,
+                    envelope=queued_envelope,
+                    transport=transport,
+                    owner_internal_user_id=owner_internal_user_id,
+                ),
+                coalescible=coalescible,
+            )
+        )
+        _observe_queued_turn(queued_future)
+
+    await _reconcile_transports()
     manager.on_event(handler)
-    if discord_enabled:
-        discord_transport.set_user_prompt_responder(_submit_prompt_reply)
 
     uvicorn_log_level = str(settings.log_level or "INFO").lower()
     config = uvicorn.Config(app, host="0.0.0.0", port=8000, log_level=uvicorn_log_level)
     server = uvicorn.Server(config)
+    server_task = asyncio.create_task(server.serve(), name="skitter-uvicorn")
+    manager_task = asyncio.create_task(manager.start(), name="skitter-transports")
 
     try:
-        await asyncio.gather(server.serve(), manager.start())
+        await server_task
     finally:
+        await manager.stop()
+        manager_task.cancel()
+        with contextlib.suppress(BaseException):
+            await manager_task
         await session_finalizer_service.stop()
+        await heartbeat_service.shutdown()
+        await scheduler.shutdown()
         await job_service.stop()
 
 

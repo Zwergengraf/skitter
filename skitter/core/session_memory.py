@@ -14,6 +14,7 @@ from ..data.repositories import Repository
 from .config import settings
 from .events import EventBus
 from .llm import build_llm, list_models, resolve_model_name
+from .profiles import DEFAULT_AGENT_PROFILE_SLUG
 from .workspace import ensure_user_workspace, user_workspace_root
 
 _logger = logging.getLogger(__name__)
@@ -135,8 +136,8 @@ Return concise Markdown bullets or very short sections only.
 """.strip()
 
 
-def current_session_memory_path(user_id: str, session_id: str) -> Path:
-    return user_workspace_root(user_id) / session_memory_relative_path(session_id)
+def current_session_memory_path(user_id: str, session_id: str, profile_slug: str | None = None) -> Path:
+    return user_workspace_root(user_id, profile_slug) / session_memory_relative_path(session_id)
 
 
 def session_memory_relative_path(session_id: str) -> Path:
@@ -305,13 +306,16 @@ class SessionMemoryService:
             if session_row is None or str(getattr(session_row, "scope_type", "private") or "private") != "private":
                 return None
             user_id = str(session_row.user_id)
+            agent_profile_id = str(getattr(session_row, "agent_profile_id", "") or "").strip() or None
+            profile = await repo.get_agent_profile(agent_profile_id) if agent_profile_id else None
+            profile_slug = profile.slug if profile is not None else DEFAULT_AGENT_PROFILE_SLUG
             messages = await repo.list_messages(session_id)
 
         if not messages:
             return None
 
         checkpoint = getattr(session_row, "session_memory_checkpoint", None)
-        current_path = current_session_memory_path(user_id, session_id)
+        current_path = current_session_memory_path(user_id, session_id, profile_slug)
         transcript_all = self._render_transcript(messages)
         current_tokens = rough_token_estimate(transcript_all)
         current_context_tokens = max(
@@ -342,7 +346,7 @@ class SessionMemoryService:
                     return None
             return None
 
-        ensure_user_workspace(user_id)
+        ensure_user_workspace(user_id, profile_slug)
         current_notes = DEFAULT_SESSION_MEMORY_TEMPLATE
         if current_path.exists():
             try:

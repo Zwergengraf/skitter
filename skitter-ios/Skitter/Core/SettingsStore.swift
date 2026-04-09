@@ -15,6 +15,12 @@ final class SettingsStore: ObservableObject {
         }
     }
 
+    @Published var selectedProfileSlug: String {
+        didSet {
+            defaults.set(selectedProfileSlug, forKey: Keys.selectedProfileSlug)
+        }
+    }
+
     @Published var conversationSilenceSeconds: Double {
         didSet {
             defaults.set(conversationSilenceSeconds, forKey: Keys.conversationSilenceSeconds)
@@ -55,6 +61,7 @@ final class SettingsStore: ObservableObject {
 
     private enum Keys {
         static let apiURL = "ios.api_url"
+        static let selectedProfileSlug = "ios.selected_profile_slug"
         static let conversationSilenceSeconds = "ios.conversation_silence_seconds"
         static let preferredVoiceModel = "ios.preferred_voice_model"
         static let speechRecognitionLocaleIdentifier = "ios.speech_recognition_locale_identifier"
@@ -72,6 +79,7 @@ final class SettingsStore: ObservableObject {
         self.defaults = defaults
         self.apiURL = defaults.string(forKey: Keys.apiURL) ?? "http://127.0.0.1:8000"
         self.apiKey = Self.readToken(service: KeychainKeys.service, account: KeychainKeys.account) ?? ""
+        self.selectedProfileSlug = defaults.string(forKey: Keys.selectedProfileSlug) ?? ""
         let savedSilence = defaults.double(forKey: Keys.conversationSilenceSeconds)
         self.conversationSilenceSeconds = savedSilence > 0 ? savedSilence : 1.2
         self.preferredVoiceModel = defaults.string(forKey: Keys.preferredVoiceModel) ?? ""
@@ -104,6 +112,7 @@ final class SettingsStore: ObservableObject {
 
     func eraseAuth() {
         apiKey = ""
+        selectedProfileSlug = ""
     }
 
     private func persistToken(_ token: String) {

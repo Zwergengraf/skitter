@@ -213,7 +213,7 @@ Skitter routes tool execution to an executor per user.
 Selection behavior:
 
 - User default executor is set manually with `/machine`.
-- If no default is set and `executors.auto_docker_default=true`, Docker fallback is used.
+- If no default is set and `executors.auto_docker_default=true`, Skitter can auto-create and use the managed Docker executor.
 - If `executors.auto_docker_default=false`, execution requires an explicit/default non-disabled executor.
 
 ### Onboard a node executor (recommended path)
@@ -390,13 +390,15 @@ docker compose up -d postgres
 
 Or run your own PostgreSQL+pgvector and point `database.url` in `config.yaml` to it.
 
-### 3) Build sandbox image (if using Docker executor fallback)
+### 3) Build sandbox image (if using the managed Docker sandbox executor)
 
 ```bash
 docker build -f skitter/sandbox/Dockerfile -t skitter-sandbox .
 ```
 
-If you only use external executor nodes and disable Docker auto-fallback, this can be skipped.
+The sandbox image installs its Python dependencies with `uv` into an internal virtualenv during the Docker build.
+
+If you only use external executor nodes and disable automatic Docker executor creation, this can be skipped.
 
 ### 4) Initialize DB schema and run server
 

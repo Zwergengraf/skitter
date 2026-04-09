@@ -112,12 +112,17 @@ struct APIClient {
     func createOrResumeSession(
         config: APIConfiguration,
         reuseActive: Bool,
-        origin: String = "ios"
+        origin: String = "ios",
+        agentProfileSlug: String? = nil
     ) async throws -> String {
-        let body: [String: AnyEncodable] = [
+        var body: [String: AnyEncodable] = [
             "origin": AnyEncodable(origin),
             "reuse_active": AnyEncodable(reuseActive),
         ]
+        let cleanedProfileSlug = agentProfileSlug?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if !cleanedProfileSlug.isEmpty {
+            body["agent_profile_slug"] = AnyEncodable(cleanedProfileSlug)
+        }
         let payload: SessionPayload = try await requestJSON(
             baseURL: config.baseURL,
             token: config.token,
@@ -229,6 +234,17 @@ struct APIClient {
         return payload.map(\.name).sorted()
     }
 
+    func listProfiles(config: APIConfiguration) async throws -> [AgentProfile] {
+        let payload: [AgentProfilePayload] = try await requestJSON(
+            baseURL: config.baseURL,
+            token: config.token,
+            path: "/v1/profiles",
+            method: "GET",
+            body: Optional<Int>.none
+        )
+        return payload.map { $0.toDomain() }
+    }
+
     func setSessionModel(config: APIConfiguration, sessionID: String, modelName: String) async throws -> String {
         let body = ["model_name": modelName]
         let payload: SessionModelSetPayload = try await requestJSON(
@@ -316,13 +332,18 @@ struct APIClient {
         config: APIConfiguration,
         command: String,
         args: [String: String] = [:],
-        origin: String = "ios"
+        origin: String = "ios",
+        agentProfileSlug: String? = nil
     ) async throws -> CommandResult {
-        let body: [String: AnyEncodable] = [
+        var body: [String: AnyEncodable] = [
             "command": AnyEncodable(command),
             "origin": AnyEncodable(origin),
             "args": AnyEncodable(args),
         ]
+        let cleanedProfileSlug = agentProfileSlug?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if !cleanedProfileSlug.isEmpty {
+            body["agent_profile_slug"] = AnyEncodable(cleanedProfileSlug)
+        }
         let payload: CommandExecutePayload = try await requestJSON(
             baseURL: config.baseURL,
             token: config.token,

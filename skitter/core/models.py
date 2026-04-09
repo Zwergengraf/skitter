@@ -5,6 +5,18 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any, Dict, List, Optional
 
+SKITTER_NO_REPLY = "SKITTER_NO_REPLY"
+
+
+def is_skitter_no_reply(text: str | None) -> bool:
+    return str(text or "").strip() == SKITTER_NO_REPLY
+
+
+def normalize_agent_response_text(text: str | None) -> str:
+    if is_skitter_no_reply(text):
+        return ""
+    return str(text or "")
+
 
 @dataclass
 class Attachment:
@@ -24,6 +36,7 @@ class MessageEnvelope:
     text: str
     attachments: List[Attachment] = field(default_factory=list)
     origin: str = "unknown"
+    transport_account_key: str = ""
     command: Optional[str] = None
     metadata: Dict[str, Any] = field(default_factory=dict)
 

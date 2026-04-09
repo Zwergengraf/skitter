@@ -14,10 +14,11 @@ from ..data.repositories import Repository
 from ..data.models import SCHEDULED_JOB_MODEL_MAIN
 from .config import settings
 from .llm import resolve_model_name
+from .profile_service import resolve_profile_default_model_name
 from .models import MessageEnvelope
 
 
-DeliverFunc = Callable[[str, str, str, list], Awaitable[None]]
+DeliverFunc = Callable[[str, str | None, str, str, list], Awaitable[None]]
 
 
 class SchedulerService:
@@ -133,6 +134,7 @@ class SchedulerService:
     async def create_job(
         self,
         user_id: str,
+        agent_profile_id: str | None,
         channel_id: str,
         name: str,
         prompt: str,
@@ -141,6 +143,7 @@ class SchedulerService:
         target_scope_type: str = "private",
         target_scope_id: str | None = None,
         target_origin: str | None = None,
+        target_transport_account_key: str | None = None,
         target_destination_id: str | None = None,
     ) -> dict:
         schedule_type, expr = self._normalize_schedule(cron)
@@ -156,6 +159,7 @@ class SchedulerService:
             repo = Repository(session)
             job = await repo.create_scheduled_job(
                 user_id=user_id,
+                agent_profile_id=agent_profile_id,
                 channel_id=channel_id,
                 name=name,
                 prompt=prompt,
@@ -167,6 +171,7 @@ class SchedulerService:
                 target_scope_type=target_scope_type,
                 target_scope_id=target_scope_id,
                 target_origin=target_origin,
+                target_transport_account_key=target_transport_account_key,
                 target_destination_id=target_destination_id,
             )
         self._schedule_job(job.id, job.schedule_type, job.schedule_expr, job.timezone)
@@ -221,10 +226,10 @@ class SchedulerService:
                 pass
         return {"deleted": ok}
 
-    async def list_jobs(self, user_id: str) -> list[dict]:
+    async def list_jobs(self, user_id: str, agent_profile_id: str | None = None) -> list[dict]:
         async with SessionLocal() as session:
             repo = Repository(session)
-            jobs = await repo.list_scheduled_jobs(user_id)
+            jobs = await repo.list_scheduled_jobs(user_id, agent_profile_id=agent_profile_id)
         rows: list[dict] = []
         for job in jobs:
             base = self._job_response(job, job.next_run_at)
@@ -241,6 +246,7 @@ class SchedulerService:
                     "target_scope_type": job.target_scope_type,
                     "target_scope_id": job.target_scope_id,
                     "target_origin": job.target_origin,
+                    "target_transport_account_key": getattr(job, "target_transport_account_key", None),
                     "target_destination_id": job.target_destination_id,
                 }
             )
@@ -276,16 +282,29 @@ class SchedulerService:
             async with SessionLocal() as session:
                 repo = Repository(session)
                 model_name = (
-                    resolve_model_name(None, purpose="main")
+                    (
+                        await resolve_profile_default_model_name(
+                            repo,
+                            getattr(job, "agent_profile_id", None),
+                            purpose="main",
+                        )
+                        or resolve_model_name(None, purpose="main")
+                    )
                     if not getattr(job, "model", None) or job.model == SCHEDULED_JOB_MODEL_MAIN
                     else resolve_model_name(job.model, purpose="main")
                 )
+                profile = await repo.get_agent_profile(getattr(job, "agent_profile_id", "") or "")
                 target_scope_type = job.target_scope_type or "private"
-                target_scope_id = job.target_scope_id or f"private:{job.user_id}"
-                target_session = await repo.get_active_session_by_scope(target_scope_type, target_scope_id)
+                target_scope_id = job.target_scope_id or f"private:{getattr(job, 'agent_profile_id', '') or job.user_id}"
+                target_session = await repo.get_active_session_by_scope(
+                    target_scope_type,
+                    target_scope_id,
+                    agent_profile_id=getattr(job, "agent_profile_id", None),
+                )
                 if target_session is None:
                     target_session = await repo.create_session(
                         job.user_id,
+                        agent_profile_id=getattr(job, "agent_profile_id", None),
                         status="active",
                         model=model_name,
                         origin=job.target_origin or "scheduler",
@@ -295,6 +314,7 @@ class SchedulerService:
                 target_session_id = target_session.id
                 session_obj = await repo.create_session(
                     job.user_id,
+                    agent_profile_id=getattr(job, "agent_profile_id", None),
                     status="scheduled",
                     model=model_name,
                     origin="scheduler",
@@ -310,19 +330,24 @@ class SchedulerService:
                 timestamp=self._utcnow(),
                 text=job.prompt,
                 origin="scheduler",
+                transport_account_key=getattr(job, "target_transport_account_key", None) or "",
                 metadata={
                     "internal_user_id": user.id,
+                    "agent_profile_id": getattr(job, "agent_profile_id", None),
+                    "agent_profile_slug": getattr(profile, "slug", None),
                     "scope_type": "system",
                     "scope_id": f"system:scheduled:{job.id}:{run.id}",
                     "is_private": False,
                     "target_scope_type": job.target_scope_type or "private",
-                    "target_scope_id": job.target_scope_id or f"private:{job.user_id}",
+                    "target_scope_id": job.target_scope_id or f"private:{getattr(job, 'agent_profile_id', '') or job.user_id}",
+                    "transport_account_key": getattr(job, "target_transport_account_key", None),
                 },
             )
             # Scheduled runs are intentionally stateless: each run executes with no prior chat history.
             self.runtime.clear_history(execution_session_id)
             response = await self.runtime.handle_message(execution_session_id, envelope)
-            if target_session_id is not None:
+            has_visible_reply = bool(response.text or response.attachments)
+            if target_session_id is not None and has_visible_reply:
                 attachment_meta = []
                 for attachment in response.attachments:
                     attachment_meta.append(
@@ -347,10 +372,16 @@ class SchedulerService:
                         metadata=meta,
                     )
             delivery_error: str | None = None
-            if self.deliver is not None and job.target_origin and (job.target_destination_id or job.channel_id):
+            if (
+                has_visible_reply
+                and self.deliver is not None
+                and job.target_origin
+                and (job.target_destination_id or job.channel_id)
+            ):
                 try:
                     await self.deliver(
                         job.target_origin,
+                        getattr(job, "target_transport_account_key", None),
                         job.target_destination_id or job.channel_id,
                         response.text,
                         response.attachments,

@@ -264,6 +264,7 @@ def _build_openai_llm(resolved: ResolvedModel) -> BaseChatModel:
         "model": resolved.model,
         "base_url": resolved.api_base,
         "api_key": resolved.api_key,
+        "max_tokens": max(256, int(settings.generation_max_output_tokens)),
     }
     reasoning_cfg = _openai_reasoning_config(resolved)
     if bool(reasoning_cfg.get("enabled")):
@@ -296,6 +297,7 @@ def _build_anthropic_llm(resolved: ResolvedModel) -> BaseChatModel:
         ) from exc
 
     kwargs: dict[str, object] = {"model": resolved.model}
+    kwargs["max_tokens"] = max(256, int(settings.generation_max_output_tokens))
     if resolved.api_key:
         kwargs["api_key"] = resolved.api_key
     if resolved.api_base:
@@ -314,7 +316,10 @@ def _build_anthropic_llm(resolved: ResolvedModel) -> BaseChatModel:
         return ChatAnthropic(**kwargs)
     except TypeError:
         # Compatibility fallback for older versions that use anthropic_* keyword names.
-        fallback: dict[str, object] = {"model": resolved.model}
+        fallback: dict[str, object] = {
+            "model": resolved.model,
+            "max_tokens": max(256, int(settings.generation_max_output_tokens)),
+        }
         if resolved.api_key:
             fallback["anthropic_api_key"] = resolved.api_key
         if resolved.api_base:

@@ -9,7 +9,7 @@ from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, Tool
 from skitter.core.config import settings
 from skitter.core.events import EventBus
 from skitter.core.graph import UserPromptRequired
-from skitter.core.models import MessageEnvelope
+from skitter.core.models import MessageEnvelope, SKITTER_NO_REPLY
 from skitter.core.runtime import AgentRuntime
 
 
@@ -160,6 +160,79 @@ def test_messages_for_invoke_merges_non_consecutive_system_messages_for_anthropi
     assert "ask_user interaction" in prepared[0].content
     assert isinstance(prepared[1], HumanMessage)
     assert isinstance(prepared[2], AIMessage)
+
+
+def test_prepare_envelope_content_renders_sender_context_for_public_discord_messages() -> None:
+    runtime = _runtime()
+    envelope = MessageEnvelope(
+        message_id="msg-1",
+        channel_id="chan-1",
+        user_id="transport-user",
+        timestamp=datetime.now(UTC),
+        text="Can you summarize this?",
+        origin="discord",
+        metadata={
+            "is_private": False,
+            "sender_transport_user_id": "123",
+            "sender_display_name": "Alice",
+            "sender_username": "alice",
+            "sender_mention": "<@123>",
+            "sender_is_bot": False,
+            "sender_role_names": ["Moderator", "Builder"],
+        },
+    )
+
+    content, is_command, attachments_meta = runtime._prepare_envelope_content(envelope)
+
+    assert is_command is False
+    assert attachments_meta == []
+    assert content.startswith("[Discord sender: Alice | @alice | <@123> | roles: Moderator, Builder]\n")
+    assert content.endswith("Can you summarize this?")
+
+
+def test_prepare_envelope_content_renders_coalesced_public_discord_messages() -> None:
+    runtime = _runtime()
+    envelope = MessageEnvelope(
+        message_id="batch-1",
+        channel_id="chan-1",
+        user_id="transport-user",
+        timestamp=datetime.now(UTC),
+        text="[Alice] first\n[Bob] second",
+        origin="discord",
+        metadata={
+            "is_private": False,
+            "coalesced_messages": [
+                {
+                    "origin": "discord",
+                    "is_private": False,
+                    "text": "first",
+                    "sender_transport_user_id": "123",
+                    "sender_display_name": "Alice",
+                    "sender_username": "alice",
+                    "sender_mention": "<@123>",
+                },
+                {
+                    "origin": "discord",
+                    "is_private": False,
+                    "text": "second",
+                    "sender_transport_user_id": "456",
+                    "sender_display_name": "Bob",
+                    "sender_username": "bob",
+                    "sender_mention": "<@456>",
+                },
+            ],
+        },
+    )
+
+    content, is_command, attachments_meta = runtime._prepare_envelope_content(envelope)
+
+    assert is_command is False
+    assert attachments_meta == []
+    assert content.startswith("[Messages received while you were busy. Reply once to the full batch.]")
+    assert "Alice | @alice | <@123>" in content
+    assert "Bob | @bob | <@456>" in content
+    assert "first" in content
+    assert "second" in content
 
 
 class _ApiStatusError(Exception):
@@ -469,6 +542,18 @@ class _PromptGraph:
         )
 
 
+class _MaxTokensGraph:
+    async def ainvoke(self, payload, **_kwargs):
+        messages = list(payload["messages"])
+        messages.append(AIMessage(content="", response_metadata={"stop_reason": "max_tokens"}))
+        return {"messages": messages}
+
+
+class _NoReplyGraph:
+    async def ainvoke(self, *_args, **_kwargs):
+        return {"messages": [AIMessage(content=SKITTER_NO_REPLY)]}
+
+
 @pytest.mark.asyncio
 async def test_handle_message_returns_pending_prompt_when_ask_user_is_triggered(monkeypatch) -> None:
     runtime = AgentRuntime(event_bus=EventBus(), graph=_PromptGraph())
@@ -537,3 +622,116 @@ async def test_handle_message_returns_pending_prompt_when_ask_user_is_triggered(
         "- macbook\n"
         "Custom free-text replies were allowed."
     )
+
+
+@pytest.mark.asyncio
+async def test_handle_message_returns_fallback_when_model_stops_at_max_tokens(monkeypatch) -> None:
+    runtime = AgentRuntime(event_bus=EventBus(), graph=_MaxTokensGraph())
+
+    async def _fake_ensure_history(session_id: str) -> None:
+        runtime._history.setdefault(session_id, [SystemMessage(content="system")])
+
+    async def _noop_async(*_args, **_kwargs) -> None:
+        return None
+
+    async def _fake_get_session_model(_session_id: str, _envelope) -> str:
+        return "provider/main"
+
+    async def _fake_limit_fallback(*_args, **_kwargs) -> str:
+        return "LIMIT_REACHED (max_tokens): The model hit its output token limit before finishing."
+
+    monkeypatch.setattr("skitter.core.runtime.list_models", lambda: [object()])
+    monkeypatch.setattr("skitter.core.runtime.resolve_model_name", lambda _value=None, purpose="main": "provider/main")
+    monkeypatch.setattr("skitter.core.runtime.resolve_model_candidates", lambda _value, purpose="main": ["provider/main"])
+    monkeypatch.setattr(
+        "skitter.core.runtime.resolve_model",
+        lambda _value, purpose="main": type(
+            "Resolved",
+            (),
+            {
+                "input_cost_per_1m": 0.0,
+                "output_cost_per_1m": 0.0,
+                "provider_api_type": "anthropic",
+            },
+        )(),
+    )
+    monkeypatch.setattr("skitter.core.runtime.collect_usage", lambda _messages, _message_id: None)
+    monkeypatch.setattr(runtime, "_ensure_history", _fake_ensure_history)
+    monkeypatch.setattr(runtime, "_get_session_model", _fake_get_session_model)
+    monkeypatch.setattr(runtime, "_ensure_system_prompt", lambda history, _user_id: None)
+    monkeypatch.setattr(runtime, "_compact_history_for_context", _noop_async)
+    monkeypatch.setattr(runtime, "_trace_create", _noop_async)
+    monkeypatch.setattr(runtime, "_trace_update", _noop_async)
+    monkeypatch.setattr(runtime, "_trace_event", _noop_async)
+    monkeypatch.setattr(runtime, "_build_limit_fallback_response", _fake_limit_fallback)
+
+    envelope = MessageEnvelope(
+        message_id="msg-1",
+        channel_id="chan-1",
+        user_id="user-1",
+        timestamp=datetime.now(UTC),
+        text="Please continue.",
+        origin="tui",
+        metadata={"internal_user_id": "user-1"},
+    )
+
+    response = await runtime.handle_message("session-1", envelope)
+
+    assert response.text == "LIMIT_REACHED (max_tokens): The model hit its output token limit before finishing."
+    assert isinstance(runtime._history["session-1"][-1], AIMessage)
+    assert runtime._history["session-1"][-1].content == response.text
+
+
+@pytest.mark.asyncio
+async def test_handle_message_treats_skitter_no_reply_as_empty_response(monkeypatch) -> None:
+    runtime = AgentRuntime(event_bus=EventBus(), graph=_NoReplyGraph())
+
+    async def _fake_ensure_history(session_id: str) -> None:
+        runtime._history.setdefault(session_id, [SystemMessage(content="system")])
+
+    async def _noop_async(*_args, **_kwargs) -> None:
+        return None
+
+    async def _fake_get_session_model(_session_id: str, _envelope) -> str:
+        return "provider/main"
+
+    monkeypatch.setattr("skitter.core.runtime.list_models", lambda: [object()])
+    monkeypatch.setattr("skitter.core.runtime.resolve_model_name", lambda _value=None, purpose="main": "provider/main")
+    monkeypatch.setattr("skitter.core.runtime.resolve_model_candidates", lambda _value, purpose="main": ["provider/main"])
+    monkeypatch.setattr(
+        "skitter.core.runtime.resolve_model",
+        lambda _value, purpose="main": type(
+            "Resolved",
+            (),
+            {
+                "input_cost_per_1m": 0.0,
+                "output_cost_per_1m": 0.0,
+                "provider_api_type": "openai",
+                "model": "provider/main",
+                "name": "provider/main",
+                "api_base": "",
+            },
+        )(),
+    )
+    monkeypatch.setattr(runtime, "_ensure_history", _fake_ensure_history)
+    monkeypatch.setattr(runtime, "_get_session_model", _fake_get_session_model)
+    monkeypatch.setattr(runtime, "_ensure_system_prompt", lambda history, _user_id: None)
+    monkeypatch.setattr(runtime, "_compact_history_for_context", _noop_async)
+    monkeypatch.setattr(runtime, "_trace_create", _noop_async)
+    monkeypatch.setattr(runtime, "_trace_update", _noop_async)
+    monkeypatch.setattr(runtime, "_trace_event", _noop_async)
+
+    envelope = MessageEnvelope(
+        message_id="msg-no-reply",
+        channel_id="chan-1",
+        user_id="user-1",
+        timestamp=datetime.now(UTC),
+        text="Say nothing if you have nothing to add.",
+        origin="tui",
+        metadata={"internal_user_id": "user-1"},
+    )
+
+    response = await runtime.handle_message("session-no-reply", envelope)
+
+    assert response.text == ""
+    assert response.attachments == []

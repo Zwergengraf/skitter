@@ -7,6 +7,7 @@ from fastapi import APIRouter, Depends, Query, HTTPException, Request
 from ..authz import require_admin
 from ..deps import get_repo
 from ..schemas import MemoryEntryOut, MemoryForgetRequest
+from ...core.profile_service import profile_service
 from ...core.workspace import user_workspace_root
 from ...core.sessions import SessionManager
 from ...core.runtime import AgentRuntime
@@ -23,10 +24,10 @@ def _extract_tag(tags: list, prefix: str) -> list[str]:
     return values
 
 
-def _safe_memory_path(user_id: str, source: str) -> Path:
+def _safe_memory_path(user_id: str, source: str, profile_slug: str | None = None) -> Path:
     if "/" in source or "\\" in source or source.startswith("."):
         raise HTTPException(status_code=400, detail="Invalid source")
-    path = user_workspace_root(user_id) / "memory" / source
+    path = user_workspace_root(user_id, profile_slug) / "memory" / source
     if not path.exists() or not path.is_file():
         raise HTTPException(status_code=404, detail="Memory file not found")
     return path
@@ -37,10 +38,11 @@ async def list_memory(
     request: Request,
     repo: Repository = Depends(get_repo),
     user_id: str = Query(...),
+    agent_profile_id: str | None = Query(default=None),
     limit: int = Query(default=200, ge=1, le=1000),
 ) -> list[MemoryEntryOut]:
     require_admin(request)
-    entries = await repo.list_memory_entries(user_id)
+    entries = await repo.list_memory_entries(user_id, agent_profile_id=agent_profile_id)
     grouped: dict[str, dict] = {}
     for entry in entries:
         sources = _extract_tag(entry.tags or [], "file:")
@@ -79,9 +81,19 @@ async def list_memory(
 
 
 @router.get("/file")
-async def get_memory_file(request: Request, source: str, user_id: str = Query(...)) -> dict:
+async def get_memory_file(
+    request: Request,
+    source: str,
+    repo: Repository = Depends(get_repo),
+    user_id: str = Query(...),
+    agent_profile_id: str | None = Query(default=None),
+) -> dict:
     require_admin(request)
-    path = _safe_memory_path(user_id, source)
+    profile_slug: str | None = None
+    if agent_profile_id:
+        profile = await repo.get_agent_profile(agent_profile_id)
+        profile_slug = getattr(profile, "slug", None)
+    path = _safe_memory_path(user_id, source, profile_slug)
     content = path.read_text(encoding="utf-8")
     return {"source": source, "content": content}
 
@@ -91,21 +103,31 @@ async def reindex_memory(
     request: Request,
     repo: Repository = Depends(get_repo),
     user_id: str = Query(...),
+    agent_profile_id: str | None = Query(default=None),
 ) -> dict:
     require_admin(request)
     user = await repo.get_user_by_id(user_id)
     if user is None:
         raise HTTPException(status_code=404, detail="User not found")
+    profile = await profile_service.resolve_profile(
+        repo,
+        user.id,
+        agent_profile_id=agent_profile_id,
+    )
     runtime: AgentRuntime | None = repo.session.info.get("runtime")
     if runtime is None:
         raise HTTPException(status_code=500, detail="Runtime not available")
-    session_manager = SessionManager(runtime, str(user_workspace_root(user.id).parent))
-    stats = await session_manager.reindex_memories(user.id)
+    session_manager = SessionManager(runtime)
+    stats = await session_manager.reindex_memories(
+        user.id,
+        agent_profile_id=profile.id,
+        agent_profile_slug=profile.slug,
+    )
     return stats
 
 
 @router.post("/forget")
 async def forget_memory(payload: MemoryForgetRequest, request: Request, repo: Repository = Depends(get_repo)) -> dict:
     require_admin(request)
-    deleted = await repo.delete_memory(payload.user_id)
+    deleted = await repo.delete_memory(payload.user_id, agent_profile_id=payload.agent_profile_id)
     return {"deleted": deleted}

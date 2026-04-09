@@ -243,6 +243,7 @@ class Settings(BaseSettings):
     mcp_servers: list[MCPServerConfig] = Field(default_factory=list)
     main_model: list[str] = Field(default_factory=list)
     heartbeat_model: list[str] = Field(default_factory=list)
+    generation_max_output_tokens: int = Field(default=32768)
     reasoning_enabled: bool = Field(default=True)
     openai_use_responses_api: bool = Field(default=True)
     openai_output_version: str = Field(default="responses/v1")
@@ -276,19 +277,16 @@ class Settings(BaseSettings):
     heartbeat_prompt: str = Field(
         default=(
             "Read HEARTBEAT.md if it exists (workspace context). Follow it strictly. "
-            "Do not infer or repeat old tasks from prior chats. If nothing needs attention, reply HEARTBEAT_OK."
+            "Do not infer or repeat old tasks from prior chats. If nothing needs attention, reply SKITTER_NO_REPLY."
         )
     )
     heartbeat_quiet_hours_start: str = Field(default="23:00")
     heartbeat_quiet_hours_end: str = Field(default="08:00")
 
-    workspace_root: str = Field(default="workspace")
+    workspace_root: str = Field(default="/workspace")
     workspace_skeleton_root: str = Field(default="workspace-skeleton")
     host_workspace_root: str = Field(default="")
-    skills_root: str = Field(default="skills")
-    host_skills_root: str = Field(default="")
 
-    sandbox_base_url: str = Field(default="http://localhost:9080")
     sandbox_api_key: str = Field(default="")
     sandbox_image: str = Field(default="skitter-sandbox")
     sandbox_network: str = Field(default="")

@@ -8,8 +8,6 @@ For most installs, the easiest entrypoint is:
 ./setup.sh install
 ```
 
-That command checks prerequisites, creates missing local config, generates secrets, builds images, and starts the core services.
-
 Useful follow-ups:
 
 ```bash
@@ -23,45 +21,46 @@ Useful follow-ups:
 ./setup.sh uninstall
 ```
 
-Backups are stored in `./backups/<timestamp>/` and include `.env`, `config.yaml`, and a PostgreSQL SQL dump.
-
 ## Services in `docker-compose.yml`
 
-- `postgres`: PostgreSQL + pgvector
-- `api`: Skitter API server
-- `admin-web`: admin UI (served by nginx)
-- `searxng` (profile `searxng`): optional local web search engine
-- `sandbox` (profile `sandbox`): image build target used by API-managed Docker executors
+- `postgres`
+- `api`
+- `admin-web`
+- `searxng` (optional)
+- `sandbox` image build target
 
 ## Required Environment
-
-Set these in your shell or `.env` before running compose:
 
 - `SKITTER_API_KEY`
 - `SKITTER_BOOTSTRAP_CODE`
 - `SKITTER_SECRETS_MASTER_KEY`
 
-Optional but common:
+Common optional values:
 
-- `SKITTER_POSTGRES_USER` (default `postgres`)
-- `SKITTER_POSTGRES_PASSWORD` (default `postgres`)
-- `SKITTER_POSTGRES_DB` (default `skitter`)
-- `ADMIN_WEB_API_BASE_URL` (default `http://localhost:8000`)
+- `SKITTER_POSTGRES_USER`
+- `SKITTER_POSTGRES_PASSWORD`
+- `SKITTER_POSTGRES_DB`
+- `ADMIN_WEB_API_BASE_URL`
 
-Discord transport enablement now lives in `config.yaml`:
+## Discord in Docker
+
+The shared default Discord bot is still configured in `config.yaml`:
 
 ```yaml
 discord:
   enabled: true
+  token: ""
 ```
 
-## Build Images
+Dedicated per-profile Discord bot overrides are configured after startup in the admin web UI.
 
-Build all required images (including sandbox):
+## Build Images
 
 ```bash
 docker compose --profile sandbox build
 ```
+
+The Python-based images install dependencies with `uv` into an internal virtualenv during the Docker build. No extra `pip` setup is required on the host.
 
 ## Start Core Services
 
@@ -74,15 +73,22 @@ Endpoints:
 - API: `http://localhost:8000`
 - Admin UI: `http://localhost:5173`
 
-## Optional: Run Local SearXNG
+## Volume and Mount Behavior
 
-SearXNG is included in the root compose file behind a profile:
+- `./workspace` is mounted into the API container as `/workspace`
+- `./workspace-skeleton` is mounted read-only
+- `./config.yaml` and `./system_prompt.md` are mounted into the API container
+- Docker socket is mounted so the API can manage profile-aware sandbox containers
+
+In Docker setups, `workspace.root: /workspace` is the normal configuration.
+
+## Optional: Run Local SearXNG
 
 ```bash
 docker compose --profile searxng up -d searxng
 ```
 
-Then set in `config.yaml`:
+Then configure:
 
 ```yaml
 web_search:
@@ -90,13 +96,6 @@ web_search:
   searxng:
     api_base: http://searxng:8080/search
 ```
-
-## Volume and Mount Behavior
-
-- `./workspace` is mounted into API as `/workspace`.
-- `./workspace-skeleton` is mounted read-only for workspace bootstrap.
-- `./config.yaml` and `./system_prompt.md` are mounted into API.
-- Docker socket is mounted so API can create/manage per-user sandbox containers.
 
 ## Useful Commands
 
@@ -119,7 +118,7 @@ docker compose up -d api
 docker compose down
 ```
 
-- Reset DB data (destructive):
+- Reset DB data:
 
 ```bash
 docker compose down -v

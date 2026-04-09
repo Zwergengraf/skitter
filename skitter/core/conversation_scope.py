@@ -3,6 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
+from .profiles import private_profile_scope_id
+
 
 @dataclass(frozen=True)
 class ConversationScope:
@@ -13,12 +15,12 @@ class ConversationScope:
     target_destination_id: str
 
 
-def private_scope_id(internal_user_id: str) -> str:
-    return f"private:{internal_user_id}"
+def private_scope_id(owner_id: str) -> str:
+    return private_profile_scope_id(owner_id)
 
 
-def group_scope_id(origin: str, external_channel_id: str) -> str:
-    return f"group:{origin}:{external_channel_id}"
+def group_scope_id(origin: str, transport_account_key: str, external_channel_id: str) -> str:
+    return f"group:{origin}:{transport_account_key}:{external_channel_id}"
 
 
 def resolve_conversation_scope(
@@ -49,8 +51,9 @@ def resolve_conversation_scope(
         is_private = True
 
     if origin == "discord" and not is_private:
+        transport_account_key = str(meta.get("transport_account_key") or "").strip() or "default"
         scope_type = "group"
-        scope_id = group_scope_id(origin, channel_id)
+        scope_id = group_scope_id(origin, transport_account_key, channel_id)
     else:
         scope_type = "private"
         scope_id = private_scope_id(internal_user_id)

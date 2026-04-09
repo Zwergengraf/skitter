@@ -47,6 +47,7 @@ nav:
       - Executor Node: components/executor-node.md
       - Sandbox Runner: components/sandbox-runner.md
   - Core Concepts:
+      - Profiles and Transports: core-concepts/profiles-and-transports.md
       - Sessions: core-concepts/sessions.md
       - Tools and Approvals: core-concepts/tools-and-approvals.md
       - Jobs and Sub-Agents: core-concepts/jobs-and-sub-agents.md
@@ -60,6 +61,7 @@ nav:
       - Event Inbox + Heartbeats: patterns/event-inbox-heartbeats.md
   - API:
       - Overview: api/overview.md
+      - Profiles and Transport Accounts: api/profiles-and-transport-accounts.md
       - Commands: api/commands.md
       - Executors: api/executors.md
       - Sessions and Messages: api/sessions-and-messages.md

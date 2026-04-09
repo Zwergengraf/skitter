@@ -75,6 +75,7 @@ def _guess_content_type(filename: str, provided: str | None) -> str:
 def _store_uploaded_attachments(
     *,
     user_id: str,
+    profile_slug: str | None,
     envelope_message_id: str,
     attachments: list[MessageAttachmentCreate],
 ) -> tuple[list[dict], list[Attachment]]:
@@ -83,7 +84,7 @@ def _store_uploaded_attachments(
     if len(attachments) > MAX_MESSAGE_ATTACHMENTS:
         raise HTTPException(status_code=400, detail=f"At most {MAX_MESSAGE_ATTACHMENTS} attachments are allowed.")
 
-    upload_root = user_workspace_root(user_id) / ".uploads" / envelope_message_id
+    upload_root = user_workspace_root(user_id, profile_slug) / ".uploads" / envelope_message_id
     upload_root.mkdir(parents=True, exist_ok=True)
 
     stored_meta: list[dict] = []
@@ -152,6 +153,8 @@ async def send_message(
         or session.origin
         or "web"
     )
+    profile = await repo.get_agent_profile(str(getattr(session, "agent_profile_id", "") or "").strip())
+    profile_slug = getattr(profile, "slug", None)
 
     envelope = MessageEnvelope(
         message_id=str(uuid.uuid4()),
@@ -164,6 +167,7 @@ async def send_message(
     )
     uploaded_meta, uploaded_runtime_attachments = _store_uploaded_attachments(
         user_id=session.user_id,
+        profile_slug=profile_slug,
         envelope_message_id=envelope.message_id,
         attachments=payload.attachments,
     )
@@ -177,18 +181,25 @@ async def send_message(
         )
         await repo.set_user_meta(
             session.user_id,
-            {
-                "last_private_origin": envelope.origin,
-                "last_private_destination_id": destination_hint,
-                "last_seen_at": datetime.utcnow().isoformat(),
-            },
+            {"last_seen_at": datetime.utcnow().isoformat()},
         )
+        if profile is not None:
+            await repo.update_agent_profile(
+                profile.id,
+                meta_updates={
+                    "last_private_origin": envelope.origin,
+                    "last_private_destination_id": destination_hint,
+                    "last_seen_at": datetime.utcnow().isoformat(),
+                },
+            )
     metadata = dict(metadata_input)
     metadata.update(
         {
             "message_id": envelope.message_id,
             "origin": envelope.origin,
             "internal_user_id": session.user_id,
+            "agent_profile_id": getattr(session, "agent_profile_id", None),
+            "agent_profile_slug": profile_slug,
             "scope_type": scope_type,
             "scope_id": scope_id,
             "is_private": scope_type == "private",
@@ -292,7 +303,8 @@ async def get_message_attachment(
     url = str(item.get("url") or "").strip()
     path_str = str(item.get("path") or "").strip()
     if path_str:
-        workspace_root = user_workspace_root(session.user_id).resolve()
+        profile = await repo.get_agent_profile(str(getattr(session, "agent_profile_id", "") or "").strip())
+        workspace_root = user_workspace_root(session.user_id, getattr(profile, "slug", None)).resolve()
         candidate = Path(path_str)
         try:
             resolved = candidate.resolve(strict=False)

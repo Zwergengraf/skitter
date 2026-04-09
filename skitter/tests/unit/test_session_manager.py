@@ -13,6 +13,7 @@ import skitter.core.sessions as sessions_module
 class _SessionRow:
     id: str
     user_id: str
+    agent_profile_id: str
     status: str
     scope_type: str
     scope_id: str
@@ -27,19 +28,31 @@ class _FakeRepo:
         self.sessions: dict[str, _SessionRow] = {}
         self.create_calls = 0
         self.queued_summary_ids: list[str] = []
+        self.profile_default_models: dict[str, str | None] = {}
 
     async def get_session(self, session_id: str) -> _SessionRow | None:
         return self.sessions.get(session_id)
 
-    async def get_active_session_by_scope(self, scope_type: str, scope_id: str) -> _SessionRow | None:
+    async def get_active_session_by_scope(
+        self,
+        scope_type: str,
+        scope_id: str,
+        agent_profile_id: str | None = None,
+    ) -> _SessionRow | None:
         for row in self.sessions.values():
-            if row.status == "active" and row.scope_type == scope_type and row.scope_id == scope_id:
+            if (
+                row.status == "active"
+                and row.scope_type == scope_type
+                and row.scope_id == scope_id
+                and (agent_profile_id is None or row.agent_profile_id == agent_profile_id)
+            ):
                 return row
         return None
 
     async def create_session(
         self,
         user_id: str,
+        agent_profile_id: str | None = None,
         status: str = "active",
         model: str | None = None,
         origin: str = "discord",
@@ -49,10 +62,11 @@ class _FakeRepo:
         _ = origin
         self.create_calls += 1
         session_id = f"created-{self.create_calls}"
-        normalized_scope_id = scope_id or f"{scope_type}:{user_id}"
+        normalized_scope_id = scope_id or f"{scope_type}:{agent_profile_id or user_id}"
         row = _SessionRow(
             id=session_id,
             user_id=user_id,
+            agent_profile_id=agent_profile_id or "profile-default",
             status=status,
             scope_type=scope_type,
             scope_id=normalized_scope_id,
@@ -78,6 +92,9 @@ class _FakeRepo:
         self.queued_summary_ids.append(session_id)
         self.sessions[session_id] = row
         return row
+
+    async def get_profile_default_model_name(self, profile_id: str) -> str | None:
+        return self.profile_default_models.get(profile_id)
 
 
 class _SessionCtx:
@@ -116,16 +133,18 @@ async def test_get_or_create_session_refreshes_stale_cached_session(
     old_session = _SessionRow(
         id="session-old",
         user_id="user-1",
+        agent_profile_id="profile-default",
         status="ended",
         scope_type="private",
-        scope_id="private:user-1",
+        scope_id="private:profile-default",
     )
     new_session = _SessionRow(
         id="session-new",
         user_id="user-1",
+        agent_profile_id="profile-default",
         status="active",
         scope_type="private",
-        scope_id="private:user-1",
+        scope_id="private:profile-default",
     )
     repo.sessions = {
         old_session.id: old_session,
@@ -135,22 +154,24 @@ async def test_get_or_create_session_refreshes_stale_cached_session(
     token = object()
     monkeypatch.setattr(sessions_module, "SessionLocal", lambda: _SessionCtx(token))
     monkeypatch.setattr(sessions_module, "Repository", lambda _session: repo)
-    monkeypatch.setattr(sessions_module, "ensure_user_workspace", lambda _user_id: None)
+    monkeypatch.setattr(sessions_module, "ensure_profile_workspace", lambda _user_id, _profile_slug=None: None)
     monkeypatch.setattr(sessions_module, "resolve_model_name", lambda _value, purpose: f"{purpose}-model")
 
-    manager = SessionManager(runtime=_RuntimeStub(), workspace_root="workspace")
-    manager._scope_session["private:user-1"] = old_session.id
+    manager = SessionManager(runtime=_RuntimeStub())
+    manager._scope_session["profile-default:private:profile-default"] = old_session.id
 
     resolved = await manager.get_or_create_session_for_scope(
         user_id="user-1",
+        agent_profile_id="profile-default",
+        agent_profile_slug="default",
         scope_type="private",
-        scope_id="private:user-1",
+        scope_id="private:profile-default",
         origin="discord",
-        cache_key="private:user-1",
+        cache_key="private:profile-default",
     )
 
     assert resolved == new_session.id
-    assert manager._scope_session["private:user-1"] == new_session.id
+    assert manager._scope_session["profile-default:private:profile-default"] == new_session.id
     assert repo.create_calls == 0
 
 
@@ -163,9 +184,10 @@ async def test_start_new_session_queues_background_summary_without_blocking(
     active_session = _SessionRow(
         id="session-active",
         user_id="user-1",
+        agent_profile_id="profile-default",
         status="active",
         scope_type="private",
-        scope_id="private:user-1",
+        scope_id="private:profile-default",
         model="provider/session-model",
     )
     repo.sessions = {active_session.id: active_session}
@@ -173,8 +195,12 @@ async def test_start_new_session_queues_background_summary_without_blocking(
     token = object()
     monkeypatch.setattr(sessions_module, "SessionLocal", lambda: _SessionCtx(token))
     monkeypatch.setattr(sessions_module, "Repository", lambda _session: repo)
-    monkeypatch.setattr(sessions_module, "ensure_user_workspace", lambda _user_id: None)
-    monkeypatch.setattr(sessions_module, "user_workspace_root", lambda user_id: tmp_path / user_id)
+    monkeypatch.setattr(sessions_module, "ensure_profile_workspace", lambda _user_id, _profile_slug=None: None)
+    monkeypatch.setattr(
+        sessions_module,
+        "user_workspace_root",
+        lambda user_id, profile_slug=None: tmp_path / user_id / (profile_slug or "default"),
+    )
     monkeypatch.setattr(sessions_module, "resolve_model_name", lambda _value, purpose: f"{purpose}-model")
 
     class _RuntimeCapture:
@@ -194,12 +220,14 @@ async def test_start_new_session_queues_background_summary_without_blocking(
         async def index_file(self, user_id: str, session_id: str, summary_path: object, force: bool = False) -> None:
             raise AssertionError("memory indexing should not run inline when starting a new session")
 
-    manager = SessionManager(runtime=_RuntimeCapture(), workspace_root="workspace", memory_service=_MemoryStub())
+    manager = SessionManager(runtime=_RuntimeCapture(), memory_service=_MemoryStub())
 
     summary_path, new_session_id = await manager.start_new_session_for_scope(
         user_id="user-1",
+        agent_profile_id="profile-default",
+        agent_profile_slug="default",
         scope_type="private",
-        scope_id="private:user-1",
+        scope_id="private:profile-default",
         origin="discord",
         channel_id=None,
     )
@@ -209,3 +237,37 @@ async def test_start_new_session_queues_background_summary_without_blocking(
     assert repo.sessions["session-active"].status == "ended"
     assert repo.sessions["session-active"].summary_status == "pending"
     assert repo.queued_summary_ids == ["session-active"]
+
+
+@pytest.mark.asyncio
+async def test_new_sessions_use_profile_default_model_when_available(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo = _FakeRepo()
+
+    token = object()
+    monkeypatch.setattr(sessions_module, "SessionLocal", lambda: _SessionCtx(token))
+    monkeypatch.setattr(sessions_module, "Repository", lambda _session: repo)
+    monkeypatch.setattr(sessions_module, "ensure_profile_workspace", lambda _user_id, _profile_slug=None: None)
+    monkeypatch.setattr(sessions_module, "resolve_model_name", lambda value=None, purpose="main": value or f"{purpose}-model")
+    async def _profile_default_model(_repo, profile_id: str | None, *, purpose: str = "main") -> str | None:
+        _ = _repo, purpose
+        if profile_id == "profile-default":
+            return "provider/fast"
+        return None
+    monkeypatch.setattr(sessions_module, "resolve_profile_default_model_name", _profile_default_model)
+
+    manager = SessionManager(runtime=_RuntimeStub())
+
+    session_id = await manager.get_or_create_session_for_scope(
+        user_id="user-1",
+        agent_profile_id="profile-default",
+        agent_profile_slug="default",
+        scope_type="private",
+        scope_id="private:profile-default",
+        origin="discord",
+        cache_key="private:profile-default",
+    )
+
+    assert session_id == "created-1"
+    assert repo.sessions[session_id].model == "provider/fast"

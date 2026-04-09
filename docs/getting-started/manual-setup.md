@@ -1,6 +1,6 @@
 # Manual Setup
 
-This path gets you to a running local stack (DB + API + optional clients) as an alternative to the Docker setup, useful for quick development/testing.
+This path gets you to a running local stack without relying on the full Docker install flow.
 
 If you want the simplest install/upgrade workflow instead, use:
 
@@ -23,13 +23,11 @@ Useful companions:
 ./setup.sh uninstall
 ```
 
-If you installed `skitter-node` or `skitter-tui` with `./setup.sh install-cli` or `./setup.sh install-tui`, `./setup.sh upgrade ...` refreshes those CLI environments too.
-
 ## Prerequisites
 
 - Python 3.11+
-- Docker (for PostgreSQL)
-- Node 18+ (only if you also run the admin web UI)
+- Docker for PostgreSQL
+- Node 18+ if you also run the admin web UI
 
 ## 1) Install
 
@@ -46,13 +44,13 @@ cp config.example.yaml config.yaml
 cp .env.example .env
 ```
 
-Generate a valid Fernet key for `SKITTER_SECRETS_MASTER_KEY`:
+Generate a Fernet key for `SKITTER_SECRETS_MASTER_KEY`:
 
 ```bash
 python -c "import base64, secrets; print(base64.urlsafe_b64encode(secrets.token_bytes(32)).decode())"
 ```
 
-Generate random values for `SKITTER_API_KEY` and `SKITTER_BOOTSTRAP_CODE` with:
+Generate random values for `SKITTER_API_KEY` and `SKITTER_BOOTSTRAP_CODE`:
 
 ```bash
 openssl rand -hex 24
@@ -68,15 +66,23 @@ SKITTER_SECRETS_MASTER_KEY=
 ADMIN_WEB_API_BASE_URL=http://localhost:8000
 ```
 
-## 3) Configure models/providers in `config.yaml`
+## 3) Configure `config.yaml`
 
 At minimum, set:
 
-- `providers` (`name`, optional `api_type` = `openai|anthropic`, `api_base`, `api_key`)
-- `models` (`name`, `provider`, `model_id`, token costs)
-- `main_model` (ordered fallback list of `provider/model`)
-- `heartbeat_model` (ordered fallback list of `provider/model`)
-- `discord.token` (if Discord transport is enabled)
+- `providers`
+- `models`
+- `main_model`
+- `heartbeat_model`
+- `workspace.root`
+- `discord.enabled`
+- `discord.token` if you want the shared default Discord bot
+
+Notes:
+
+- `discord.token` is the shared default Discord bot token.
+- Dedicated per-profile Discord bot overrides are configured later in the admin web UI, not in YAML.
+- In Docker-first setups, `workspace.root: /workspace` is the normal default.
 
 ## 4) Start PostgreSQL and Initialize DB
 
@@ -91,7 +97,7 @@ python -m skitter.data.init_db
 python -m skitter.server
 ```
 
-Optional (disable Discord transport in `config.yaml`):
+If you want no shared Discord bot at all:
 
 ```yaml
 discord:
@@ -109,9 +115,9 @@ npm run dev
 Admin UI default: `http://localhost:5173`
 API default: `http://localhost:8000`
 
-## 7) Bootstrap First User (No Discord Required)
+## 7) Bootstrap First User
 
-Use the bootstrap code you set in `.env`:
+Use the bootstrap code from `.env`:
 
 ```bash
 curl -sS -X POST http://localhost:8000/v1/auth/bootstrap \
@@ -124,7 +130,7 @@ curl -sS -X POST http://localhost:8000/v1/auth/bootstrap \
   }'
 ```
 
-The response includes a user access token (`token`).
+The response includes a user access token.
 
 ## 8) Smoke Test a Command
 
@@ -133,13 +139,26 @@ curl -sS -X POST http://localhost:8000/v1/commands/execute \
   -H "Authorization: Bearer <user-token>" \
   -H 'Content-Type: application/json' \
   -d '{
-    "command": "tools",
+    "command": "profile",
     "origin": "api"
   }'
 ```
 
-## 9) Connect a Client
+## 9) Connect Clients
 
 - TUI: [Local Development](local-development.md)
 - Menubar app: [Local Development](local-development.md)
-- Discord: DM the bot account directly (Discord is DM-only at the moment)
+- Discord:
+  - use the shared default bot token from `config.yaml`, or
+  - create a dedicated bot override for a profile in the admin web UI
+
+## 10) Enable Public Discord Channels
+
+If you want the agent in normal server channels:
+
+1. Add the bot to the server.
+2. Open the admin web UI.
+3. Go to `Profiles`.
+4. Choose the shared default bot or a dedicated profile bot.
+5. Create a channel binding.
+6. Choose `mention_only` or `all_messages`.

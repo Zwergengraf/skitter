@@ -69,6 +69,8 @@ final class AppState: ObservableObject {
     @Published private(set) var whisperDownloadStatusText: String = ""
     @Published private(set) var currentUserID: String = ""
     @Published private(set) var currentUserDisplayName: String = ""
+    @Published private(set) var currentDefaultProfileSlug: String = ""
+    @Published private(set) var availableProfiles: [AgentProfile] = []
 
     let settings: SettingsStore
     private let api: APIClient
@@ -99,6 +101,7 @@ final class AppState: ObservableObject {
         LocalCommand(id: "tools", name: "/tools", usage: "/tools", description: "Show tool approval settings"),
         LocalCommand(id: "model", name: "/model", usage: "/model [provider/model]", description: "List/set active model"),
         LocalCommand(id: "machine", name: "/machine", usage: "/machine [name_or_id]", description: "List/set default machine"),
+        LocalCommand(id: "profile", name: "/profile", usage: "/profile [action]", description: "Show or switch agent profiles"),
         LocalCommand(id: "pair", name: "/pair", usage: "/pair", description: "Create a pair code"),
         LocalCommand(id: "info", name: "/info", usage: "/info", description: "Show session usage info"),
     ]
@@ -160,6 +163,8 @@ final class AppState: ObservableObject {
         settings.apiKey = ""
         currentUserID = ""
         currentUserDisplayName = ""
+        currentDefaultProfileSlug = ""
+        availableProfiles = []
         lastAuthUserFetchAt = nil
         lastModelFetchAt = nil
         sessionID = nil
@@ -178,7 +183,74 @@ final class AppState: ObservableObject {
         didInitialStatusCheck = false
         errorBanner = nil
         health = .checking
+        settings.selectedProfileSlug = ""
         await refreshStatus()
+    }
+
+    var selectedProfileSlug: String {
+        settings.selectedProfileSlug.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    var activeProfileSlug: String {
+        let selected = selectedProfileSlug
+        if !selected.isEmpty {
+            return selected
+        }
+        let fallback = currentDefaultProfileSlug.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !fallback.isEmpty {
+            return fallback
+        }
+        return availableProfiles.first(where: \.isDefault)?.slug
+            ?? availableProfiles.first?.slug
+            ?? ""
+    }
+
+    var activeProfile: AgentProfile? {
+        let slug = activeProfileSlug
+        guard !slug.isEmpty else { return availableProfiles.first(where: \.isDefault) ?? availableProfiles.first }
+        return availableProfiles.first(where: { $0.slug == slug })
+            ?? availableProfiles.first(where: \.isDefault)
+            ?? availableProfiles.first
+    }
+
+    var activeProfileMenuTitle: String {
+        if let profile = activeProfile {
+            return profile.name
+        }
+        let slug = activeProfileSlug
+        return slug.isEmpty ? "Profile" : slug
+    }
+
+    func useProfile(slug: String?) async {
+        let cleaned = slug?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let current = selectedProfileSlug
+        if cleaned == current || (cleaned.isEmpty && current.isEmpty) {
+            return
+        }
+        settings.selectedProfileSlug = cleaned
+        await applyProfileSelectionChange()
+    }
+
+    func refreshProfiles(forceSessionResetIfSelectionInvalid: Bool = false) async {
+        do {
+            let profiles = try await api.listProfiles()
+            availableProfiles = profiles.sorted { lhs, rhs in
+                if lhs.isDefault != rhs.isDefault {
+                    return lhs.isDefault && !rhs.isDefault
+                }
+                return lhs.name.localizedCaseInsensitiveCompare(rhs.name) == .orderedAscending
+            }
+            currentDefaultProfileSlug = profiles.first(where: \.isDefault)?.slug ?? currentDefaultProfileSlug
+            let selected = selectedProfileSlug
+            if !selected.isEmpty && !profiles.contains(where: { $0.slug == selected && $0.status != "archived" }) {
+                settings.selectedProfileSlug = ""
+                if forceSessionResetIfSelectionInvalid {
+                    await applyProfileSelectionChange()
+                }
+            }
+        } catch {
+            setError(error)
+        }
     }
 
     var hasUnreadMessages: Bool {
@@ -214,8 +286,13 @@ final class AppState: ObservableObject {
     }
 
     func ensureSession(forceNew: Bool = false, syncWithServer: Bool = false) async throws -> String {
+        let requestedProfileSlug = activeProfileSlug.isEmpty ? nil : activeProfileSlug
         if !forceNew {
-            let id = try await api.createOrResumeSession(origin: "menubar", reuseActive: true)
+            let id = try await api.createOrResumeSession(
+                origin: "menubar",
+                reuseActive: true,
+                agentProfileSlug: requestedProfileSlug
+            )
             let previousSessionID = sessionID
             let shouldLoadHistory = id != previousSessionID
             if shouldLoadHistory {
@@ -235,7 +312,11 @@ final class AppState: ObservableObject {
         }
 
         let previousSessionID = sessionID
-        let id = try await api.createOrResumeSession(origin: "menubar", reuseActive: false)
+        let id = try await api.createOrResumeSession(
+            origin: "menubar",
+            reuseActive: false,
+            agentProfileSlug: requestedProfileSlug
+        )
         let shouldLoadHistory = id != previousSessionID
         if shouldLoadHistory {
             localOverlayMessages.removeAll()
@@ -557,6 +638,10 @@ final class AppState: ObservableObject {
             let args = argument.isEmpty ? [:] : ["target_machine": argument]
             _ = await runRemoteCommand(name: "machine", args: args)
             return true
+        case "/profile":
+            let args = ["raw": argument]
+            _ = await runRemoteCommand(name: "profile", args: args)
+            return true
         case "/pair":
             if !argument.isEmpty && !hasWorkingConnection {
                 await pairAccount(pairCode: argument)
@@ -575,12 +660,18 @@ final class AppState: ObservableObject {
 
     private func runRemoteCommand(name: String, args: [String: String] = [:]) async -> CommandResult? {
         do {
-            let result = try await api.executeCommand(command: name, args: args, origin: "menubar")
+            let result = try await api.executeCommand(
+                command: name,
+                args: args,
+                origin: "menubar",
+                agentProfileSlug: activeProfileSlug.isEmpty ? nil : activeProfileSlug
+            )
             if !result.message.isEmpty {
                 appendLocalMessage(result.message)
             } else {
                 appendLocalMessage("Command completed.")
             }
+            await applyProfileCommandResult(result, commandName: name)
             return result
         } catch {
             setError(error)
@@ -1444,10 +1535,14 @@ final class AppState: ObservableObject {
                 let me = try await api.authMe()
                 currentUserID = me.id
                 currentUserDisplayName = me.displayName
+                currentDefaultProfileSlug = me.defaultProfileSlug ?? currentDefaultProfileSlug
                 lastAuthUserFetchAt = Date()
+                await refreshProfiles()
             } catch {
                 // ignore: status checks already surface connectivity/auth errors
             }
+        } else if availableProfiles.isEmpty && !settings.apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            await refreshProfiles()
         }
         hasWorkingConnection = sessionCheckSucceeded
         didInitialStatusCheck = true
@@ -1607,6 +1702,43 @@ final class AppState: ObservableObject {
         return "menubar"
     }
 
+    private func applyProfileSelectionChange() async {
+        sessionID = nil
+        messages = []
+        localOverlayMessages = []
+        pendingToolApprovals = []
+        pendingUserPrompts = []
+        unreadMessageCount = 0
+        isSending = false
+        requestStartedAt = nil
+        progressStatusText = ""
+        do {
+            _ = try await ensureSession(forceNew: false, syncWithServer: true)
+            await refreshProfiles()
+        } catch {
+            setError(error)
+        }
+    }
+
+    private func applyProfileCommandResult(_ result: CommandResult, commandName: String) async {
+        guard commandName == "profile" else {
+            return
+        }
+        let data = result.data ?? [:]
+        if let defaultSlug = jsonString(data["default_profile_slug"]), !defaultSlug.isEmpty {
+            currentDefaultProfileSlug = defaultSlug
+        }
+        if let nextSlug = jsonString(data["agent_profile_slug"]),
+           let applySelection = jsonBool(data["apply_client_selection"]),
+           applySelection
+        {
+            settings.selectedProfileSlug = nextSlug
+            await applyProfileSelectionChange()
+            return
+        }
+        await refreshProfiles()
+    }
+
     private func isTimeoutError(_ error: Error) -> Bool {
         if let urlError = error as? URLError {
             return urlError.code == .timedOut
@@ -1672,5 +1804,13 @@ final class AppState: ObservableObject {
             url = baseDir.appendingPathComponent("\(stem)-\(stamp)").appendingPathExtension(ext)
         }
         return url
+    }
+
+    private func jsonBool(_ value: JSONValue?) -> Bool? {
+        guard let value else { return nil }
+        if case let .bool(flag) = value {
+            return flag
+        }
+        return nil
     }
 }

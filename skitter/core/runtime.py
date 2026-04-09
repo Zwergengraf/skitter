@@ -17,13 +17,23 @@ from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, System
 
 from .config import settings
 from .events import EventBus
+from .profile_context import (
+    current_agent_profile_id,
+    current_agent_profile_slug,
+    reset_current_agent_profile_id,
+    reset_current_agent_profile_slug,
+    set_current_agent_profile_id,
+    set_current_agent_profile_slug,
+)
 from .session_memory import ARCHIVE_SUMMARY_PROMPT, CONTEXT_COMPACTION_PROMPT, rough_token_estimate
 from .graph import (
     UserPromptRequired,
     build_graph,
     current_user_id,
     reset_current_channel_id,
+    reset_current_guild_id,
     reset_current_origin,
+    reset_current_transport_account_key,
     reset_current_scope_id,
     reset_current_scope_type,
     reset_current_session_id,
@@ -31,18 +41,28 @@ from .graph import (
     reset_current_message_id,
     reset_current_run_id,
     set_current_channel_id,
+    set_current_guild_id,
     set_current_message_id,
     set_current_origin,
+    set_current_transport_account_key,
     set_current_run_id,
     set_current_scope_id,
     set_current_scope_type,
     set_current_session_id,
     set_current_user_id,
 )
-from .models import AgentResponse, Attachment, MessageEnvelope, PendingUserPrompt, StreamEvent
+from .models import (
+    AgentResponse,
+    Attachment,
+    MessageEnvelope,
+    PendingUserPrompt,
+    StreamEvent,
+    normalize_agent_response_text,
+)
 from .llm import ResolvedModel, build_llm, list_models, resolve_model, resolve_model_candidates, resolve_model_name
 from .llm_debug import ThinkingDebugCallback
 from .prompting import build_system_prompt
+from .profile_service import resolve_profile_default_model_name
 from .usage import collect_usage, record_usage
 from .run_limits import RunBudgetUsageCallback, RunLimitsState, reset_current_run_limits, set_current_run_limits
 from ..tools.approval_service import ToolApprovalService
@@ -70,18 +90,21 @@ class AgentRuntime:
         user_prompt_service=None,
         scheduler_service=None,
         job_service=None,
+        discord_mention_service=None,
     ) -> None:
         self.event_bus = event_bus
         self._approval_service = approval_service
         self._user_prompt_service = user_prompt_service
         self._scheduler_service = scheduler_service
         self._job_service = job_service
+        self._discord_mention_service = discord_mention_service
         self._session_memory_service = None
         self._fixed_graph = graph
         self._graphs: dict[tuple[str, str, str, str, str], object] = {}
         self._tool_client = ToolRunnerClient()
         self._history: dict[str, list[BaseMessage]] = defaultdict(list)
         self._session_models: dict[str, str] = {}
+        self._session_locks: dict[str, asyncio.Lock] = {}
 
     def set_scheduler_service(self, scheduler_service) -> None:
         self._scheduler_service = scheduler_service
@@ -95,6 +118,10 @@ class AgentRuntime:
 
     def set_user_prompt_service(self, user_prompt_service) -> None:
         self._user_prompt_service = user_prompt_service
+        self._graphs.clear()
+
+    def set_discord_mention_service(self, discord_mention_service) -> None:
+        self._discord_mention_service = discord_mention_service
         self._graphs.clear()
 
     def set_session_memory_service(self, session_memory_service) -> None:
@@ -119,7 +146,68 @@ class AgentRuntime:
             content = f"/{envelope.command} {envelope.metadata}".strip()
         elif envelope.attachments:
             attachments_meta = self._serialize_attachments(envelope.attachments)
+        coalesced_messages = envelope.metadata.get("coalesced_messages")
+        if isinstance(coalesced_messages, list) and coalesced_messages:
+            content = self._render_coalesced_sender_context(content, coalesced_messages, origin=envelope.origin)
+            return content, is_command, attachments_meta
+        content = self._render_sender_context(content, envelope.metadata, origin=envelope.origin)
         return content, is_command, attachments_meta
+
+    def _render_coalesced_sender_context(
+        self,
+        fallback_content: str,
+        coalesced_messages: list[object],
+        *,
+        origin: str | None = None,
+    ) -> str:
+        rendered_parts: list[str] = []
+        for item in coalesced_messages:
+            if not isinstance(item, dict):
+                continue
+            part_text = str(item.get("text") or "").strip()
+            rendered = self._render_sender_context(part_text, item, origin=origin)
+            if rendered:
+                rendered_parts.append(rendered)
+        if not rendered_parts:
+            return fallback_content
+        header = "[Messages received while you were busy. Reply once to the full batch.]"
+        return header + "\n\n" + "\n\n".join(rendered_parts)
+
+    def _render_sender_context(
+        self,
+        content: str,
+        metadata: dict[str, object] | None,
+        *,
+        origin: str | None = None,
+    ) -> str:
+        meta = metadata or {}
+        message_origin = str(origin or meta.get("origin") or "").strip().lower()
+        if message_origin != "discord":
+            return content
+        coalesced_messages = meta.get("coalesced_messages")
+        if isinstance(coalesced_messages, list) and coalesced_messages:
+            return self._render_coalesced_sender_context(content, coalesced_messages, origin=message_origin)
+        if bool(meta.get("is_private")):
+            return content
+        sender_id = str(meta.get("sender_transport_user_id") or "").strip()
+        display_name = str(meta.get("sender_display_name") or "").strip()
+        username = str(meta.get("sender_username") or "").strip()
+        mention = str(meta.get("sender_mention") or "").strip()
+        role_names = [str(item).strip() for item in (meta.get("sender_role_names") or []) if str(item).strip()]
+        if not (sender_id or display_name or username or mention or role_names):
+            return content
+        label = display_name or username or sender_id or "unknown"
+        parts = [label]
+        if username and username != label:
+            parts.append(f"@{username}")
+        if mention:
+            parts.append(mention)
+        if bool(meta.get("sender_is_bot")):
+            parts.append("bot")
+        if role_names:
+            parts.append(f"roles: {', '.join(role_names[:6])}")
+        header = "[Discord sender: " + " | ".join(parts) + "]"
+        return f"{header}\n{content}" if content else header
 
     def _push_request_context(
         self,
@@ -129,13 +217,19 @@ class AgentRuntime:
         run_id: str,
     ) -> tuple[str, str, str, dict[str, object]]:
         internal_user_id = str(envelope.metadata.get("internal_user_id", envelope.user_id))
+        agent_profile_id = str(envelope.metadata.get("agent_profile_id") or "").strip()
+        agent_profile_slug = str(envelope.metadata.get("agent_profile_slug") or "").strip()
         scope_type = str(envelope.metadata.get("scope_type") or "private")
         scope_id = str(envelope.metadata.get("scope_id") or f"private:{internal_user_id}")
         tokens: dict[str, object] = {
             "session": set_current_session_id(session_id),
             "channel": set_current_channel_id(envelope.channel_id),
             "user": set_current_user_id(internal_user_id),
+            "profile_id": set_current_agent_profile_id(agent_profile_id),
+            "profile_slug": set_current_agent_profile_slug(agent_profile_slug),
             "origin": set_current_origin(envelope.origin),
+            "transport_account_key": set_current_transport_account_key(envelope.transport_account_key),
+            "guild_id": set_current_guild_id(str(envelope.metadata.get("guild_id") or "")),
             "run_id": set_current_run_id(run_id),
             "message_id": set_current_message_id(envelope.message_id),
             "scope_type": set_current_scope_type(scope_type),
@@ -147,6 +241,10 @@ class AgentRuntime:
         reset_current_scope_id(tokens["scope_id"])
         reset_current_scope_type(tokens["scope_type"])
         reset_current_origin(tokens["origin"])
+        reset_current_transport_account_key(tokens["transport_account_key"])
+        reset_current_guild_id(tokens["guild_id"])
+        reset_current_agent_profile_slug(tokens["profile_slug"])
+        reset_current_agent_profile_id(tokens["profile_id"])
         reset_current_user_id(tokens["user"])
         reset_current_message_id(tokens["message_id"])
         reset_current_run_id(tokens["run_id"])
@@ -159,6 +257,25 @@ class AgentRuntime:
         if not match:
             return None, None
         return match.group(1).strip(), match.group(2).strip()
+
+    @staticmethod
+    def _message_stop_reason(msg: BaseMessage | None) -> str | None:
+        if msg is None:
+            return None
+        for attr in ("response_metadata", "additional_kwargs"):
+            payload = getattr(msg, attr, None) or {}
+            if not isinstance(payload, dict):
+                continue
+            for key in ("stop_reason", "finish_reason", "completion_reason"):
+                value = payload.get(key)
+                if isinstance(value, str) and value.strip():
+                    return value.strip().lower()
+        return None
+
+    @staticmethod
+    def _is_max_tokens_stop_reason(reason: str | None) -> bool:
+        normalized = str(reason or "").strip().lower()
+        return normalized in {"max_tokens", "length", "max_output_tokens", "model_length"}
 
     async def _publish_stream_event(self, session_id: str, event_type: str, data: dict) -> None:
         await self.event_bus.publish(
@@ -350,6 +467,11 @@ class AgentRuntime:
         return cleaned, attachments
 
     async def handle_message(self, session_id: str, envelope: MessageEnvelope) -> AgentResponse:
+        lock = self._session_locks.setdefault(session_id, asyncio.Lock())
+        async with lock:
+            return await self._handle_message_locked(session_id, envelope)
+
+    async def _handle_message_locked(self, session_id: str, envelope: MessageEnvelope) -> AgentResponse:
         if not envelope.text and not envelope.command and not envelope.attachments:
             return AgentResponse(text="")
         if not list_models():
@@ -619,10 +741,33 @@ class AgentRuntime:
                     payload={"chunks": run_reasoning},
                 )
 
-            for msg in reversed(messages):
-                if isinstance(msg, AIMessage):
-                    response = msg.content
-                    break
+            latest_new_ai_message = next((msg for msg in reversed(new_messages) if isinstance(msg, AIMessage)), None)
+            latest_ai_message = latest_new_ai_message
+            if latest_ai_message is None:
+                latest_ai_message = next((msg for msg in reversed(messages) if isinstance(msg, AIMessage)), None)
+            if latest_ai_message is not None:
+                response = latest_ai_message.content
+
+            stop_reason = self._message_stop_reason(latest_new_ai_message)
+            if self._is_max_tokens_stop_reason(stop_reason):
+                run_limit_reason = "max_tokens"
+                run_limit_detail = "The model hit its output token limit before finishing."
+                visible_response = self._message_content_to_text(response).strip()
+                if not visible_response:
+                    response = await self._build_limit_fallback_response(
+                        model_name=model_name,
+                        history=messages,
+                        reason=run_limit_reason,
+                        detail=run_limit_detail,
+                    )
+                    messages = list(messages) + [AIMessage(content=response)]
+                    self._history[session_id] = list(messages)
+                await self._trace_event(
+                    run_id=run_id,
+                    session_id=session_id,
+                    event_type="limit_reached",
+                    payload={"reason": run_limit_reason, "detail": run_limit_detail, "provider_reason": stop_reason},
+                )
 
             usage = collect_usage(messages, envelope.message_id)
             if usage is not None:
@@ -759,6 +904,7 @@ class AgentRuntime:
                 response=response,
                 session_id=session_id,
             )
+        cleaned = normalize_agent_response_text(cleaned)
         if run_limit_reason is None:
             run_limit_reason, run_limit_detail = self._extract_limit_from_response(cleaned)
         if run_status == "running":
@@ -839,6 +985,7 @@ class AgentRuntime:
                     run_id=run_id,
                     session_id=session_id,
                     user_id=user_id,
+                    agent_profile_id=current_agent_profile_id().strip() or None,
                     message_id=message_id,
                     origin=origin,
                     model=model,
@@ -904,6 +1051,17 @@ class AgentRuntime:
         if record and getattr(record, "model", None):
             self._session_models[session_id] = record.model
             return record.model
+        if record is not None:
+            async with SessionLocal() as session:
+                repo = Repository(session)
+                profile_default = await resolve_profile_default_model_name(
+                    repo,
+                    getattr(record, "agent_profile_id", None),
+                    purpose="main",
+                )
+            if profile_default:
+                self._session_models[session_id] = profile_default
+                return profile_default
         default_name = resolve_model_name(None, purpose="main")
         self._session_models[session_id] = default_name
         return default_name
@@ -933,6 +1091,7 @@ class AgentRuntime:
                 scheduler_service=self._scheduler_service,
                 job_service=self._job_service,
                 event_bus=self.event_bus,
+                discord_mention_service=self._discord_mention_service,
                 model_name=resolved.name,
                 purpose=purpose,
                 include_user_prompt_tools=include_user_prompt_tools,
@@ -1755,10 +1914,15 @@ Each bullet must be self-contained, explicit, and searchable.
                 if role == "user":
                     attachments_meta = meta.get("attachments")
                     if isinstance(attachments_meta, list) and attachments_meta:
-                        blocks = self._build_content_blocks(content, attachments_meta)
+                        blocks = self._build_content_blocks(self._render_sender_context(content, meta), attachments_meta)
                         history.append(HumanMessage(content_blocks=blocks, additional_kwargs=meta))
                     else:
-                        history.append(HumanMessage(content=content, additional_kwargs=meta))
+                        history.append(
+                            HumanMessage(
+                                content=self._render_sender_context(content, meta),
+                                additional_kwargs=meta,
+                            )
+                        )
                 elif role == "assistant":
                     if meta.get("user_prompt"):
                         history.append(
@@ -1816,7 +1980,7 @@ Each bullet must be self-contained, explicit, and searchable.
         self._history[session_id] = history
 
     def _ensure_system_prompt(self, history: list[BaseMessage], user_id: str) -> None:
-        prompt = build_system_prompt(user_id)
+        prompt = build_system_prompt(user_id, current_agent_profile_slug().strip() or None)
         history[:] = [
             msg
             for msg in history
@@ -1987,6 +2151,10 @@ Each bullet must be self-contained, explicit, and searchable.
         _add(await executor_router.get_session_default(session_id))
         async with SessionLocal() as session:
             repo = Repository(session)
+            session_row = await repo.get_session(session_id)
+            agent_profile_id = str(getattr(session_row, "agent_profile_id", "") or "").strip() or None
+            if agent_profile_id:
+                _add(await repo.get_profile_default_executor_id(agent_profile_id))
             _add(await repo.get_user_default_executor_id(user_id))
             rows = await repo.list_executors_for_user(user_id, include_disabled=False)
             for row in rows:
@@ -2216,7 +2384,7 @@ Each bullet must be self-contained, explicit, and searchable.
             return attachments
         from .workspace import user_workspace_root
 
-        workspace_root = user_workspace_root(user_id).resolve()
+        workspace_root = user_workspace_root(user_id, current_agent_profile_slug().strip() or None).resolve()
         out_dir = workspace_root / ".attachments"
         try:
             out_dir.mkdir(parents=True, exist_ok=True)
@@ -2282,7 +2450,7 @@ Each bullet must be self-contained, explicit, and searchable.
 
         from .workspace import user_workspace_root
 
-        workspace = user_workspace_root(user_id).resolve()
+        workspace = user_workspace_root(user_id, current_agent_profile_slug().strip() or None).resolve()
         as_path = Path(candidate_path)
         if as_path.is_absolute():
             candidate = workspace / Path(str(as_path).lstrip("/"))

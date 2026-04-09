@@ -1,5 +1,6 @@
 import type {
   AdminLiveEvent,
+  AgentProfile,
   AgentJobDetail,
   AgentJobListItem,
   ChannelListItem,
@@ -7,6 +8,7 @@ import type {
   ExecutorItem,
   ExecutorTokenCreateOut,
   MemoryEntry,
+  ModelItem,
   OverviewResponse,
   RunTraceDetail,
   RunTraceListItem,
@@ -15,6 +17,8 @@ import type {
   SecretItem,
   SessionDetail,
   SessionListItem,
+  TransportAccountItem,
+  TransportBindingItem,
   ToolRunListItem,
   UserListItem,
 } from "@/lib/types";
@@ -172,7 +176,11 @@ export const api = {
   getAgentJob: (id: string): Promise<AgentJobDetail> => request(`/v1/agent-jobs/${id}`),
   createSchedule: (payload: {
     user_id: string;
+    agent_profile_id?: string;
     channel_id: string;
+    target_origin?: string;
+    target_destination_id?: string;
+    target_transport_account_key?: string;
     name: string;
     prompt: string;
     model: string;
@@ -184,9 +192,13 @@ export const api = {
   updateSchedule: (
     id: string,
     payload: Partial<{
+      agent_profile_id: string;
       name: string;
       prompt: string;
       model: string;
+      target_origin: string;
+      target_destination_id: string;
+      target_transport_account_key: string;
       schedule_type: string;
       schedule_expr: string;
       enabled: boolean;
@@ -197,16 +209,146 @@ export const api = {
   deleteSchedule: (id: string): Promise<{ deleted: boolean }> =>
     request(`/v1/schedules/${id}`, { method: "DELETE" }),
   getUsers: (): Promise<UserListItem[]> => request("/v1/users"),
+  getProfiles: (userId: string, includeArchived = true): Promise<AgentProfile[]> => {
+    const params = new URLSearchParams();
+    params.set("user_id", userId);
+    if (includeArchived) {
+      params.set("include_archived", "true");
+    }
+    return request(`/v1/profiles?${params.toString()}`);
+  },
+  createProfile: (payload: {
+    user_id: string;
+    name: string;
+    source_profile_slug?: string;
+    mode?: "blank" | "settings" | "all";
+    make_default?: boolean;
+  }): Promise<AgentProfile> =>
+    request("/v1/profiles", { method: "POST", body: JSON.stringify(payload) }),
+  updateProfile: (
+    id: string,
+    payload: Partial<{
+      user_id: string;
+      name: string;
+      archived: boolean;
+      make_default: boolean;
+      default_model: string | null;
+    }>
+  ): Promise<AgentProfile> =>
+    request(`/v1/profiles/${id}`, { method: "PATCH", body: JSON.stringify(payload) }),
+  getModels: (): Promise<ModelItem[]> => request("/v1/models"),
+  deleteProfile: (id: string): Promise<{ id: string; deleted: boolean }> =>
+    request(`/v1/profiles/${id}`, { method: "DELETE" }),
   updateUser: (id: string, payload: { approved: boolean }): Promise<{ id: string; approved: boolean }> =>
     request(`/v1/users/${id}`, { method: "PATCH", body: JSON.stringify(payload) }),
   deleteUser: (id: string): Promise<{ id: string; deleted: boolean }> =>
     request(`/v1/users/${id}`, { method: "DELETE" }),
-  getChannels: (): Promise<ChannelListItem[]> => request("/v1/channels"),
-  getMemory: (userId: string): Promise<MemoryEntry[]> => request(`/v1/memory?user_id=${userId}`),
-  reindexMemory: (userId: string): Promise<{ indexed: number; skipped: number; removed: number }> =>
-    request(`/v1/memory/reindex?user_id=${userId}`, { method: "POST" }),
-  getMemoryFile: (source: string, userId: string): Promise<{ source: string; content: string }> =>
-    request(`/v1/memory/file?source=${encodeURIComponent(source)}&user_id=${encodeURIComponent(userId)}`),
+  getChannels: (filters?: {
+    origin?: string;
+    transport_account_key?: string;
+  }): Promise<ChannelListItem[]> => {
+    const params = new URLSearchParams();
+    if (filters?.origin) {
+      params.set("origin", filters.origin);
+    }
+    if (filters?.transport_account_key) {
+      params.set("transport_account_key", filters.transport_account_key);
+    }
+    const query = params.toString();
+    return request(`/v1/channels${query ? `?${query}` : ""}`);
+  },
+  getTransportAccounts: (userId: string, agentProfileId?: string): Promise<TransportAccountItem[]> => {
+    const params = new URLSearchParams();
+    params.set("user_id", userId);
+    if (agentProfileId) {
+      params.set("agent_profile_id", agentProfileId);
+    }
+    return request(`/v1/transport-accounts?${params.toString()}`);
+  },
+  createTransportAccount: (payload: {
+    user_id: string;
+    agent_profile_id: string;
+    transport?: string;
+    display_name?: string;
+    enabled?: boolean;
+    credential_value: string;
+  }): Promise<TransportAccountItem> =>
+    request("/v1/transport-accounts", { method: "POST", body: JSON.stringify(payload) }),
+  updateTransportAccount: (
+    accountKey: string,
+    payload: Partial<{
+      display_name: string;
+      enabled: boolean;
+      credential_value: string;
+    }>
+  ): Promise<TransportAccountItem> =>
+    request(`/v1/transport-accounts/${encodeURIComponent(accountKey)}`, {
+      method: "PATCH",
+      body: JSON.stringify(payload),
+    }),
+  deleteTransportAccount: (accountKey: string): Promise<{ account_key: string; deleted: boolean }> =>
+    request(`/v1/transport-accounts/${encodeURIComponent(accountKey)}`, { method: "DELETE" }),
+  getTransportSurfaces: (accountKey: string): Promise<ChannelListItem[]> =>
+    request(`/v1/transport-accounts/${encodeURIComponent(accountKey)}/surfaces`),
+  getTransportBindings: (accountKey: string): Promise<TransportBindingItem[]> =>
+    request(`/v1/transport-accounts/${encodeURIComponent(accountKey)}/bindings`),
+  createTransportBinding: (payload: {
+    transport_account_key: string;
+    user_id: string;
+    agent_profile_id?: string;
+    origin?: string;
+    surface_kind: string;
+    surface_id: string;
+    mode?: string;
+    enabled?: boolean;
+  }): Promise<TransportBindingItem> =>
+    request("/v1/transport-accounts/bindings", { method: "POST", body: JSON.stringify(payload) }),
+  updateTransportBinding: (
+    bindingId: string,
+    payload: Partial<{
+      agent_profile_id: string;
+      mode: string;
+      enabled: boolean;
+    }>
+  ): Promise<TransportBindingItem> =>
+    request(`/v1/transport-accounts/bindings/${bindingId}`, {
+      method: "PATCH",
+      body: JSON.stringify(payload),
+    }),
+  deleteTransportBinding: (bindingId: string): Promise<{ id: string; deleted: boolean }> =>
+    request(`/v1/transport-accounts/bindings/${bindingId}`, { method: "DELETE" }),
+  getMemory: (userId: string, agentProfileId?: string): Promise<MemoryEntry[]> => {
+    const params = new URLSearchParams();
+    params.set("user_id", userId);
+    if (agentProfileId) {
+      params.set("agent_profile_id", agentProfileId);
+    }
+    return request(`/v1/memory?${params.toString()}`);
+  },
+  reindexMemory: (
+    userId: string,
+    agentProfileId?: string
+  ): Promise<{ indexed: number; skipped: number; removed: number }> => {
+    const params = new URLSearchParams();
+    params.set("user_id", userId);
+    if (agentProfileId) {
+      params.set("agent_profile_id", agentProfileId);
+    }
+    return request(`/v1/memory/reindex?${params.toString()}`, { method: "POST" });
+  },
+  getMemoryFile: (
+    source: string,
+    userId: string,
+    agentProfileId?: string
+  ): Promise<{ source: string; content: string }> => {
+    const params = new URLSearchParams();
+    params.set("source", source);
+    params.set("user_id", userId);
+    if (agentProfileId) {
+      params.set("agent_profile_id", agentProfileId);
+    }
+    return request(`/v1/memory/file?${params.toString()}`);
+  },
   getSandboxStatus: (): Promise<SandboxStatus> => request("/v1/sandbox"),
   getExecutors: (userId?: string): Promise<ExecutorItem[]> => {
     const params = new URLSearchParams();
@@ -249,14 +391,26 @@ export const api = {
   getConfig: (): Promise<ConfigResponse> => request("/v1/config"),
   updateConfig: (values: Record<string, unknown>): Promise<ConfigResponse> =>
     request("/v1/config", { method: "PUT", body: JSON.stringify({ values }) }),
-  getSecrets: (userId: string): Promise<SecretItem[]> =>
-    request(`/v1/secrets?user_id=${encodeURIComponent(userId)}`),
-  upsertSecret: (payload: { user_id: string; name: string; value: string }): Promise<SecretItem> =>
+  getSecrets: (userId: string, agentProfileId?: string): Promise<SecretItem[]> => {
+    const params = new URLSearchParams();
+    params.set("user_id", userId);
+    if (agentProfileId) {
+      params.set("agent_profile_id", agentProfileId);
+    }
+    return request(`/v1/secrets?${params.toString()}`);
+  },
+  upsertSecret: (payload: { user_id: string; agent_profile_id?: string; name: string; value: string }): Promise<SecretItem> =>
     request("/v1/secrets", { method: "POST", body: JSON.stringify(payload) }),
-  deleteSecret: (userId: string, name: string): Promise<{ deleted: boolean }> =>
-    request(`/v1/secrets/${encodeURIComponent(name)}?user_id=${encodeURIComponent(userId)}`, {
+  deleteSecret: (userId: string, name: string, agentProfileId?: string): Promise<{ deleted: boolean }> => {
+    const params = new URLSearchParams();
+    params.set("user_id", userId);
+    if (agentProfileId) {
+      params.set("agent_profile_id", agentProfileId);
+    }
+    return request(`/v1/secrets/${encodeURIComponent(name)}?${params.toString()}`, {
       method: "DELETE",
-    }),
+    });
+  },
 };
 
 export const streamAdminEvents = async (

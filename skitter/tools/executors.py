@@ -11,6 +11,7 @@ import httpx
 from fastapi import WebSocket
 
 from ..core.config import settings
+from ..core.profile_context import current_agent_profile_id, current_agent_profile_slug
 from ..data.db import SessionLocal
 from ..data.repositories import Repository
 from .sandbox_manager import sandbox_manager
@@ -238,9 +239,13 @@ class ExecutorRouter:
         target = (target_machine or "").strip()
         async with SessionLocal() as session:
             repo = Repository(session)
+            active_profile_id = current_agent_profile_id().strip()
 
             if not target:
                 target = (await self.get_session_default(session_id) or "").strip()
+            if not target:
+                if active_profile_id:
+                    target = (await repo.get_profile_default_executor_id(active_profile_id) or "").strip()
             if not target:
                 target = (await repo.get_user_default_executor_id(user_id) or "").strip()
 
@@ -262,7 +267,11 @@ class ExecutorRouter:
             if settings.executors_auto_docker_default:
                 return await repo.get_or_create_docker_executor(user_id)
 
-            existing_default_id = await repo.get_user_default_executor_id(user_id)
+            existing_default_id = None
+            if active_profile_id:
+                existing_default_id = await repo.get_profile_default_executor_id(active_profile_id)
+            if not existing_default_id:
+                existing_default_id = await repo.get_user_default_executor_id(user_id)
             if existing_default_id:
                 row = await repo.get_executor_for_user(user_id, existing_default_id)
                 if row is not None:
@@ -280,12 +289,12 @@ class ExecutorRouter:
         payload: Dict[str, Any],
         timeout: float | None,
     ) -> Dict[str, Any]:
-        base_url = settings.sandbox_base_url
-        if sandbox_manager is not None:
-            try:
-                base_url = await sandbox_manager.get_base_url(user_id)
-            except RuntimeError:
-                base_url = settings.sandbox_base_url
+        if sandbox_manager is None:
+            raise RuntimeError("Docker sandbox manager is not available. Docker executor mode requires managed sandboxes.")
+        base_url = await sandbox_manager.get_base_url(
+            user_id,
+            profile_slug=current_agent_profile_slug().strip() or None,
+        )
         headers = {"Authorization": f"Bearer {settings.sandbox_api_key}"} if settings.sandbox_api_key else {}
         retries = max(1, int(settings.sandbox_connect_retries))
         backoff = max(0.1, float(settings.sandbox_connect_backoff))

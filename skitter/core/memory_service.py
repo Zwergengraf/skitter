@@ -140,7 +140,15 @@ class MemoryService:
         self.embedder = embedder or EmbeddingsClient()
         self._logger = logging.getLogger(__name__)
 
-    async def index_text(self, user_id: str, session_id: str | None, source: str, text: str) -> int:
+    async def index_text(
+        self,
+        user_id: str,
+        session_id: str | None,
+        source: str,
+        text: str,
+        *,
+        agent_profile_id: str | None = None,
+    ) -> int:
         chunks = chunk_text(text)
         if not chunks:
             return 0
@@ -155,7 +163,13 @@ class MemoryService:
         async with SessionLocal() as session:
             repo = Repository(session)
             for chunk, embedding in zip(chunks, embeddings):
-                await repo.add_memory(user_id=user_id, summary=chunk, embedding=embedding, tags=tags)
+                await repo.add_memory(
+                    user_id=user_id,
+                    agent_profile_id=agent_profile_id,
+                    summary=chunk,
+                    embedding=embedding,
+                    tags=tags,
+                )
         return len(chunks)
 
     def _split_sessions(self, text: str) -> List[tuple[str, str]]:
@@ -182,10 +196,18 @@ class MemoryService:
             return False
         return path.suffix.lower() in {".md", ".txt"}
 
-    async def index_file(self, user_id: str, session_id: str | None, path: Path, force: bool = False) -> bool:
+    async def index_file(
+        self,
+        user_id: str,
+        session_id: str | None,
+        path: Path,
+        force: bool = False,
+        *,
+        agent_profile_id: str | None = None,
+    ) -> bool:
         async with SessionLocal() as session:
             repo = Repository(session)
-            await repo.delete_memory_by_tag(user_id, f"file:{path.name}")
+            await repo.delete_memory_by_tag(user_id, f"file:{path.name}", agent_profile_id=agent_profile_id)
 
         try:
             text = path.read_text(encoding="utf-8", errors="ignore")
@@ -195,12 +217,24 @@ class MemoryService:
         indexed = 0
         if sections:
             for section_session_id, section_text in sections:
-                indexed += await self.index_text(user_id, section_session_id, path.name, section_text)
+                indexed += await self.index_text(
+                    user_id,
+                    section_session_id,
+                    path.name,
+                    section_text,
+                    agent_profile_id=agent_profile_id,
+                )
         else:
-            indexed = await self.index_text(user_id, session_id, path.name, text)
+            indexed = await self.index_text(
+                user_id,
+                session_id,
+                path.name,
+                text,
+                agent_profile_id=agent_profile_id,
+            )
         return indexed > 0
 
-    async def reindex_all(self, user_id: str, memory_root: Path) -> dict:
+    async def reindex_all(self, user_id: str, memory_root: Path, *, agent_profile_id: str | None = None) -> dict:
         memory_root.mkdir(parents=True, exist_ok=True)
         current_files = {
             p.name: p
@@ -213,7 +247,13 @@ class MemoryService:
         removed = 0
 
         for name, path in current_files.items():
-            changed = await self.index_file(user_id, session_id=None, path=path, force=True)
+            changed = await self.index_file(
+                user_id,
+                session_id=None,
+                path=path,
+                force=True,
+                agent_profile_id=agent_profile_id,
+            )
             if changed:
                 indexed += 1
             else:
@@ -221,7 +261,7 @@ class MemoryService:
 
         async with SessionLocal() as session:
             repo = Repository(session)
-            entries = await repo.list_memory_entries(user_id)
+            entries = await repo.list_memory_entries(user_id, agent_profile_id=agent_profile_id)
 
         db_files: set[str] = set()
         for entry in entries:
@@ -242,12 +282,19 @@ class MemoryService:
             async with SessionLocal() as session:
                 repo = Repository(session)
                 for name in removed_files:
-                    await repo.delete_memory_by_tag(user_id, f"file:{name}")
+                    await repo.delete_memory_by_tag(user_id, f"file:{name}", agent_profile_id=agent_profile_id)
                     removed += 1
 
         return {"indexed": indexed, "skipped": skipped, "removed": removed}
 
-    async def search(self, user_id: str, query: str, top_k: int = 5) -> list[dict]:
+    async def search(
+        self,
+        user_id: str,
+        query: str,
+        top_k: int = 5,
+        *,
+        agent_profile_id: str | None = None,
+    ) -> list[dict]:
         if not query.strip():
             return []
         try:
@@ -262,6 +309,7 @@ class MemoryService:
             max_distance = max(0.0, float(settings.memory_max_distance))
             rows = await repo.search_memory_entries_pgvector(
                 user_id=user_id,
+                agent_profile_id=agent_profile_id,
                 query_embedding=query_vec,
                 top_k=limit,
                 max_distance=max_distance,

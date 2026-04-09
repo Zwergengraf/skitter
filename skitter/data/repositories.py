@@ -4,11 +4,13 @@ import uuid
 from datetime import UTC, datetime, timedelta
 from typing import Any, List, Optional
 
-from sqlalchemy import delete, func, select, text
+from sqlalchemy import delete, func, or_, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from ..core.profiles import DEFAULT_AGENT_PROFILE_NAME, DEFAULT_AGENT_PROFILE_SLUG, normalize_profile_slug, private_profile_scope_id
 from .models import (
     AgentJob,
+    AgentProfile,
     AuthToken,
     Channel,
     Executor,
@@ -23,6 +25,9 @@ from .models import (
     ScheduledRun,
     Session,
     Secret,
+    SurfaceProfileOverride,
+    TransportAccount,
+    TransportSurfaceBinding,
     ToolRun,
     UserPrompt,
     User,
@@ -39,6 +44,43 @@ class Repository:
     def _utcnow() -> datetime:
         return datetime.now(UTC)
 
+    @staticmethod
+    def _normalize_profile_slug(value: str, *, fallback: str = "agent") -> str:
+        return normalize_profile_slug(value, fallback=fallback)
+
+    async def _ensure_default_profile_for_user(self, user: User) -> AgentProfile:
+        default_profile_id = str(getattr(user, "default_profile_id", "") or "").strip()
+        if default_profile_id:
+            existing = await self.get_agent_profile(default_profile_id)
+            if existing is not None and existing.user_id == user.id:
+                return existing
+        result = await self.session.execute(
+            select(AgentProfile).where(
+                AgentProfile.user_id == user.id,
+                func.lower(AgentProfile.slug) == DEFAULT_AGENT_PROFILE_SLUG,
+            )
+        )
+        profile = result.scalar_one_or_none()
+        now = self._utcnow()
+        if profile is None:
+            profile = AgentProfile(
+                id=str(uuid.uuid4()),
+                user_id=user.id,
+                slug=DEFAULT_AGENT_PROFILE_SLUG,
+                name=DEFAULT_AGENT_PROFILE_NAME,
+                status="active",
+                meta={},
+                created_at=now,
+                updated_at=now,
+            )
+            self.session.add(profile)
+            await self.session.flush()
+        if user.default_profile_id != profile.id:
+            user.default_profile_id = profile.id
+        profile.updated_at = now
+        await self.session.commit()
+        return profile
+
     async def get_or_create_user(self, transport_user_id: str) -> User:
         result = await self.session.execute(select(User).where(User.transport_user_id == transport_user_id))
         user = result.scalar_one_or_none()
@@ -49,12 +91,15 @@ class Repository:
                     await self.session.delete(user)
                     await self.session.commit()
                 else:
+                    await self._ensure_default_profile_for_user(user)
                     return user
             else:
+                await self._ensure_default_profile_for_user(user)
                 return user
         user = User(id=str(uuid.uuid4()), transport_user_id=transport_user_id, meta={}, approved=False)
         self.session.add(user)
         await self.session.commit()
+        await self._ensure_default_profile_for_user(user)
         return user
 
     async def get_or_create_local_primary_user(self, display_name: str | None = None) -> User:
@@ -67,11 +112,15 @@ class Repository:
         if not user.approved:
             user.approved = True
         await self.session.commit()
+        await self._ensure_default_profile_for_user(user)
         return user
 
     async def get_user_by_transport_id(self, transport_user_id: str) -> Optional[User]:
         result = await self.session.execute(select(User).where(User.transport_user_id == transport_user_id))
-        return result.scalar_one_or_none()
+        user = result.scalar_one_or_none()
+        if user is not None:
+            await self._ensure_default_profile_for_user(user)
+        return user
 
     async def upsert_user_profile(
         self,
@@ -91,6 +140,7 @@ class Repository:
             meta["avatar_url"] = avatar_url
         user.meta = meta
         await self.session.commit()
+        await self._ensure_default_profile_for_user(user)
         return user
 
     async def set_user_approved(self, user_id: str, approved: bool) -> Optional[User]:
@@ -125,23 +175,538 @@ class Repository:
         raw = str(meta.get("default_executor_id") or "").strip()
         return raw or None
 
-    async def mark_user_notified(self, user_id: str) -> None:
+    async def mark_user_notified(self, user_id: str, transport_account_key: str | None = None) -> None:
         result = await self.session.execute(select(User).where(User.id == user_id))
         user = result.scalar_one_or_none()
         if user is None:
             return
         meta = dict(user.meta or {})
+        account_key = str(transport_account_key or "").strip()
+        if account_key:
+            existing = meta.get("approval_notified_accounts")
+            if isinstance(existing, list):
+                values = [str(item).strip() for item in existing if str(item).strip()]
+            else:
+                values = []
+            if account_key not in values:
+                values.append(account_key)
+            meta["approval_notified_accounts"] = values
         meta["approval_notified"] = True
         user.meta = meta
         await self.session.commit()
 
     async def get_user_by_id(self, user_id: str) -> Optional[User]:
         result = await self.session.execute(select(User).where(User.id == user_id))
+        user = result.scalar_one_or_none()
+        if user is not None:
+            await self._ensure_default_profile_for_user(user)
+        return user
+
+    async def list_agent_profiles(self, user_id: str, *, include_archived: bool = False) -> list[AgentProfile]:
+        stmt = select(AgentProfile).where(AgentProfile.user_id == user_id)
+        if not include_archived:
+            stmt = stmt.where(AgentProfile.status != "archived")
+        result = await self.session.execute(stmt.order_by(AgentProfile.created_at.asc(), AgentProfile.slug.asc()))
+        return list(result.scalars().all())
+
+    async def get_agent_profile(self, profile_id: str) -> AgentProfile | None:
+        result = await self.session.execute(select(AgentProfile).where(AgentProfile.id == profile_id))
         return result.scalar_one_or_none()
+
+    async def get_agent_profile_by_slug(self, user_id: str, slug: str) -> AgentProfile | None:
+        normalized = self._normalize_profile_slug(slug, fallback=DEFAULT_AGENT_PROFILE_SLUG)
+        result = await self.session.execute(
+            select(AgentProfile).where(
+                AgentProfile.user_id == user_id,
+                func.lower(AgentProfile.slug) == normalized.lower(),
+            )
+        )
+        return result.scalar_one_or_none()
+
+    async def get_default_agent_profile(self, user_id: str) -> AgentProfile | None:
+        user = await self.get_user_by_id(user_id)
+        if user is None:
+            return None
+        return await self._ensure_default_profile_for_user(user)
+
+    async def create_agent_profile(
+        self,
+        *,
+        user_id: str,
+        name: str,
+        slug: str,
+        make_default: bool = False,
+        meta: dict | None = None,
+    ) -> AgentProfile:
+        now = self._utcnow()
+        row = AgentProfile(
+            id=str(uuid.uuid4()),
+            user_id=user_id,
+            slug=self._normalize_profile_slug(slug, fallback="agent"),
+            name=(name or "").strip() or DEFAULT_AGENT_PROFILE_NAME,
+            status="active",
+            meta=meta or {},
+            created_at=now,
+            updated_at=now,
+        )
+        self.session.add(row)
+        await self.session.flush()
+        if make_default:
+            user = await self.get_user_by_id(user_id)
+            if user is not None:
+                user.default_profile_id = row.id
+        await self.session.commit()
+        return row
+
+    async def update_agent_profile(
+        self,
+        profile_id: str,
+        *,
+        name: str | None = None,
+        slug: str | None = None,
+        status: str | None = None,
+        meta_updates: dict | None = None,
+    ) -> AgentProfile | None:
+        row = await self.get_agent_profile(profile_id)
+        if row is None:
+            return None
+        if name is not None:
+            row.name = (name or "").strip() or row.name
+        if slug is not None:
+            row.slug = self._normalize_profile_slug(slug, fallback=row.slug)
+        if status is not None:
+            row.status = (status or "").strip() or row.status
+        if meta_updates:
+            merged = dict(row.meta or {})
+            merged.update(meta_updates)
+            row.meta = merged
+        row.updated_at = self._utcnow()
+        await self.session.commit()
+        return row
+
+    async def replace_agent_profile_meta(self, profile_id: str, meta: dict) -> AgentProfile | None:
+        row = await self.get_agent_profile(profile_id)
+        if row is None:
+            return None
+        row.meta = dict(meta or {})
+        row.updated_at = self._utcnow()
+        await self.session.commit()
+        return row
+
+    async def set_default_agent_profile(self, user_id: str, profile_id: str) -> User | None:
+        user = await self.get_user_by_id(user_id)
+        if user is None:
+            return None
+        user.default_profile_id = profile_id
+        await self.session.commit()
+        return user
+
+    async def delete_agent_profile(self, profile_id: str) -> bool:
+        row = await self.get_agent_profile(profile_id)
+        if row is None:
+            return False
+
+        session_filter = Session.agent_profile_id == profile_id
+        session_ids = list((await self.session.execute(select(Session.id).where(session_filter))).scalars().all())
+
+        run_filter = RunTrace.agent_profile_id == profile_id
+        llm_usage_filter = LlmUsage.agent_profile_id == profile_id
+        agent_job_filter = AgentJob.agent_profile_id == profile_id
+        if session_ids:
+            run_filter = or_(run_filter, RunTrace.session_id.in_(session_ids))
+            llm_usage_filter = or_(llm_usage_filter, LlmUsage.session_id.in_(session_ids))
+            agent_job_filter = or_(agent_job_filter, AgentJob.session_id.in_(session_ids))
+
+        run_ids = list((await self.session.execute(select(RunTrace.id).where(run_filter))).scalars().all())
+        scheduled_job_ids = list(
+            (
+                await self.session.execute(
+                    select(ScheduledJob.id).where(ScheduledJob.agent_profile_id == profile_id)
+                )
+            ).scalars().all()
+        )
+
+        if session_ids:
+            await self.session.execute(delete(Message).where(Message.session_id.in_(session_ids)))
+            await self.session.execute(delete(UserPrompt).where(UserPrompt.session_id.in_(session_ids)))
+            await self.session.execute(delete(ToolRun).where(ToolRun.session_id.in_(session_ids)))
+        if run_ids:
+            await self.session.execute(delete(RunTraceEvent).where(RunTraceEvent.run_id.in_(run_ids)))
+            await self.session.execute(delete(ToolRun).where(ToolRun.run_id.in_(run_ids)))
+        if scheduled_job_ids:
+            await self.session.execute(delete(ScheduledRun).where(ScheduledRun.job_id.in_(scheduled_job_ids)))
+
+        await self.session.execute(delete(LlmUsage).where(llm_usage_filter))
+        await self.session.execute(delete(RunTrace).where(run_filter))
+        await self.session.execute(delete(AgentJob).where(agent_job_filter))
+        await self.session.execute(delete(MemoryEntry).where(MemoryEntry.agent_profile_id == profile_id))
+        await self.session.execute(delete(Secret).where(Secret.agent_profile_id == profile_id))
+        await self.session.execute(delete(TransportSurfaceBinding).where(TransportSurfaceBinding.agent_profile_id == profile_id))
+        await self.session.execute(delete(TransportAccount).where(TransportAccount.agent_profile_id == profile_id))
+        await self.session.execute(delete(SurfaceProfileOverride).where(SurfaceProfileOverride.agent_profile_id == profile_id))
+        await self.session.execute(delete(ScheduledJob).where(ScheduledJob.agent_profile_id == profile_id))
+        await self.session.execute(delete(Session).where(session_filter))
+        await self.session.delete(row)
+        await self.session.commit()
+        return True
+
+    async def get_profile_default_executor_id(self, profile_id: str) -> str | None:
+        profile = await self.get_agent_profile(profile_id)
+        if profile is None:
+            return None
+        meta = dict(profile.meta or {})
+        raw = str(meta.get("default_executor_id") or "").strip()
+        return raw or None
+
+    async def set_profile_default_executor(self, profile_id: str, executor_id: str | None) -> AgentProfile | None:
+        updates = {"default_executor_id": executor_id or ""}
+        return await self.update_agent_profile(profile_id, meta_updates=updates)
+
+    async def get_profile_default_model_name(self, profile_id: str) -> str | None:
+        profile = await self.get_agent_profile(profile_id)
+        if profile is None:
+            return None
+        meta = dict(profile.meta or {})
+        raw = str(meta.get("default_model") or "").strip()
+        return raw or None
+
+    async def set_profile_default_model_name(self, profile_id: str, model_name: str | None) -> AgentProfile | None:
+        updates = {"default_model": model_name or ""}
+        return await self.update_agent_profile(profile_id, meta_updates=updates)
+
+    async def get_surface_profile_override(
+        self,
+        *,
+        user_id: str,
+        origin: str,
+        transport_account_key: str,
+        surface_kind: str,
+        surface_id: str,
+    ) -> SurfaceProfileOverride | None:
+        result = await self.session.execute(
+            select(SurfaceProfileOverride).where(
+                SurfaceProfileOverride.user_id == user_id,
+                SurfaceProfileOverride.origin == origin,
+                SurfaceProfileOverride.transport_account_key == transport_account_key,
+                SurfaceProfileOverride.surface_kind == surface_kind,
+                SurfaceProfileOverride.surface_id == surface_id,
+            )
+        )
+        return result.scalar_one_or_none()
+
+    async def upsert_surface_profile_override(
+        self,
+        *,
+        user_id: str,
+        agent_profile_id: str,
+        origin: str,
+        transport_account_key: str,
+        surface_kind: str,
+        surface_id: str,
+        meta: dict | None = None,
+    ) -> SurfaceProfileOverride:
+        row = await self.get_surface_profile_override(
+            user_id=user_id,
+            origin=origin,
+            transport_account_key=transport_account_key,
+            surface_kind=surface_kind,
+            surface_id=surface_id,
+        )
+        now = self._utcnow()
+        if row is None:
+            row = SurfaceProfileOverride(
+                id=str(uuid.uuid4()),
+                user_id=user_id,
+                agent_profile_id=agent_profile_id,
+                origin=origin,
+                transport_account_key=transport_account_key,
+                surface_kind=surface_kind,
+                surface_id=surface_id,
+                meta=meta or {},
+                created_at=now,
+                updated_at=now,
+            )
+            self.session.add(row)
+        else:
+            row.agent_profile_id = agent_profile_id
+            row.meta = meta or row.meta or {}
+            row.transport_account_key = transport_account_key
+            row.updated_at = now
+        await self.session.commit()
+        return row
+
+    async def delete_surface_profile_override(
+        self,
+        *,
+        user_id: str,
+        origin: str,
+        transport_account_key: str,
+        surface_kind: str,
+        surface_id: str,
+    ) -> bool:
+        row = await self.get_surface_profile_override(
+            user_id=user_id,
+            origin=origin,
+            transport_account_key=transport_account_key,
+            surface_kind=surface_kind,
+            surface_id=surface_id,
+        )
+        if row is None:
+            return False
+        await self.session.delete(row)
+        await self.session.commit()
+        return True
+
+    async def list_transport_accounts(
+        self,
+        *,
+        user_id: str | None = None,
+        agent_profile_id: str | None = None,
+        transport: str | None = None,
+        include_disabled: bool = True,
+    ) -> list[TransportAccount]:
+        stmt = select(TransportAccount).order_by(TransportAccount.transport.asc(), TransportAccount.created_at.asc())
+        if user_id:
+            stmt = stmt.where(TransportAccount.user_id == user_id)
+        if agent_profile_id:
+            stmt = stmt.where(TransportAccount.agent_profile_id == agent_profile_id)
+        if transport:
+            stmt = stmt.where(TransportAccount.transport == transport)
+        if not include_disabled:
+            stmt = stmt.where(TransportAccount.enabled.is_(True))
+        result = await self.session.execute(stmt)
+        return list(result.scalars().all())
+
+    async def get_transport_account(self, account_id: str) -> TransportAccount | None:
+        result = await self.session.execute(select(TransportAccount).where(TransportAccount.id == account_id))
+        return result.scalar_one_or_none()
+
+    async def get_transport_account_by_key(self, account_key: str) -> TransportAccount | None:
+        result = await self.session.execute(
+            select(TransportAccount).where(TransportAccount.account_key == account_key)
+        )
+        return result.scalar_one_or_none()
+
+    async def get_transport_account_by_external_account_id(
+        self,
+        transport: str,
+        external_account_id: str,
+    ) -> TransportAccount | None:
+        result = await self.session.execute(
+            select(TransportAccount).where(
+                TransportAccount.transport == transport,
+                TransportAccount.external_account_id == external_account_id,
+            )
+        )
+        return result.scalar_one_or_none()
+
+    async def get_transport_account_for_profile(self, agent_profile_id: str, transport: str) -> TransportAccount | None:
+        result = await self.session.execute(
+            select(TransportAccount).where(
+                TransportAccount.agent_profile_id == agent_profile_id,
+                TransportAccount.transport == transport,
+            )
+        )
+        return result.scalar_one_or_none()
+
+    async def get_transport_account_by_fingerprint(self, transport: str, fingerprint: str) -> TransportAccount | None:
+        result = await self.session.execute(
+            select(TransportAccount).where(
+                TransportAccount.transport == transport,
+                TransportAccount.credential_fingerprint == fingerprint,
+            )
+        )
+        return result.scalar_one_or_none()
+
+    async def create_transport_account(
+        self,
+        *,
+        account_key: str,
+        user_id: str,
+        agent_profile_id: str,
+        transport: str,
+        credential_secret_name: str,
+        credential_fingerprint: str,
+        display_name: str | None = None,
+        enabled: bool = True,
+        status: str = "offline",
+        meta: dict | None = None,
+    ) -> TransportAccount:
+        now = self._utcnow()
+        row = TransportAccount(
+            id=str(uuid.uuid4()),
+            account_key=account_key,
+            user_id=user_id,
+            agent_profile_id=agent_profile_id,
+            transport=transport,
+            display_name=display_name,
+            enabled=enabled,
+            status=status,
+            credential_secret_name=credential_secret_name,
+            credential_fingerprint=credential_fingerprint,
+            meta=meta or {},
+            created_at=now,
+            updated_at=now,
+        )
+        self.session.add(row)
+        await self.session.commit()
+        return row
+
+    async def update_transport_account(self, account_key: str, **fields: Any) -> TransportAccount | None:
+        row = await self.get_transport_account_by_key(account_key)
+        if row is None:
+            return None
+        for key, value in fields.items():
+            if not hasattr(row, key):
+                continue
+            if value is not None or key in {"display_name", "last_error", "external_account_id", "external_label", "last_seen_at"}:
+                setattr(row, key, value)
+        row.updated_at = self._utcnow()
+        await self.session.commit()
+        return row
+
+    async def delete_transport_account(self, account_key: str) -> bool:
+        row = await self.get_transport_account_by_key(account_key)
+        if row is None:
+            return False
+        await self.session.execute(
+            text("UPDATE scheduled_jobs SET target_transport_account_key = NULL WHERE target_transport_account_key = :account_key"),
+            {"account_key": account_key},
+        )
+        await self.session.execute(
+            text("UPDATE agent_jobs SET target_transport_account_key = NULL WHERE target_transport_account_key = :account_key"),
+            {"account_key": account_key},
+        )
+        await self.session.execute(delete(Channel).where(Channel.transport_account_key == account_key))
+        await self.session.execute(
+            delete(TransportSurfaceBinding).where(TransportSurfaceBinding.transport_account_key == account_key)
+        )
+        await self.session.execute(
+            delete(SurfaceProfileOverride).where(SurfaceProfileOverride.transport_account_key == account_key)
+        )
+        await self.session.delete(row)
+        await self.session.commit()
+        return True
+
+    async def list_transport_surface_bindings(
+        self,
+        *,
+        transport_account_key: str | None = None,
+        user_id: str | None = None,
+        agent_profile_id: str | None = None,
+        origin: str | None = None,
+    ) -> list[TransportSurfaceBinding]:
+        stmt = select(TransportSurfaceBinding).order_by(TransportSurfaceBinding.created_at.asc())
+        if transport_account_key:
+            stmt = stmt.where(TransportSurfaceBinding.transport_account_key == transport_account_key)
+        if user_id:
+            stmt = stmt.where(TransportSurfaceBinding.user_id == user_id)
+        if agent_profile_id:
+            stmt = stmt.where(TransportSurfaceBinding.agent_profile_id == agent_profile_id)
+        if origin:
+            stmt = stmt.where(TransportSurfaceBinding.origin == origin)
+        result = await self.session.execute(stmt)
+        return list(result.scalars().all())
+
+    async def get_transport_surface_binding(self, binding_id: str) -> TransportSurfaceBinding | None:
+        result = await self.session.execute(
+            select(TransportSurfaceBinding).where(TransportSurfaceBinding.id == binding_id)
+        )
+        return result.scalar_one_or_none()
+
+    async def get_transport_surface_binding_for_surface(
+        self,
+        *,
+        transport_account_key: str,
+        origin: str,
+        surface_kind: str,
+        surface_id: str,
+    ) -> TransportSurfaceBinding | None:
+        result = await self.session.execute(
+            select(TransportSurfaceBinding).where(
+                TransportSurfaceBinding.transport_account_key == transport_account_key,
+                TransportSurfaceBinding.origin == origin,
+                TransportSurfaceBinding.surface_kind == surface_kind,
+                TransportSurfaceBinding.surface_id == surface_id,
+            )
+        )
+        return result.scalar_one_or_none()
+
+    async def upsert_transport_surface_binding(
+        self,
+        *,
+        transport_account_key: str,
+        user_id: str,
+        agent_profile_id: str,
+        origin: str,
+        surface_kind: str,
+        surface_id: str,
+        mode: str,
+        enabled: bool = True,
+        meta: dict | None = None,
+    ) -> TransportSurfaceBinding:
+        row = await self.get_transport_surface_binding_for_surface(
+            transport_account_key=transport_account_key,
+            origin=origin,
+            surface_kind=surface_kind,
+            surface_id=surface_id,
+        )
+        now = self._utcnow()
+        if row is None:
+            row = TransportSurfaceBinding(
+                id=str(uuid.uuid4()),
+                transport_account_key=transport_account_key,
+                user_id=user_id,
+                agent_profile_id=agent_profile_id,
+                origin=origin,
+                surface_kind=surface_kind,
+                surface_id=surface_id,
+                mode=mode,
+                enabled=enabled,
+                meta=meta or {},
+                created_at=now,
+                updated_at=now,
+            )
+            self.session.add(row)
+        else:
+            row.user_id = user_id
+            row.agent_profile_id = agent_profile_id
+            row.mode = mode
+            row.enabled = enabled
+            row.meta = meta or row.meta or {}
+            row.updated_at = now
+        await self.session.commit()
+        return row
+
+    async def delete_transport_surface_binding(self, binding_id: str) -> bool:
+        row = await self.get_transport_surface_binding(binding_id)
+        if row is None:
+            return False
+        await self.session.delete(row)
+        await self.session.commit()
+        return True
+
+    async def disable_transport_accounts_for_profile(self, agent_profile_id: str) -> None:
+        rows = await self.list_transport_accounts(agent_profile_id=agent_profile_id)
+        now = self._utcnow()
+        for row in rows:
+            row.enabled = False
+            row.status = "disabled"
+            row.updated_at = now
+        await self.session.commit()
+
+    async def disable_transport_surface_bindings_for_profile(self, agent_profile_id: str) -> None:
+        rows = await self.list_transport_surface_bindings(agent_profile_id=agent_profile_id)
+        now = self._utcnow()
+        for row in rows:
+            row.enabled = False
+            row.updated_at = now
+        await self.session.commit()
 
     async def create_session(
         self,
         user_id: str,
+        agent_profile_id: str | None = None,
         status: str = "active",
         model: str | None = None,
         origin: str = "discord",
@@ -150,23 +715,25 @@ class Repository:
     ) -> Session:
         if not scope_id:
             if scope_type == "private":
-                scope_id = f"private:{user_id}"
+                scope_id = private_profile_scope_id(agent_profile_id or user_id)
             else:
                 scope_id = f"{scope_type}:{user_id}"
         # Enforce a single active session per scope.
         if status == "active":
-            existing_result = await self.session.execute(
-                select(Session).where(
-                    Session.status == "active",
-                    Session.scope_type == scope_type,
-                    Session.scope_id == scope_id,
-                )
+            stmt = select(Session).where(
+                Session.status == "active",
+                Session.scope_type == scope_type,
+                Session.scope_id == scope_id,
             )
+            if agent_profile_id:
+                stmt = stmt.where(Session.agent_profile_id == agent_profile_id)
+            existing_result = await self.session.execute(stmt)
             for existing in existing_result.scalars().all():
                 existing.status = "ended"
         session = Session(
             id=str(uuid.uuid4()),
             user_id=user_id,
+            agent_profile_id=agent_profile_id,
             status=status,
             model=model,
             origin=origin,
@@ -324,8 +891,13 @@ class Repository:
         await self.session.commit()
         return session
 
-    async def get_active_session_by_scope(self, scope_type: str, scope_id: str) -> Optional[Session]:
-        result = await self.session.execute(
+    async def get_active_session_by_scope(
+        self,
+        scope_type: str,
+        scope_id: str,
+        agent_profile_id: str | None = None,
+    ) -> Optional[Session]:
+        stmt = (
             select(Session)
             .where(
                 Session.scope_type == scope_type,
@@ -334,43 +906,60 @@ class Repository:
             )
             .order_by(Session.created_at.desc())
         )
+        if agent_profile_id:
+            stmt = stmt.where(Session.agent_profile_id == agent_profile_id)
+        result = await self.session.execute(stmt)
         return result.scalars().first()
 
     async def get_latest_session_by_scope(
         self,
         scope_type: str,
         scope_id: str,
+        agent_profile_id: str | None = None,
         status: str | None = None,
     ) -> Optional[Session]:
         stmt = select(Session).where(Session.scope_type == scope_type, Session.scope_id == scope_id)
+        if agent_profile_id:
+            stmt = stmt.where(Session.agent_profile_id == agent_profile_id)
         if status:
             stmt = stmt.where(Session.status == status)
         result = await self.session.execute(stmt.order_by(Session.created_at.desc()))
         return result.scalars().first()
 
-    async def get_active_session(self, user_id: str, origin: str | None = None) -> Optional[Session]:
+    async def get_active_session(
+        self,
+        user_id: str,
+        origin: str | None = None,
+        agent_profile_id: str | None = None,
+    ) -> Optional[Session]:
         if origin == "heartbeat":
-            result = await self.session.execute(
-                select(Session)
-                .where(Session.user_id == user_id, Session.status == "heartbeat")
-                .order_by(Session.created_at.desc())
-            )
+            stmt = select(Session).where(Session.user_id == user_id, Session.status == "heartbeat")
+            if agent_profile_id:
+                stmt = stmt.where(Session.agent_profile_id == agent_profile_id)
+            result = await self.session.execute(stmt.order_by(Session.created_at.desc()))
             return result.scalars().first()
         if origin == "scheduler":
-            result = await self.session.execute(
-                select(Session)
-                .where(Session.user_id == user_id, Session.status == "scheduled")
-                .order_by(Session.created_at.desc())
-            )
+            stmt = select(Session).where(Session.user_id == user_id, Session.status == "scheduled")
+            if agent_profile_id:
+                stmt = stmt.where(Session.agent_profile_id == agent_profile_id)
+            result = await self.session.execute(stmt.order_by(Session.created_at.desc()))
             return result.scalars().first()
-        return await self.get_active_session_by_scope("private", f"private:{user_id}")
-
-    async def get_latest_session_by_status(self, user_id: str, status: str) -> Optional[Session]:
-        result = await self.session.execute(
-            select(Session)
-            .where(Session.user_id == user_id, Session.status == status)
-            .order_by(Session.created_at.desc())
+        return await self.get_active_session_by_scope(
+            "private",
+            private_profile_scope_id(agent_profile_id or user_id),
+            agent_profile_id=agent_profile_id,
         )
+
+    async def get_latest_session_by_status(
+        self,
+        user_id: str,
+        status: str,
+        agent_profile_id: str | None = None,
+    ) -> Optional[Session]:
+        stmt = select(Session).where(Session.user_id == user_id, Session.status == status)
+        if agent_profile_id:
+            stmt = stmt.where(Session.agent_profile_id == agent_profile_id)
+        result = await self.session.execute(stmt.order_by(Session.created_at.desc()))
         return result.scalars().first()
 
     async def end_session(self, session_id: str, status: str = "ended") -> Optional[Session]:
@@ -403,6 +992,7 @@ class Repository:
         output_tokens: int,
         total_tokens: int,
         cost: float,
+        agent_profile_id: str | None = None,
         last_input_tokens: int | None = None,
         last_output_tokens: int | None = None,
         last_total_tokens: int | None = None,
@@ -411,6 +1001,7 @@ class Repository:
             id=str(uuid.uuid4()),
             session_id=session_id,
             user_id=user_id,
+            agent_profile_id=agent_profile_id,
             model=model,
             input_tokens=input_tokens,
             output_tokens=output_tokens,
@@ -692,12 +1283,14 @@ class Repository:
         origin: str,
         model: str | None,
         input_text: str,
+        agent_profile_id: str | None = None,
         status: str = "running",
     ) -> RunTrace:
         trace = RunTrace(
             id=run_id,
             session_id=session_id,
             user_id=user_id,
+            agent_profile_id=agent_profile_id,
             message_id=message_id,
             origin=origin,
             status=status,
@@ -816,6 +1409,8 @@ class Repository:
 
     async def upsert_channel(
         self,
+        origin: str,
+        transport_account_key: str,
         transport_channel_id: str,
         name: str,
         kind: str,
@@ -824,12 +1419,18 @@ class Repository:
         meta: dict | None = None,
     ) -> Channel:
         result = await self.session.execute(
-            select(Channel).where(Channel.transport_channel_id == transport_channel_id)
+            select(Channel).where(
+                Channel.origin == origin,
+                Channel.transport_account_key == transport_account_key,
+                Channel.transport_channel_id == transport_channel_id,
+            )
         )
         channel = result.scalar_one_or_none()
         if channel is None:
             channel = Channel(
                 id=str(uuid.uuid4()),
+                origin=origin,
+                transport_account_key=transport_account_key,
                 transport_channel_id=transport_channel_id,
                 name=name,
                 kind=kind,
@@ -840,6 +1441,8 @@ class Repository:
             )
             self.session.add(channel)
         else:
+            channel.origin = origin
+            channel.transport_account_key = transport_account_key
             channel.name = name
             channel.kind = kind
             channel.guild_id = guild_id
@@ -849,8 +1452,19 @@ class Repository:
         await self.session.commit()
         return channel
 
-    async def list_channels(self, limit: int = 200) -> List[Channel]:
-        result = await self.session.execute(select(Channel).order_by(Channel.name.asc()).limit(limit))
+    async def list_channels(
+        self,
+        *,
+        limit: int = 200,
+        origin: str | None = None,
+        transport_account_key: str | None = None,
+    ) -> List[Channel]:
+        stmt = select(Channel).order_by(Channel.name.asc()).limit(limit)
+        if origin:
+            stmt = stmt.where(Channel.origin == origin)
+        if transport_account_key:
+            stmt = stmt.where(Channel.transport_account_key == transport_account_key)
+        result = await self.session.execute(stmt)
         return list(result.scalars().all())
 
     async def list_users(self, limit: int = 200) -> List[User]:
@@ -1011,10 +1625,18 @@ class Repository:
             )
         return tool_run
 
-    async def add_memory(self, user_id: str, summary: str, embedding: list, tags: list | None = None) -> MemoryEntry:
+    async def add_memory(
+        self,
+        user_id: str,
+        summary: str,
+        embedding: list,
+        tags: list | None = None,
+        agent_profile_id: str | None = None,
+    ) -> MemoryEntry:
         entry = MemoryEntry(
             id=str(uuid.uuid4()),
             user_id=user_id,
+            agent_profile_id=agent_profile_id,
             summary=summary,
             embedding=embedding,
             tags=tags or [],
@@ -1023,13 +1645,17 @@ class Repository:
         await self.session.commit()
         return entry
 
-    async def list_memory_entries(self, user_id: str) -> List[MemoryEntry]:
-        result = await self.session.execute(select(MemoryEntry).where(MemoryEntry.user_id == user_id))
+    async def list_memory_entries(self, user_id: str, agent_profile_id: str | None = None) -> List[MemoryEntry]:
+        stmt = select(MemoryEntry).where(MemoryEntry.user_id == user_id)
+        if agent_profile_id:
+            stmt = stmt.where(MemoryEntry.agent_profile_id == agent_profile_id)
+        result = await self.session.execute(stmt)
         return list(result.scalars().all())
 
     async def search_memory_entries_pgvector(
         self,
         user_id: str,
+        agent_profile_id: str | None,
         query_embedding: list[float],
         top_k: int,
         max_distance: float,
@@ -1054,6 +1680,7 @@ class Repository:
                 (embedding <=> q.v) AS distance
               FROM memory_entries, q
               WHERE user_id = :user_id
+                AND (:agent_profile_id = '' OR agent_profile_id = :agent_profile_id)
                 AND embedding IS NOT NULL
             )
             SELECT
@@ -1075,6 +1702,7 @@ class Repository:
             stmt,
             {
                 "user_id": user_id,
+                "agent_profile_id": str(agent_profile_id or ""),
                 "query_vector": query_vector,
                 "max_distance": float(max_distance),
                 "limit": limit,
@@ -1082,16 +1710,19 @@ class Repository:
         )
         return [dict(row) for row in result.mappings().all()]
 
-    async def delete_memory_by_tag(self, user_id: str, tag: str) -> int:
-        entries = await self.list_memory_entries(user_id)
+    async def delete_memory_by_tag(self, user_id: str, tag: str, agent_profile_id: str | None = None) -> int:
+        entries = await self.list_memory_entries(user_id, agent_profile_id=agent_profile_id)
         to_delete = [entry for entry in entries if tag in (entry.tags or [])]
         for entry in to_delete:
             await self.session.delete(entry)
         await self.session.commit()
         return len(to_delete)
 
-    async def delete_memory(self, user_id: str) -> int:
-        result = await self.session.execute(select(MemoryEntry).where(MemoryEntry.user_id == user_id))
+    async def delete_memory(self, user_id: str, agent_profile_id: str | None = None) -> int:
+        stmt = select(MemoryEntry).where(MemoryEntry.user_id == user_id)
+        if agent_profile_id:
+            stmt = stmt.where(MemoryEntry.agent_profile_id == agent_profile_id)
+        result = await self.session.execute(stmt)
         entries = list(result.scalars().all())
         for entry in entries:
             await self.session.delete(entry)
@@ -1101,6 +1732,7 @@ class Repository:
     async def create_scheduled_job(
         self,
         user_id: str,
+        agent_profile_id: str | None,
         channel_id: str,
         name: str,
         prompt: str,
@@ -1112,17 +1744,20 @@ class Repository:
         target_scope_type: str = "private",
         target_scope_id: str | None = None,
         target_origin: str | None = None,
+        target_transport_account_key: str | None = None,
         target_destination_id: str | None = None,
     ) -> ScheduledJob:
         if not target_scope_id:
-            target_scope_id = f"private:{user_id}"
+            target_scope_id = private_profile_scope_id(agent_profile_id or user_id)
         job = ScheduledJob(
             id=str(uuid.uuid4()),
             user_id=user_id,
+            agent_profile_id=agent_profile_id,
             channel_id=channel_id,
             target_scope_type=target_scope_type,
             target_scope_id=target_scope_id,
             target_origin=target_origin,
+            target_transport_account_key=target_transport_account_key,
             target_destination_id=target_destination_id,
             name=name,
             prompt=prompt,
@@ -1163,12 +1798,18 @@ class Repository:
         await self.session.commit()
         return True
 
-    async def list_scheduled_jobs(self, user_id: str) -> List[ScheduledJob]:
-        result = await self.session.execute(select(ScheduledJob).where(ScheduledJob.user_id == user_id))
+    async def list_scheduled_jobs(self, user_id: str, agent_profile_id: str | None = None) -> List[ScheduledJob]:
+        stmt = select(ScheduledJob).where(ScheduledJob.user_id == user_id)
+        if agent_profile_id:
+            stmt = stmt.where(ScheduledJob.agent_profile_id == agent_profile_id)
+        result = await self.session.execute(stmt)
         return list(result.scalars().all())
 
-    async def list_scheduled_jobs_all(self) -> List[ScheduledJob]:
-        result = await self.session.execute(select(ScheduledJob))
+    async def list_scheduled_jobs_all(self, agent_profile_id: str | None = None) -> List[ScheduledJob]:
+        stmt = select(ScheduledJob)
+        if agent_profile_id:
+            stmt = stmt.where(ScheduledJob.agent_profile_id == agent_profile_id)
+        result = await self.session.execute(stmt)
         return list(result.scalars().all())
 
     async def get_scheduled_job(self, job_id: str) -> Optional[ScheduledJob]:
@@ -1196,6 +1837,7 @@ class Repository:
         self,
         *,
         user_id: str,
+        agent_profile_id: str | None,
         session_id: str | None,
         kind: str,
         name: str,
@@ -1205,11 +1847,13 @@ class Repository:
         target_scope_type: str = "private",
         target_scope_id: str = "",
         target_origin: str | None = None,
+        target_transport_account_key: str | None = None,
         target_destination_id: str | None = None,
     ) -> AgentJob:
         job = AgentJob(
             id=str(uuid.uuid4()),
             user_id=user_id,
+            agent_profile_id=agent_profile_id,
             session_id=session_id,
             kind=kind,
             name=name,
@@ -1220,6 +1864,7 @@ class Repository:
             target_scope_type=target_scope_type,
             target_scope_id=target_scope_id,
             target_origin=target_origin,
+            target_transport_account_key=target_transport_account_key,
             target_destination_id=target_destination_id,
             created_at=self._utcnow(),
         )
@@ -1234,6 +1879,7 @@ class Repository:
     async def list_agent_jobs(
         self,
         user_id: str,
+        agent_profile_id: str | None = None,
         limit: int = 50,
         status: str | None = None,
     ) -> List[AgentJob]:
@@ -1243,6 +1889,8 @@ class Repository:
             .order_by(AgentJob.created_at.desc())
             .limit(limit)
         )
+        if agent_profile_id:
+            stmt = stmt.where(AgentJob.agent_profile_id == agent_profile_id)
         if status:
             stmt = stmt.where(AgentJob.status == status)
         result = await self.session.execute(stmt)
@@ -1254,12 +1902,15 @@ class Repository:
         limit: int = 100,
         status: str | None = None,
         user_id: str | None = None,
+        agent_profile_id: str | None = None,
     ) -> List[AgentJob]:
         stmt = select(AgentJob).order_by(AgentJob.created_at.desc()).limit(limit)
         if status:
             stmt = stmt.where(AgentJob.status == status)
         if user_id:
             stmt = stmt.where(AgentJob.user_id == user_id)
+        if agent_profile_id:
+            stmt = stmt.where(AgentJob.agent_profile_id == agent_profile_id)
         result = await self.session.execute(stmt)
         return list(result.scalars().all())
 
@@ -1345,23 +1996,43 @@ class Repository:
         await self.session.commit()
         return job
 
-    async def list_secrets(self, user_id: str) -> List[Secret]:
-        result = await self.session.execute(select(Secret).where(Secret.user_id == user_id))
+    async def list_secrets(self, user_id: str, agent_profile_id: str | None = None) -> List[Secret]:
+        stmt = select(Secret).where(Secret.user_id == user_id)
+        if agent_profile_id:
+            stmt = stmt.where((Secret.agent_profile_id == agent_profile_id) | (Secret.agent_profile_id.is_(None)))
+        result = await self.session.execute(stmt)
         return list(result.scalars().all())
 
-    async def get_secret(self, user_id: str, name: str) -> Optional[Secret]:
-        result = await self.session.execute(
-            select(Secret).where(Secret.user_id == user_id, Secret.name == name)
-        )
+    async def get_secret_exact(self, user_id: str, name: str, agent_profile_id: str | None = None) -> Optional[Secret]:
+        stmt = select(Secret).where(Secret.user_id == user_id, Secret.name == name)
+        if agent_profile_id:
+            stmt = stmt.where(Secret.agent_profile_id == agent_profile_id)
+        else:
+            stmt = stmt.where(Secret.agent_profile_id.is_(None))
+        result = await self.session.execute(stmt)
         return result.scalar_one_or_none()
 
-    async def create_secret(self, user_id: str, name: str, value_encrypted: str) -> Optional[Secret]:
-        existing = await self.get_secret(user_id, name)
+    async def get_secret(self, user_id: str, name: str, agent_profile_id: str | None = None) -> Optional[Secret]:
+        if agent_profile_id:
+            secret = await self.get_secret_exact(user_id, name, agent_profile_id=agent_profile_id)
+            if secret is not None:
+                return secret
+        return await self.get_secret_exact(user_id, name, agent_profile_id=None)
+
+    async def create_secret(
+        self,
+        user_id: str,
+        name: str,
+        value_encrypted: str,
+        agent_profile_id: str | None = None,
+    ) -> Optional[Secret]:
+        existing = await self.get_secret_exact(user_id, name, agent_profile_id=agent_profile_id)
         if existing is not None:
             return None
         secret = Secret(
             id=str(uuid.uuid4()),
             user_id=user_id,
+            agent_profile_id=agent_profile_id,
             name=name,
             value_encrypted=value_encrypted,
             created_at=self._utcnow(),
@@ -1371,12 +2042,19 @@ class Repository:
         await self.session.commit()
         return secret
 
-    async def upsert_secret(self, user_id: str, name: str, value_encrypted: str) -> Secret:
-        secret = await self.get_secret(user_id, name)
+    async def upsert_secret(
+        self,
+        user_id: str,
+        name: str,
+        value_encrypted: str,
+        agent_profile_id: str | None = None,
+    ) -> Secret:
+        secret = await self.get_secret_exact(user_id, name, agent_profile_id=agent_profile_id)
         if secret is None:
             secret = Secret(
                 id=str(uuid.uuid4()),
                 user_id=user_id,
+                agent_profile_id=agent_profile_id,
                 name=name,
                 value_encrypted=value_encrypted,
                 created_at=self._utcnow(),
@@ -1384,13 +2062,14 @@ class Repository:
             )
             self.session.add(secret)
         else:
+            secret.agent_profile_id = agent_profile_id
             secret.value_encrypted = value_encrypted
             secret.updated_at = self._utcnow()
         await self.session.commit()
         return secret
 
-    async def delete_secret(self, user_id: str, name: str) -> bool:
-        secret = await self.get_secret(user_id, name)
+    async def delete_secret(self, user_id: str, name: str, agent_profile_id: str | None = None) -> bool:
+        secret = await self.get_secret_exact(user_id, name, agent_profile_id=agent_profile_id)
         if secret is None:
             return False
         await self.session.delete(secret)

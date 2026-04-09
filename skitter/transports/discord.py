@@ -3,8 +3,10 @@ import asyncio
 import contextlib
 import io
 import json
+import logging
 import re
-from datetime import datetime
+import time
+from datetime import UTC, datetime
 from typing import Awaitable, Callable, Iterable, Optional
 
 import discord
@@ -23,6 +25,144 @@ URL_PATTERN = re.compile(r"https?://[^\s<>]+")
 UNWRAPPED_URL_PATTERN = re.compile(r"(?<!<)(https?://[^\s<>]+)(?!>)")
 PARAGRAPH_BREAK_PATTERN = re.compile(r"\n{2,}")
 SENTENCE_BREAK_PATTERN = re.compile(r"[.!?](?:[\"')\]]+)?\s+")
+INTERNAL_MESSAGE_TTL_SECONDS = 900.0
+_IGNORED_INBOUND_MESSAGE_IDS: dict[int, float] = {}
+_RECORDED_OUTBOUND_MESSAGE_METADATA: dict[int, tuple[float, dict[str, object]]] = {}
+_logger = logging.getLogger(__name__)
+
+
+def _prune_ignored_inbound_messages(now: float | None = None) -> None:
+    current = now if now is not None else time.monotonic()
+    stale_ids = [
+        message_id
+        for message_id, created_at in _IGNORED_INBOUND_MESSAGE_IDS.items()
+        if current - created_at > INTERNAL_MESSAGE_TTL_SECONDS
+    ]
+    for message_id in stale_ids:
+        _IGNORED_INBOUND_MESSAGE_IDS.pop(message_id, None)
+
+
+def _prune_recorded_outbound_messages(now: float | None = None) -> None:
+    current = now if now is not None else time.monotonic()
+    stale_ids = [
+        message_id
+        for message_id, (created_at, _) in _RECORDED_OUTBOUND_MESSAGE_METADATA.items()
+        if current - created_at > INTERNAL_MESSAGE_TTL_SECONDS
+    ]
+    for message_id in stale_ids:
+        _RECORDED_OUTBOUND_MESSAGE_METADATA.pop(message_id, None)
+
+
+def _remember_internal_message(message: object | None) -> None:
+    message_id = getattr(message, "id", None)
+    if message_id is None:
+        return
+    _prune_ignored_inbound_messages()
+    _IGNORED_INBOUND_MESSAGE_IDS[int(message_id)] = time.monotonic()
+
+
+def _remember_outbound_message_metadata(message: object | None, metadata: dict[str, object] | None = None) -> None:
+    message_id = getattr(message, "id", None)
+    if message_id is None or not metadata:
+        return
+    tracked = {
+        key: value
+        for key, value in dict(metadata).items()
+        if value is not None
+        and key
+        in {
+            "skitter_sender_internal_user_id",
+            "skitter_sender_profile_id",
+            "skitter_sender_profile_slug",
+            "skitter_transport_account_key",
+            "skitter_message_kind",
+        }
+    }
+    if not tracked:
+        return
+    _prune_recorded_outbound_messages()
+    _RECORDED_OUTBOUND_MESSAGE_METADATA[int(message_id)] = (time.monotonic(), tracked)
+
+
+def _lookup_outbound_message_metadata(message: object | None) -> dict[str, object] | None:
+    message_id = getattr(message, "id", None)
+    if message_id is None:
+        return None
+    _prune_recorded_outbound_messages()
+    entry = _RECORDED_OUTBOUND_MESSAGE_METADATA.get(int(message_id))
+    if entry is None:
+        return None
+    return dict(entry[1])
+
+
+def _ignored_inbound_reason(message: object, *, own_bot_user_id: int | None) -> str | None:
+    message_id = getattr(message, "id", None)
+    if message_id is not None:
+        _prune_ignored_inbound_messages()
+        if int(message_id) in _IGNORED_INBOUND_MESSAGE_IDS:
+            return "internal_message"
+    author = getattr(message, "author", None)
+    author_id = getattr(author, "id", None)
+    if own_bot_user_id is not None and author_id == own_bot_user_id:
+        return "own_bot_user"
+    return None
+
+
+def _should_ignore_inbound_message(message: object, *, own_bot_user_id: int | None) -> bool:
+    return _ignored_inbound_reason(message, own_bot_user_id=own_bot_user_id) is not None
+
+
+def _truncate_for_log(content: str, max_len: int = 140) -> str:
+    text = str(content or "").strip()
+    if len(text) <= max_len:
+        return text
+    if max_len <= 3:
+        return text[:max_len]
+    return f"{text[: max_len - 3]}..."
+
+
+def _log_inbound_drop(reason: str, message: object, *, account_key: str) -> None:
+    author = getattr(message, "author", None)
+    channel = getattr(message, "channel", None)
+    guild = getattr(message, "guild", None)
+    _logger.info(
+        "Dropped Discord inbound before handler: reason=%s account=%s message_id=%s channel_id=%s guild_id=%s "
+        "author_id=%s author_bot=%s text=%r",
+        reason,
+        account_key,
+        getattr(message, "id", None),
+        getattr(channel, "id", None),
+        getattr(guild, "id", None),
+        getattr(author, "id", None),
+        bool(getattr(author, "bot", False)),
+        _truncate_for_log(str(getattr(message, "content", "") or "")),
+    )
+
+
+def _parse_text_command(text: str) -> tuple[str | None, dict[str, object]]:
+    stripped = str(text or "").strip()
+    if not stripped.startswith("/"):
+        return None, {}
+    parts = stripped.split(" ", 1)
+    command = parts[0][1:].strip().lower()
+    argument = parts[1].strip() if len(parts) > 1 else ""
+    if not command:
+        return None, {}
+    metadata: dict[str, object] = {}
+    if command == "profile":
+        metadata["raw"] = argument
+        return command, metadata
+    if command == "memory_search" and argument:
+        metadata["query"] = argument
+    elif command in {"schedule_delete", "schedule_pause", "schedule_resume"} and argument:
+        metadata["job_id"] = argument
+    elif command == "model" and argument:
+        metadata["model_name"] = argument
+    elif command == "machine" and argument:
+        metadata["target_machine"] = argument
+    elif argument:
+        metadata["raw"] = argument
+    return command, metadata
 
 
 def _count_links(content: str) -> int:
@@ -206,7 +346,7 @@ class ApprovalView(discord.ui.View):
                 pass
 
 
-UserPromptResponder = Callable[[str, str, str, str], Awaitable[None]]
+UserPromptResponder = Callable[[str, str, str, str, str, bool], Awaitable[None]]
 UserPromptClosed = Callable[[str], None]
 MAX_USER_PROMPT_BUTTON_CHARS = 24
 
@@ -224,12 +364,14 @@ class UserPromptView(discord.ui.View):
         prompt_id: str,
         choices: list[str],
         allow_free_text: bool,
+        account_key: str,
         responder: UserPromptResponder | None,
         on_closed: UserPromptClosed | None = None,
     ) -> None:
         super().__init__(timeout=900)
         self.prompt_id = prompt_id
         self.choices = choices[:4]
+        self.account_key = str(account_key or "").strip()
         self.responder = responder
         self.on_closed = on_closed
         self.message: Optional[discord.Message] = None
@@ -262,19 +404,60 @@ class UserPromptView(discord.ui.View):
                     await interaction.response.edit_message(view=None)
             else:
                 await interaction.response.defer(thinking=False)
-            await self.responder(self.prompt_id, choice, str(interaction.user.id), str(interaction.channel_id))
+            await self.responder(
+                self.prompt_id,
+                choice,
+                str(interaction.user.id),
+                str(interaction.channel_id),
+                self.account_key,
+                isinstance(interaction.channel, discord.DMChannel),
+            )
 
         return _handler
 
+
+def _discord_sender_metadata(user: discord.abc.User, *, guild_member: object | None = None) -> dict[str, object]:
+    display_name = str(getattr(user, "display_name", None) or getattr(user, "name", "") or "").strip()
+    username = str(getattr(user, "name", "") or "").strip()
+    avatar = getattr(user, "display_avatar", None)
+    avatar_url = str(getattr(avatar, "url", "") or "").strip() or None
+    raw_roles = getattr(guild_member, "roles", None) or []
+    role_names = [
+        str(getattr(role, "name", "") or "").strip()
+        for role in raw_roles
+        if not bool(getattr(role, "is_default", lambda: False)())
+        and str(getattr(role, "name", "") or "").strip()
+    ]
+    user_id = str(getattr(user, "id", "") or "").strip()
+    return {
+        "sender_transport_user_id": user_id,
+        "sender_display_name": display_name,
+        "sender_username": username,
+        "sender_avatar_url": avatar_url,
+        "sender_is_bot": bool(getattr(user, "bot", False)),
+        "sender_mention": f"<@{user_id}>" if user_id else "",
+        "sender_role_names": role_names,
+    }
+
 class DiscordTransport(TransportAdapter):
-    def __init__(self, token: Optional[str] = None) -> None:
+    def __init__(
+        self,
+        *,
+        account_key: str,
+        token: Optional[str] = None,
+        pinned_profile_id: str | None = None,
+        display_name: str | None = None,
+    ) -> None:
         intents = discord.Intents.default()
         intents.message_content = True
         intents.guilds = True
         self.client = discord.Client(intents=intents)
         self.tree = app_commands.CommandTree(self.client)
         self._handler: EventHandler | None = None
+        self._account_key = str(account_key or "").strip() or "discord:default"
         self.token = token or settings.discord_token
+        self.pinned_profile_id = str(pinned_profile_id or "").strip() or None
+        self.display_name = str(display_name or "").strip() or "Discord"
         self._approval_service: ToolApprovalService | None = None
         self._user_prompt_responder: UserPromptResponder | None = None
         self._user_prompt_messages: dict[str, discord.Message] = {}
@@ -283,18 +466,37 @@ class DiscordTransport(TransportAdapter):
         async def on_ready() -> None:
             await self.tree.sync()
             await self._sync_channels()
+            if self._runtime_state_callback is not None and self.client.user is not None:
+                await self._runtime_state_callback(
+                    {
+                        "status": "online",
+                        "last_error": None,
+                        "last_seen_at": datetime.now(UTC),
+                        "external_account_id": str(self.client.user.id),
+                        "external_label": self.client.user.name,
+                    }
+                )
 
         @self.client.event
         async def on_message(message: discord.Message) -> None:
-            if message.author.bot:
+            bot_user = self.client.user
+            ignored_reason = _ignored_inbound_reason(message, own_bot_user_id=getattr(bot_user, "id", None))
+            if ignored_reason is not None:
+                _log_inbound_drop(ignored_reason, message, account_key=self.account_key)
                 return
             is_private = isinstance(message.channel, discord.DMChannel)
-            if not is_private:
-                # DM-only mode for now. Edit this block to re-enable server/group handling later.
-                return
             if self._handler is None:
+                _log_inbound_drop("handler_not_configured", message, account_key=self.account_key)
                 return
             await self._record_user_channel(message, is_private=is_private)
+            command, command_meta = _parse_text_command(message.content)
+            mentions_bot = bool(
+                bot_user is not None and any(getattr(member, "id", None) == bot_user.id for member in message.mentions)
+            )
+            reply_to_bot = False
+            referenced = getattr(message.reference, "resolved", None)
+            if isinstance(referenced, discord.Message) and bot_user is not None:
+                reply_to_bot = bool(referenced.author and referenced.author.id == bot_user.id)
             envelope = MessageEnvelope(
                 message_id=str(message.id),
                 channel_id=str(message.channel.id),
@@ -306,10 +508,23 @@ class DiscordTransport(TransportAdapter):
                     for a in message.attachments
                 ],
                 origin="discord",
+                transport_account_key=self.account_key,
+                command=command,
                 metadata={
+                    **command_meta,
                     "is_private": is_private,
                     "external_channel_id": str(message.channel.id),
                     "guild_id": str(message.guild.id) if message.guild else None,
+                    "parent_channel_id": (
+                        str(message.channel.parent_id)
+                        if isinstance(message.channel, discord.Thread) and message.channel.parent_id is not None
+                        else None
+                    ),
+                    "mentions_bot": mentions_bot,
+                    "reply_to_bot": reply_to_bot,
+                    "pinned_profile_id": self.pinned_profile_id,
+                    **_discord_sender_metadata(message.author, guild_member=message.author if not is_private else None),
+                    **(_lookup_outbound_message_metadata(message) or {}),
                 },
             )
             await self._handler(envelope)
@@ -371,6 +586,23 @@ class DiscordTransport(TransportAdapter):
         async def info(interaction: discord.Interaction) -> None:
             await self._handle_command(interaction, "info")
 
+        @self.tree.command(name="profile", description="Show or manage agent profiles")
+        async def profile(interaction: discord.Interaction, command_text: Optional[str] = None) -> None:
+            await self._handle_command(
+                interaction,
+                "profile",
+                extra={"raw": command_text or ""},
+                ephemeral=isinstance(interaction.channel, discord.DMChannel),
+            )
+
+    @property
+    def origin(self) -> str:
+        return "discord"
+
+    @property
+    def account_key(self) -> str:
+        return self._account_key
+
     def on_event(self, handler: EventHandler) -> None:
         self._handler = handler
 
@@ -403,6 +635,9 @@ class DiscordTransport(TransportAdapter):
         channel: discord.abc.Messageable,
         content: str,
         files: list[discord.File] | None = None,
+        *,
+        suppress_agent_processing: bool = False,
+        tracking_metadata: dict[str, object] | None = None,
     ) -> None:
         # Discord messages are capped at 2000 chars.
         # Files (if any) are attached only to the first chunk.
@@ -411,9 +646,13 @@ class DiscordTransport(TransportAdapter):
         chunks = _split_discord_content(prepared, DISCORD_MESSAGE_CHAR_LIMIT)
         for i, chunk in enumerate(chunks):
             if i == 0:
-                await channel.send(chunk, files=files)
+                sent = await channel.send(chunk, files=files)
             else:
-                await channel.send(chunk)
+                sent = await channel.send(chunk)
+            if suppress_agent_processing:
+                _remember_internal_message(sent)
+            if i == 0:
+                _remember_outbound_message_metadata(sent, tracking_metadata)
 
     async def send_message(
         self,
@@ -432,10 +671,23 @@ class DiscordTransport(TransportAdapter):
                     files.append(discord.File(io.BytesIO(attachment.bytes_data), filename=attachment.filename))
                 elif attachment.path:
                     files.append(discord.File(attachment.path))
+        outgoing_metadata = dict(metadata or {})
+        suppress_agent_processing = bool(outgoing_metadata.get("suppress_agent_processing"))
         if files:
-            await self._send_split_message(channel, content or "Screenshot:", files=files)
+            await self._send_split_message(
+                channel,
+                content or "Screenshot:",
+                files=files,
+                suppress_agent_processing=suppress_agent_processing,
+                tracking_metadata=outgoing_metadata,
+            )
         else:
-            await self._send_split_message(channel, content)
+            await self._send_split_message(
+                channel,
+                content,
+                suppress_agent_processing=suppress_agent_processing,
+                tracking_metadata=outgoing_metadata,
+            )
 
     async def send_user_message(
         self,
@@ -455,10 +707,23 @@ class DiscordTransport(TransportAdapter):
                     files.append(discord.File(io.BytesIO(attachment.bytes_data), filename=attachment.filename))
                 elif attachment.path:
                     files.append(discord.File(attachment.path))
+        outgoing_metadata = dict(metadata or {})
+        suppress_agent_processing = bool(outgoing_metadata.get("suppress_agent_processing"))
         if files:
-            await self._send_split_message(channel, content or "Screenshot:", files=files)
+            await self._send_split_message(
+                channel,
+                content or "Screenshot:",
+                files=files,
+                suppress_agent_processing=suppress_agent_processing,
+                tracking_metadata=outgoing_metadata,
+            )
         else:
-            await self._send_split_message(channel, content)
+            await self._send_split_message(
+                channel,
+                content,
+                suppress_agent_processing=suppress_agent_processing,
+                tracking_metadata=outgoing_metadata,
+            )
 
     async def send_typing(self, channel_id: str) -> None:
         channel = await self.client.fetch_channel(int(channel_id))
@@ -474,7 +739,9 @@ class DiscordTransport(TransportAdapter):
         if not isinstance(channel, (discord.DMChannel, discord.TextChannel, discord.Thread)):
             return None
         try:
-            return await channel.send(content)
+            message = await channel.send(content)
+            _remember_internal_message(message)
+            return message
         except Exception:
             return None
 
@@ -509,6 +776,7 @@ class DiscordTransport(TransportAdapter):
         view = ApprovalView(tool_run_id, self._approval_service)
         content = _build_approval_request_content(tool_name, payload)
         message = await channel.send(content, view=view)
+        _remember_internal_message(message)
         view.message = message
 
     async def send_user_prompt_request(
@@ -532,17 +800,20 @@ class DiscordTransport(TransportAdapter):
                 prompt_id,
                 choices[:4],
                 allow_free_text,
+                self.account_key,
                 self._user_prompt_responder,
                 self._forget_user_prompt_message,
             )
             message = await channel.send(content, view=view)
+            _remember_internal_message(message)
             view.message = message
             self._user_prompt_messages[prompt_id] = message
             return
         suffix = "\n\nPlease reply with your answer."
         if allow_free_text:
             suffix = "\n\nPlease reply in chat with your answer."
-        await channel.send(content + suffix)
+        message = await channel.send(content + suffix)
+        _remember_internal_message(message)
 
     async def _handle_command(
         self,
@@ -554,18 +825,24 @@ class DiscordTransport(TransportAdapter):
         if self._handler is None:
             await interaction.response.send_message("Handler is not configured.")
             return
-        if not isinstance(interaction.channel, discord.DMChannel):
-            # DM-only mode for now. Edit this block to re-enable server/group handling later.
-            return
         await interaction.response.defer(thinking=True, ephemeral=ephemeral)
         await self._record_interaction(interaction)
         is_private = isinstance(interaction.channel, discord.DMChannel)
         metadata = dict(extra or {})
         metadata.update(
             {
+                "interaction_response": True,
+                "is_explicit_interaction": True,
                 "is_private": is_private,
                 "external_channel_id": str(interaction.channel_id) if interaction.channel_id is not None else "",
                 "guild_id": str(interaction.guild_id) if interaction.guild_id is not None else None,
+                "parent_channel_id": (
+                    str(interaction.channel.parent_id)
+                    if isinstance(interaction.channel, discord.Thread) and interaction.channel.parent_id is not None
+                    else None
+                ),
+                "pinned_profile_id": self.pinned_profile_id,
+                **_discord_sender_metadata(interaction.user, guild_member=interaction.user if not is_private else None),
             }
         )
         envelope = MessageEnvelope(
@@ -576,18 +853,24 @@ class DiscordTransport(TransportAdapter):
             text="",
             attachments=[],
             origin="discord",
+            transport_account_key=self.account_key,
             command=command,
             metadata=metadata,
         )
         await self._handler(envelope)
         ephemeral_response = envelope.metadata.get("ephemeral_response")
         if ephemeral_response:
-            await interaction.followup.send(str(ephemeral_response), ephemeral=True)
+            if ephemeral:
+                await interaction.followup.send(str(ephemeral_response), ephemeral=True)
+            else:
+                sent = await interaction.followup.send(str(ephemeral_response), wait=True)
+                _remember_internal_message(sent)
             return
         if envelope.metadata.get("suppress_ack"):
             return
         if interaction.response.is_done():
-            await interaction.followup.send("Command received.")
+            sent = await interaction.followup.send("Command received.", wait=True)
+            _remember_internal_message(sent)
 
     async def _record_user_channel(self, message: discord.Message, is_private: bool) -> None:
         display_name = getattr(message.author, "display_name", None) or message.author.name
@@ -597,6 +880,11 @@ class DiscordTransport(TransportAdapter):
             kind = "dm"
             guild_id = None
             guild_name = None
+        elif isinstance(message.channel, discord.Thread):
+            channel_name = getattr(message.channel, "name", None) or str(message.channel.id)
+            kind = "thread"
+            guild_id = str(message.guild.id) if message.guild else None
+            guild_name = message.guild.name if message.guild else None
         else:
             channel_name = getattr(message.channel, "name", None) or str(message.channel.id)
             kind = "text"
@@ -607,6 +895,8 @@ class DiscordTransport(TransportAdapter):
             repo = Repository(session)
             await repo.upsert_user_profile(str(message.author.id), display_name, username, avatar_url)
             await repo.upsert_channel(
+                origin=self.origin,
+                transport_account_key=self.account_key,
                 transport_channel_id=str(message.channel.id),
                 name=channel_name,
                 kind=kind,
@@ -623,6 +913,11 @@ class DiscordTransport(TransportAdapter):
             kind = "dm"
             guild_id = None
             guild_name = None
+        elif isinstance(interaction.channel, discord.Thread):
+            channel_name = getattr(interaction.channel, "name", None) or str(interaction.channel_id)
+            kind = "thread"
+            guild_id = str(interaction.guild_id) if interaction.guild_id is not None else None
+            guild_name = interaction.guild.name if interaction.guild is not None else None
         else:
             channel_name = getattr(interaction.channel, "name", None) or str(interaction.channel_id)
             kind = "text"
@@ -634,6 +929,8 @@ class DiscordTransport(TransportAdapter):
             await repo.upsert_user_profile(str(interaction.user.id), display_name, username, avatar_url)
             if interaction.channel_id is not None:
                 await repo.upsert_channel(
+                    origin=self.origin,
+                    transport_account_key=self.account_key,
                     transport_channel_id=str(interaction.channel_id),
                     name=channel_name,
                     kind=kind,
@@ -647,6 +944,8 @@ class DiscordTransport(TransportAdapter):
             for guild in self.client.guilds:
                 for channel in guild.text_channels:
                     await repo.upsert_channel(
+                        origin=self.origin,
+                        transport_account_key=self.account_key,
                         transport_channel_id=str(channel.id),
                         name=channel.name,
                         kind="text",

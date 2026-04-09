@@ -20,6 +20,7 @@ from langchain.tools import tool
 from .config import SECRETS_APPROVAL_BYPASS_MAGIC, settings
 from .llm import build_llm
 from .llm import list_models, resolve_model_name
+from .profile_context import current_agent_profile_id, current_agent_profile_slug
 from .prompting import build_system_prompt
 from .subagents import SubAgentResult, SubAgentService, SubAgentTaskSpec
 from .run_limits import RunCancelledError, get_current_run_limits
@@ -61,6 +62,8 @@ _CURRENT_SESSION_ID: ContextVar[str] = ContextVar("skitter_session_id", default=
 _CURRENT_CHANNEL_ID: ContextVar[str] = ContextVar("skitter_channel_id", default="default")
 _CURRENT_USER_ID: ContextVar[str] = ContextVar("skitter_user_id", default="default")
 _CURRENT_ORIGIN: ContextVar[str] = ContextVar("skitter_origin", default="unknown")
+_CURRENT_TRANSPORT_ACCOUNT_KEY: ContextVar[str] = ContextVar("skitter_transport_account_key", default="")
+_CURRENT_GUILD_ID: ContextVar[str] = ContextVar("skitter_guild_id", default="")
 _CURRENT_SCOPE_TYPE: ContextVar[str] = ContextVar("skitter_scope_type", default="private")
 _CURRENT_SCOPE_ID: ContextVar[str] = ContextVar("skitter_scope_id", default="default")
 _CURRENT_RUN_ID: ContextVar[str] = ContextVar("skitter_run_id", default="")
@@ -97,6 +100,22 @@ def set_current_origin(origin: str) -> Token:
 
 def reset_current_origin(token: Token) -> None:
     _CURRENT_ORIGIN.reset(token)
+
+
+def set_current_transport_account_key(transport_account_key: str) -> Token:
+    return _CURRENT_TRANSPORT_ACCOUNT_KEY.set(str(transport_account_key or ""))
+
+
+def reset_current_transport_account_key(token: Token) -> None:
+    _CURRENT_TRANSPORT_ACCOUNT_KEY.reset(token)
+
+
+def set_current_guild_id(guild_id: str) -> Token:
+    return _CURRENT_GUILD_ID.set(str(guild_id or ""))
+
+
+def reset_current_guild_id(token: Token) -> None:
+    _CURRENT_GUILD_ID.reset(token)
 
 
 def set_current_scope_type(scope_type: str) -> Token:
@@ -144,6 +163,14 @@ def _user_id() -> str:
 
 def _origin() -> str:
     return _CURRENT_ORIGIN.get()
+
+
+def _transport_account_key() -> str:
+    return _CURRENT_TRANSPORT_ACCOUNT_KEY.get()
+
+
+def _guild_id() -> str:
+    return _CURRENT_GUILD_ID.get()
 
 
 def _scope_type() -> str:
@@ -201,6 +228,8 @@ async def _maybe_approve(
     return await approval_service.request(
         session_id=_session_id(),
         channel_id=_channel_id(),
+        origin=_origin(),
+        transport_account_key=_transport_account_key() or None,
         tool_name=tool_name,
         payload=payload,
         requested_by=_user_id(),
@@ -215,6 +244,7 @@ def build_graph(
     scheduler_service: SchedulerService | None = None,
     job_service=None,
     event_bus=None,
+    discord_mention_service=None,
     model_name: str | None = None,
     purpose: str = "main",
     include_subagent_tools: bool = True,
@@ -233,6 +263,7 @@ def build_graph(
                 scheduler_service=scheduler_service,
                 job_service=None,
                 event_bus=event_bus,
+                discord_mention_service=discord_mention_service,
                 model_name=worker_model,
                 purpose="main",
                 include_subagent_tools=False,
@@ -250,7 +281,7 @@ def build_graph(
     def _resolve_workspace_path(user_id: str, raw_path: str) -> Path | None:
         if not raw_path:
             return None
-        workspace = user_workspace_root(user_id)
+        workspace = user_workspace_root(user_id, current_agent_profile_slug().strip() or None)
         normalized = str(raw_path).strip()
         if normalized.startswith("sandbox:/workspace/"):
             normalized = str(Path("/workspace") / Path(normalized.removeprefix("sandbox:/workspace/")))
@@ -309,7 +340,7 @@ def build_graph(
         return merged
 
     def _workspace_relative_path(path: Path) -> str:
-        workspace = user_workspace_root(_user_id()).resolve()
+        workspace = user_workspace_root(_user_id(), current_agent_profile_slug().strip() or None).resolve()
         try:
             rel = path.resolve(strict=False).relative_to(workspace)
         except ValueError:
@@ -501,8 +532,10 @@ def build_graph(
     async def _resolve_machine_row(repo: Repository, target_machine: str | None):
         target = (target_machine or "").strip()
         if not target:
+            active_profile_id = current_agent_profile_id().strip()
             target = (
                 await executor_router.get_session_default(_session_id())
+                or (await repo.get_profile_default_executor_id(active_profile_id) if active_profile_id else None)
                 or await repo.get_user_default_executor_id(_user_id())
             )
         if not target and settings.executors_auto_docker_default:
@@ -1289,7 +1322,11 @@ def build_graph(
             async with SessionLocal() as session:
                 repo = Repository(session)
                 for name in secrets:
-                    secret = await repo.get_secret(_user_id(), name)
+                    secret = await repo.get_secret(
+                        _user_id(),
+                        name,
+                        agent_profile_id=current_agent_profile_id().strip() or None,
+                    )
                     if secret is None:
                         missing.append(name)
                         continue
@@ -1310,6 +1347,8 @@ def build_graph(
                 decision = await approval_service.request(
                     session_id=_session_id(),
                     channel_id=_channel_id(),
+                    origin=_origin(),
+                    transport_account_key=_transport_account_key() or None,
                     tool_name="shell",
                     payload=approval_payload,
                     requested_by=_user_id(),
@@ -1506,7 +1545,11 @@ def build_graph(
             if settings.executors_auto_docker_default:
                 await repo.get_or_create_docker_executor(_user_id())
             rows = await repo.list_executors_for_user(_user_id(), include_disabled=bool(include_disabled))
-            user_default_id = await repo.get_user_default_executor_id(_user_id())
+            user_default_id = (
+                await repo.get_profile_default_executor_id(current_agent_profile_id().strip() or "")
+                if current_agent_profile_id().strip()
+                else None
+            ) or await repo.get_user_default_executor_id(_user_id())
         session_default_id = await executor_router.get_session_default(_session_id())
         machines = [
             await _serialize_machine(
@@ -1536,7 +1579,11 @@ def build_graph(
             if row is None or row.disabled:
                 await _complete_tool_run(tool_run_id, "failed", {"error": "machine not found"})
                 return "machine_status error: machine not found"
-            user_default_id = await repo.get_user_default_executor_id(_user_id())
+            user_default_id = (
+                await repo.get_profile_default_executor_id(current_agent_profile_id().strip() or "")
+                if current_agent_profile_id().strip()
+                else None
+            ) or await repo.get_user_default_executor_id(_user_id())
         session_default_id = await executor_router.get_session_default(_session_id())
         machine = await _serialize_machine(
             row,
@@ -1573,7 +1620,12 @@ def build_graph(
         encrypted = manager.encrypt(value)
         async with SessionLocal() as session:
             repo = Repository(session)
-            secret = await repo.create_secret(_user_id(), secret_name, encrypted)
+            secret = await repo.create_secret(
+                _user_id(),
+                secret_name,
+                encrypted,
+                agent_profile_id=current_agent_profile_id().strip() or None,
+            )
         if secret is None:
             await _complete_tool_run(
                 decision.tool_run_id,
@@ -1602,7 +1654,10 @@ def build_graph(
 
         async with SessionLocal() as session:
             repo = Repository(session)
-            secrets = await repo.list_secrets(_user_id())
+            secrets = await repo.list_secrets(
+                _user_id(),
+                agent_profile_id=current_agent_profile_id().strip() or None,
+            )
         names = sorted(
             {
                 name
@@ -1641,6 +1696,54 @@ def build_graph(
                 for model in models
             ],
             "count": len(models),
+        }
+        await _complete_tool_run(tool_run_id, "completed", output)
+        return json.dumps(output)
+
+    @tool("discord_resolve_mentions")
+    async def discord_resolve_mentions(
+        query: str,
+        kind: str = "user",
+        guild_id: Optional[str] = None,
+        limit: int = 5,
+    ) -> str:
+        """Resolve Discord mention tokens for users, roles, or channels in the current Discord context. Use this before mentioning someone in a Discord reply."""
+        payload: dict[str, Any] = {
+            "query": query,
+            "kind": kind,
+            "guild_id": guild_id,
+            "limit": limit,
+        }
+        budget_message = await _enforce_tool_budget("discord_resolve_mentions", payload)
+        if budget_message:
+            return budget_message
+        tool_run_id = await _create_auto_tool_run("discord_resolve_mentions", payload)
+        if _origin() != "discord":
+            await _complete_tool_run(tool_run_id, "failed", {"error": "not in a Discord context"})
+            return "discord_resolve_mentions error: this tool is only available in Discord contexts"
+        if discord_mention_service is None:
+            await _complete_tool_run(tool_run_id, "failed", {"error": "mention service unavailable"})
+            return "discord_resolve_mentions error: mention service unavailable"
+        account_key = _transport_account_key().strip()
+        if not account_key:
+            await _complete_tool_run(tool_run_id, "failed", {"error": "transport account unavailable"})
+            return "discord_resolve_mentions error: transport account unavailable"
+        try:
+            matches = await discord_mention_service.resolve_mentions(
+                account_key=account_key,
+                kind=kind,
+                query=query,
+                guild_id=(guild_id or _guild_id() or None),
+                limit=max(1, min(int(limit or 5), 20)),
+            )
+        except Exception as exc:
+            await _complete_tool_run(tool_run_id, "failed", {"error": str(exc)})
+            return f"discord_resolve_mentions error: {exc}"
+        output = {
+            "query": query,
+            "kind": kind,
+            "guild_id": guild_id or _guild_id() or None,
+            "matches": matches,
         }
         await _complete_tool_run(tool_run_id, "completed", output)
         return json.dumps(output)
@@ -1697,6 +1800,8 @@ def build_graph(
         prompt_request = await user_prompt_service.request(
             session_id=_session_id(),
             channel_id=_channel_id(),
+            origin=_origin(),
+            transport_account_key=_transport_account_key() or None,
             question=normalized_question,
             choices=normalized_choices,
             allow_free_text=bool(allow_free_text),
@@ -1896,9 +2001,10 @@ def build_graph(
         target_scope_id = _scope_id()
         if target_scope_type not in {"private", "group"}:
             target_scope_type = "private"
-            target_scope_id = f"private:{user.id}"
+            target_scope_id = f"private:{current_agent_profile_id().strip() or user.id}"
         result = await scheduler_service.create_job(
             user.id,
+            current_agent_profile_id().strip() or None,
             target_channel,
             name or "Scheduled job",
             prompt,
@@ -1907,6 +2013,7 @@ def build_graph(
             target_scope_type=target_scope_type,
             target_scope_id=target_scope_id,
             target_origin=_origin(),
+            target_transport_account_key=_transport_account_key() or None,
             target_destination_id=target_channel,
         )
         await _complete_tool_run(tool_run_id, "failed" if isinstance(result, dict) and result.get("error") else "completed", result if isinstance(result, dict) else {"result": result})
@@ -1986,7 +2093,7 @@ def build_graph(
             if user is None:
                 await _complete_tool_run(tool_run_id, "failed", {"error": "user not found"})
                 return "schedule_list error: user not found"
-        jobs = await scheduler_service.list_jobs(user.id)
+        jobs = await scheduler_service.list_jobs(user.id, agent_profile_id=current_agent_profile_id().strip() or None)
         output = {"jobs": jobs}
         await _complete_tool_run(tool_run_id, "completed", output)
         return json.dumps(output)
@@ -2011,7 +2118,12 @@ def build_graph(
             await _complete_tool_run(tool_run_id, "failed", {"error": "query is required"})
             return "memory_search error: query is required"
         try:
-            results = await memory_service.search(_user_id(), query, top_k)
+            results = await memory_service.search(
+                _user_id(),
+                query,
+                top_k,
+                agent_profile_id=current_agent_profile_id().strip() or None,
+            )
         except Exception as exc:
             await _complete_tool_run(tool_run_id, "failed", {"error": str(exc)})
             return f"memory_search error: {exc}"
@@ -2057,6 +2169,7 @@ def build_graph(
         try:
             job_id = await job_service.enqueue_subagent_job(
                 user_id=_user_id(),
+                agent_profile_id=current_agent_profile_id().strip() or None,
                 session_id=_session_id(),
                 name=(name or "").strip() or "Background sub-agent job",
                 task=task.strip(),
@@ -2066,6 +2179,7 @@ def build_graph(
                 target_scope_type=_scope_type(),
                 target_scope_id=_scope_id(),
                 target_origin=_origin(),
+                target_transport_account_key=_transport_account_key() or None,
                 target_destination_id=_channel_id(),
             )
         except Exception as exc:
@@ -2112,7 +2226,12 @@ def build_graph(
         if job_service is None:
             await _complete_tool_run(tool_run_id, "failed", {"error": "job service unavailable"})
             return "job_list error: job service unavailable"
-        jobs = await job_service.list_jobs(_user_id(), limit=max(1, min(int(limit), 100)), status=(status or "").strip() or None)
+        jobs = await job_service.list_jobs(
+            _user_id(),
+            agent_profile_id=current_agent_profile_id().strip() or None,
+            limit=max(1, min(int(limit), 100)),
+            status=(status or "").strip() or None,
+        )
         output = {"jobs": [_serialize_job(job) for job in jobs]}
         await _complete_tool_run(tool_run_id, "completed", output)
         return json.dumps(output)
@@ -2178,7 +2297,7 @@ def build_graph(
             user_id=_user_id(),
             session_id=_session_id(),
             model_name=worker_model_name,
-            system_prompt=build_system_prompt(_user_id()),
+            system_prompt=build_system_prompt(_user_id(), current_agent_profile_slug().strip() or None),
             spec=spec,
         )
         output = {
@@ -2257,7 +2376,7 @@ def build_graph(
             user_id=_user_id(),
             session_id=_session_id(),
             model_name=worker_model_name,
-            system_prompt=build_system_prompt(_user_id()),
+            system_prompt=build_system_prompt(_user_id(), current_agent_profile_slug().strip() or None),
             specs=specs,
         )
         summary_rows = [
@@ -2312,6 +2431,7 @@ def build_graph(
         create_secret,
         list_secrets,
         model_list,
+        discord_resolve_mentions,
         mcp_list_tools,
         mcp_call,
         memory_search,

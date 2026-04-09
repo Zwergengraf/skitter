@@ -141,6 +141,16 @@ struct AuthUser {
     let id: String
     let displayName: String
     let approved: Bool
+    let defaultProfileID: String?
+    let defaultProfileSlug: String?
+}
+
+struct AgentProfile: Identifiable, Equatable {
+    let id: String
+    let slug: String
+    let name: String
+    let status: String
+    let isDefault: Bool
 }
 
 struct ToolRunStatus {

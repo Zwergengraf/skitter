@@ -8,6 +8,8 @@ from pydantic import BaseModel, Field
 
 class SessionCreate(BaseModel):
     user_id: str | None = None
+    agent_profile_id: str | None = None
+    agent_profile_slug: str | None = None
     origin: str = "web"
     reuse_active: bool = True
     scope_type: str | None = None
@@ -17,6 +19,8 @@ class SessionCreate(BaseModel):
 class SessionOut(BaseModel):
     id: str
     user_id: str
+    agent_profile_id: str | None = None
+    agent_profile_slug: str | None = None
     created_at: datetime
     status: str
     scope_type: str = "private"
@@ -47,6 +51,8 @@ class SessionListItem(BaseModel):
     id: str
     user: str
     transport: str
+    agent_profile_id: str | None = None
+    agent_profile_slug: str | None = None
     status: str
     scope_type: str = "private"
     scope_id: str = ""
@@ -87,6 +93,8 @@ class SessionUserPromptOut(BaseModel):
 class SessionDetailOut(BaseModel):
     id: str
     user_id: str
+    agent_profile_id: str | None = None
+    agent_profile_slug: str | None = None
     user: str
     status: str
     scope_type: str = "private"
@@ -159,6 +167,35 @@ class AuthUserOut(BaseModel):
     id: str
     display_name: str
     approved: bool
+    default_profile_id: str | None = None
+    default_profile_slug: str | None = None
+
+
+class AgentProfileOut(BaseModel):
+    id: str
+    slug: str
+    name: str
+    status: str
+    default_model: str | None = None
+    is_default: bool = False
+    created_at: datetime
+    updated_at: datetime
+
+
+class AgentProfileCreateRequest(BaseModel):
+    user_id: str
+    name: str = Field(min_length=1, max_length=120)
+    source_profile_slug: str | None = None
+    mode: str = "blank"
+    make_default: bool = False
+
+
+class AgentProfileUpdateRequest(BaseModel):
+    user_id: str | None = None
+    name: str | None = Field(default=None, min_length=1, max_length=120)
+    archived: bool | None = None
+    make_default: bool | None = None
+    default_model: str | None = None
 
 
 class AuthTokenOut(BaseModel):
@@ -205,12 +242,14 @@ class ModelOut(BaseModel):
 
 class SecretCreate(BaseModel):
     user_id: str
+    agent_profile_id: str | None = None
     name: str
     value: str
 
 
 class SecretOut(BaseModel):
     name: str
+    agent_profile_id: str | None = None
     created_at: datetime
     updated_at: datetime
     last_used_at: datetime | None = None
@@ -218,6 +257,7 @@ class SecretOut(BaseModel):
 
 class MemoryForgetRequest(BaseModel):
     user_id: str
+    agent_profile_id: str | None = None
 
 
 class EventOut(BaseModel):
@@ -345,7 +385,11 @@ class RunTraceDetailOut(BaseModel):
 
 class ScheduledJobCreate(BaseModel):
     user_id: str
+    agent_profile_id: str | None = None
     channel_id: str
+    target_origin: str | None = "discord"
+    target_destination_id: str | None = None
+    target_transport_account_key: str | None = None
     name: str
     prompt: str
     model: str = "__main_chain__"
@@ -355,6 +399,10 @@ class ScheduledJobCreate(BaseModel):
 
 
 class ScheduledJobUpdate(BaseModel):
+    agent_profile_id: str | None = None
+    target_origin: str | None = None
+    target_destination_id: str | None = None
+    target_transport_account_key: str | None = None
     name: str | None = None
     prompt: str | None = None
     model: str | None = None
@@ -367,10 +415,12 @@ class ScheduledJobUpdate(BaseModel):
 class ScheduledJobOut(BaseModel):
     id: str
     user_id: str
+    agent_profile_id: str | None = None
     channel_id: str
     target_scope_type: str = "private"
     target_scope_id: str = ""
     target_origin: str | None = None
+    target_transport_account_key: str | None = None
     target_destination_id: str | None = None
     name: str
     prompt: str
@@ -388,6 +438,7 @@ class ScheduledJobOut(BaseModel):
 class AgentJobListItem(BaseModel):
     id: str
     user_id: str
+    agent_profile_id: str | None = None
     session_id: str | None = None
     kind: str
     name: str
@@ -396,6 +447,7 @@ class AgentJobListItem(BaseModel):
     target_scope_type: str = "private"
     target_scope_id: str = ""
     target_origin: str | None = None
+    target_transport_account_key: str | None = None
     target_destination_id: str | None = None
     cancel_requested: bool = False
     tool_calls_used: int = 0
@@ -426,6 +478,8 @@ class UserListItem(BaseModel):
     username: str | None = None
     avatar_url: str | None = None
     approved: bool
+    default_profile_id: str | None = None
+    default_profile_slug: str | None = None
 
 
 class UserApprovalRequest(BaseModel):
@@ -434,10 +488,79 @@ class UserApprovalRequest(BaseModel):
 
 class ChannelListItem(BaseModel):
     id: str
+    origin: str
+    transport_account_key: str
     name: str
     kind: str
     label: str
+    guild_id: str | None = None
     guild_name: str | None = None
+
+
+class TransportAccountOut(BaseModel):
+    id: str | None = None
+    account_key: str
+    transport: str
+    user_id: str | None = None
+    agent_profile_id: str | None = None
+    agent_profile_slug: str | None = None
+    display_name: str
+    enabled: bool
+    status: str
+    is_shared_default: bool = False
+    external_account_id: str | None = None
+    external_label: str | None = None
+    last_seen_at: datetime | None = None
+    last_error: str | None = None
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
+
+
+class TransportAccountCreateRequest(BaseModel):
+    user_id: str
+    agent_profile_id: str
+    transport: str = "discord"
+    display_name: str | None = None
+    enabled: bool = True
+    credential_value: str = Field(min_length=1)
+
+
+class TransportAccountUpdateRequest(BaseModel):
+    display_name: str | None = None
+    enabled: bool | None = None
+    credential_value: str | None = None
+
+
+class TransportSurfaceBindingOut(BaseModel):
+    id: str
+    transport_account_key: str
+    user_id: str
+    agent_profile_id: str
+    agent_profile_slug: str | None = None
+    origin: str
+    surface_kind: str
+    surface_id: str
+    mode: str
+    enabled: bool
+    created_at: datetime
+    updated_at: datetime
+
+
+class TransportSurfaceBindingCreateRequest(BaseModel):
+    transport_account_key: str
+    user_id: str
+    agent_profile_id: str | None = None
+    origin: str = "discord"
+    surface_kind: str
+    surface_id: str
+    mode: str = "mention_only"
+    enabled: bool = True
+
+
+class TransportSurfaceBindingUpdateRequest(BaseModel):
+    agent_profile_id: str | None = None
+    mode: str | None = None
+    enabled: bool | None = None
 
 
 class SandboxWorkspaceOut(BaseModel):
@@ -484,6 +607,7 @@ class ExecutorOut(BaseModel):
 class ExecutorSetDefaultRequest(BaseModel):
     executor_id: str | None = None
     user_id: str | None = None
+    agent_profile_id: str | None = None
 
 
 class ExecutorCreateRequest(BaseModel):
@@ -577,6 +701,9 @@ class CommandExecuteRequest(BaseModel):
     args: dict[str, Any] = Field(default_factory=dict)
     origin: str = "api"
     user_id: str | None = None
+    agent_profile_id: str | None = None
+    agent_profile_slug: str | None = None
+    transport_account_key: str | None = None
 
 
 class CommandExecuteOut(BaseModel):
