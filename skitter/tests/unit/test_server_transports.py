@@ -5,7 +5,11 @@ from types import SimpleNamespace
 import pytest
 
 from skitter.core.models import MessageEnvelope
-from skitter.server import _load_transport_account_token, _resolve_trusted_discord_sender_internal_user_id
+from skitter.server import (
+    _finalize_runtime_response,
+    _load_transport_account_token,
+    _resolve_trusted_discord_sender_internal_user_id,
+)
 
 
 class _Repo:
@@ -185,3 +189,108 @@ async def test_resolve_trusted_discord_sender_marks_shared_default_bot_as_truste
     assert envelope.metadata["trusted_transport_bot"] is True
     assert envelope.metadata["skitter_transport_account_key"] == "discord:default"
     assert repo.key_calls == []
+
+
+class _TransportRecorder:
+    def __init__(self, *, should_fail: bool = False) -> None:
+        self.should_fail = should_fail
+        self.calls: list[tuple[str, str, list | None, dict | None]] = []
+
+    async def send_message(
+        self,
+        channel_id: str,
+        content: str,
+        attachments=None,
+        metadata=None,
+    ) -> None:
+        self.calls.append((channel_id, content, attachments, metadata))
+        if self.should_fail:
+            raise RuntimeError("discord send failed")
+
+
+@pytest.mark.asyncio
+async def test_finalize_runtime_response_skips_empty_response() -> None:
+    transport = _TransportRecorder()
+    persisted: list[tuple] = []
+
+    async def _persist(*args, **kwargs) -> None:
+        persisted.append((args, kwargs))
+
+    envelope = MessageEnvelope(
+        message_id="msg-empty",
+        channel_id="channel-1",
+        user_id="user-1",
+        timestamp=None,  # type: ignore[arg-type]
+        text="hi",
+        origin="discord",
+        transport_account_key="discord:default",
+        metadata={"agent_profile_id": "profile-1", "agent_profile_slug": "default"},
+    )
+    response = SimpleNamespace(
+        text="",
+        attachments=[],
+        pending_prompt=None,
+        run_id="run-empty",
+        reasoning=None,
+    )
+
+    result = await _finalize_runtime_response(
+        session_id="session-1",
+        envelope=envelope,
+        transport=transport,  # type: ignore[arg-type]
+        owner_internal_user_id="owner-1",
+        response=response,
+        persist_assistant_message=_persist,
+    )
+
+    assert result == {
+        "pending_prompt": False,
+        "response_sent": False,
+        "response_persisted": False,
+    }
+    assert persisted == []
+    assert transport.calls == []
+
+
+@pytest.mark.asyncio
+async def test_finalize_runtime_response_persists_before_send_failure() -> None:
+    transport = _TransportRecorder(should_fail=True)
+    persisted: list[tuple] = []
+
+    async def _persist(*args, **kwargs) -> None:
+        persisted.append((args, kwargs))
+
+    envelope = MessageEnvelope(
+        message_id="msg-send-fail",
+        channel_id="channel-2",
+        user_id="user-2",
+        timestamp=None,  # type: ignore[arg-type]
+        text="hello",
+        origin="discord",
+        transport_account_key="discord:default",
+        metadata={"agent_profile_id": "profile-2", "agent_profile_slug": "assistant"},
+    )
+    response = SimpleNamespace(
+        text="Hello back",
+        attachments=[],
+        pending_prompt=None,
+        run_id="run-send-fail",
+        reasoning=None,
+    )
+
+    result = await _finalize_runtime_response(
+        session_id="session-2",
+        envelope=envelope,
+        transport=transport,  # type: ignore[arg-type]
+        owner_internal_user_id="owner-2",
+        response=response,
+        persist_assistant_message=_persist,
+    )
+
+    assert result == {
+        "pending_prompt": False,
+        "response_sent": False,
+        "response_persisted": True,
+    }
+    assert len(persisted) == 1
+    assert transport.calls[0][1] == "Hello back"

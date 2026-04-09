@@ -4,6 +4,7 @@ import asyncio
 import contextlib
 import logging
 from datetime import UTC, datetime
+from typing import Awaitable, Callable
 
 import uvicorn
 
@@ -141,6 +142,102 @@ async def _resolve_trusted_discord_sender_internal_user_id(
     envelope.metadata["skitter_sender_profile_id"] = row.agent_profile_id
     envelope.metadata["skitter_transport_account_key"] = row.account_key
     return str(row.user_id or "").strip() or None
+
+
+PersistAssistantMessageFunc = Callable[..., Awaitable[None]]
+
+
+async def _finalize_runtime_response(
+    *,
+    session_id: str,
+    envelope: MessageEnvelope,
+    transport: DiscordTransport,
+    owner_internal_user_id: str,
+    response,
+    persist_assistant_message: PersistAssistantMessageFunc,
+) -> dict[str, object]:
+    prompt_metadata: dict[str, object] | None = None
+    if response.pending_prompt is not None:
+        prompt_metadata = {
+            "user_prompt": True,
+            "user_prompt_id": response.pending_prompt.prompt_id,
+            "user_prompt_question": response.pending_prompt.question,
+            "user_prompt_choices": list(response.pending_prompt.choices),
+            "user_prompt_allow_free_text": bool(response.pending_prompt.allow_free_text),
+        }
+        _logger.info(
+            "Runtime requested user prompt (session=%s account=%s channel=%s run=%s prompt_id=%s)",
+            session_id,
+            envelope.transport_account_key or DEFAULT_DISCORD_ACCOUNT_KEY,
+            envelope.channel_id,
+            response.run_id,
+            response.pending_prompt.prompt_id,
+        )
+
+    has_visible_response = bool(response.text or response.attachments)
+    if not has_visible_response:
+        _logger.info(
+            "Runtime returned effective empty response; skipping assistant persistence and delivery "
+            "(session=%s account=%s channel=%s run=%s pending_prompt=%s)",
+            session_id,
+            envelope.transport_account_key or DEFAULT_DISCORD_ACCOUNT_KEY,
+            envelope.channel_id,
+            response.run_id,
+            bool(response.pending_prompt is not None),
+        )
+        return {
+            "pending_prompt": bool(response.pending_prompt is not None),
+            "response_sent": False,
+            "response_persisted": False,
+        }
+
+    await persist_assistant_message(
+        session_id,
+        response.text,
+        envelope.message_id,
+        run_id=response.run_id,
+        reasoning=response.reasoning,
+        attachments=response.attachments,
+        extra_metadata=prompt_metadata,
+    )
+
+    if response.pending_prompt is not None:
+        return {
+            "pending_prompt": True,
+            "response_sent": False,
+            "response_persisted": True,
+        }
+
+    delivered = False
+    try:
+        await transport.send_message(
+            envelope.channel_id,
+            response.text,
+            attachments=response.attachments,
+            metadata={
+                "skitter_sender_internal_user_id": owner_internal_user_id,
+                "skitter_sender_profile_id": str(envelope.metadata.get("agent_profile_id") or "").strip() or None,
+                "skitter_sender_profile_slug": str(envelope.metadata.get("agent_profile_slug") or "").strip() or None,
+                "skitter_transport_account_key": envelope.transport_account_key,
+                "skitter_message_kind": "agent_reply",
+            },
+        )
+        delivered = True
+    except Exception as exc:
+        _logger.exception(
+            "Failed to deliver Discord assistant reply (session=%s account=%s channel=%s run=%s): %s",
+            session_id,
+            envelope.transport_account_key or DEFAULT_DISCORD_ACCOUNT_KEY,
+            envelope.channel_id,
+            response.run_id,
+            exc,
+        )
+
+    return {
+        "pending_prompt": False,
+        "response_sent": delivered,
+        "response_persisted": True,
+    }
 
 
 async def main() -> None:
@@ -787,42 +884,14 @@ async def main() -> None:
         finally:
             await _stop_progress_tracking(progress_stop, progress_task)
 
-        prompt_metadata: dict[str, object] | None = None
-        if response.pending_prompt is not None:
-            prompt_metadata = {
-                "user_prompt": True,
-                "user_prompt_id": response.pending_prompt.prompt_id,
-                "user_prompt_question": response.pending_prompt.question,
-                "user_prompt_choices": list(response.pending_prompt.choices),
-                "user_prompt_allow_free_text": bool(response.pending_prompt.allow_free_text),
-            }
-        if response.pending_prompt is None and (response.text or response.attachments):
-            await transport.send_message(
-                envelope.channel_id,
-                response.text,
-                attachments=response.attachments,
-                metadata={
-                    "skitter_sender_internal_user_id": owner_internal_user_id,
-                    "skitter_sender_profile_id": str(envelope.metadata.get("agent_profile_id") or "").strip() or None,
-                    "skitter_sender_profile_slug": str(envelope.metadata.get("agent_profile_slug") or "").strip() or None,
-                    "skitter_transport_account_key": envelope.transport_account_key,
-                    "skitter_message_kind": "agent_reply",
-                },
-            )
-        if response.text or response.attachments:
-            await _persist_assistant_message(
-                session_id,
-                response.text,
-                envelope.message_id,
-                run_id=response.run_id,
-                reasoning=response.reasoning,
-                attachments=response.attachments,
-                extra_metadata=prompt_metadata,
-            )
-        return {
-            "pending_prompt": bool(response.pending_prompt is not None),
-            "response_sent": bool(response.text or response.attachments),
-        }
+        return await _finalize_runtime_response(
+            session_id=session_id,
+            envelope=envelope,
+            transport=transport,
+            owner_internal_user_id=owner_internal_user_id,
+            response=response,
+            persist_assistant_message=_persist_assistant_message,
+        )
 
     async def handler(envelope: MessageEnvelope) -> None:
         account_key = envelope.transport_account_key or DEFAULT_DISCORD_ACCOUNT_KEY
