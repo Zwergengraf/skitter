@@ -3130,18 +3130,6 @@ export default function App() {
           />
         )}
 
-        {active !== "overview" && active !== "live" && active !== "sessions" && active !== "tools" && active !== "agent-jobs" && active !== "jobs" && active !== "memory" && active !== "secrets" && active !== "users" && active !== "sandbox" && active !== "settings" && (
-          <Card>
-            <CardHeader>
-              <CardTitle>Coming soon</CardTitle>
-              <CardDescription>This section is being wired to live data.</CardDescription>
-            </CardHeader>
-            <CardContent>
-              <Button>Connect API</Button>
-            </CardContent>
-          </Card>
-        )}
-
         <ApiKeyDialog
           open={apiKeyDialogOpen}
           apiReady={apiReady}
