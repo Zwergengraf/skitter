@@ -782,6 +782,43 @@ def test_profiles_route_and_profile_commands(admin_api_key: str, monkeypatch: py
         assert created_profile["is_default"] is True
 
 
+def test_profile_command_help_and_parse_errors_show_syntax(
+    admin_api_key: str,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    repo = _CommandsRepo(approved=True)
+
+    def _tmp_profile_workspace(user_id: str, profile_slug: str | None = None):
+        path = tmp_path / user_id / (profile_slug or "default")
+        path.mkdir(parents=True, exist_ok=True)
+        return path
+
+    monkeypatch.setattr("skitter.core.profile_service.ensure_profile_workspace", _tmp_profile_workspace)
+
+    with _client_with_repo(repo) as client:
+        help_resp = client.post(
+            "/v1/commands/execute",
+            headers={"x-api-key": admin_api_key},
+            json={"command": "profile", "user_id": "user-1", "args": {"raw": "help"}},
+        )
+        assert help_resp.status_code == 200
+        assert "Profile command syntax:" in help_resp.json()["message"]
+        assert "/profile help" in help_resp.json()["message"]
+        assert '/profile create "Research Bot"' in help_resp.json()["message"]
+
+        invalid_resp = client.post(
+            "/v1/commands/execute",
+            headers={"x-api-key": admin_api_key},
+            json={"command": "profile", "user_id": "user-1", "args": {"raw": "rename"}},
+        )
+        assert invalid_resp.status_code == 400
+        detail = invalid_resp.json()["detail"]
+        assert "`rename` requires a profile slug and a new name." in detail
+        assert "Profile command syntax:" in detail
+        assert "/profile model default" in detail
+
+
 def test_profiles_routes_support_create_and_update(admin_api_key: str, monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
     repo = _CommandsRepo(approved=True)
     monkeypatch.setattr(

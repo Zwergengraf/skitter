@@ -15,6 +15,13 @@ from .profiles import private_profile_scope_id
 from .workspace import ensure_profile_workspace, user_workspace_root
 
 
+def _workspace_root(user_id: str, profile_slug: str | None = None) -> Path:
+    try:
+        return user_workspace_root(user_id, profile_slug)
+    except TypeError:
+        return user_workspace_root(user_id)
+
+
 def normalize_session_summary(summary: object) -> str:
     if isinstance(summary, str):
         normalized = summary
@@ -60,7 +67,7 @@ def write_session_summary_file(
     profile_slug: str | None = None,
     target_date: date | None = None,
 ) -> tuple[Path, str]:
-    path = user_workspace_root(user_id, profile_slug) / session_summary_relative_path(target_date)
+    path = _workspace_root(user_id, profile_slug) / session_summary_relative_path(target_date)
     path.parent.mkdir(parents=True, exist_ok=True)
     existing = ""
     if path.exists():
@@ -236,7 +243,7 @@ class SessionManager:
         return None, new_session.id
 
     async def reindex_memories(self, user_id: str, *, agent_profile_id: str, agent_profile_slug: str) -> dict:
-        memory_root = user_workspace_root(user_id, agent_profile_slug) / "memory"
+        memory_root = _workspace_root(user_id, agent_profile_slug) / "memory"
         return await self.memory_service.reindex_all(user_id, memory_root, agent_profile_id=agent_profile_id)
 
     async def search_memories(

@@ -39,7 +39,7 @@ def test_build_mcp_index_lists_enabled_servers_with_descriptions(monkeypatch) ->
 def test_build_system_prompt_places_mcp_index_before_context(monkeypatch, tmp_path: Path) -> None:
     user_id = "user-1"
     workspace_root = tmp_path / "workspace"
-    user_root = workspace_root / "users" / user_id
+    user_root = workspace_root / "users" / user_id / "default"
     user_root.mkdir(parents=True, exist_ok=True)
     (user_root / "TOOLS.md").write_text("Tool notes.", encoding="utf-8")
 

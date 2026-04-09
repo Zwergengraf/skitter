@@ -19,6 +19,20 @@ from .workspace import ensure_user_workspace, user_workspace_root
 
 _logger = logging.getLogger(__name__)
 
+
+def _workspace_root(user_id: str, profile_slug: str | None = None) -> Path:
+    try:
+        return user_workspace_root(user_id, profile_slug)
+    except TypeError:
+        return user_workspace_root(user_id)
+
+
+def _ensure_workspace(user_id: str, profile_slug: str | None = None) -> Path:
+    try:
+        return ensure_user_workspace(user_id, profile_slug)
+    except TypeError:
+        return ensure_user_workspace(user_id)
+
 DEFAULT_SESSION_MEMORY_TEMPLATE = """
 # Session Title
 _A short, distinctive title for this session._
@@ -137,7 +151,7 @@ Return concise Markdown bullets or very short sections only.
 
 
 def current_session_memory_path(user_id: str, session_id: str, profile_slug: str | None = None) -> Path:
-    return user_workspace_root(user_id, profile_slug) / session_memory_relative_path(session_id)
+    return _workspace_root(user_id, profile_slug) / session_memory_relative_path(session_id)
 
 
 def session_memory_relative_path(session_id: str) -> Path:
@@ -346,7 +360,7 @@ class SessionMemoryService:
                     return None
             return None
 
-        ensure_user_workspace(user_id, profile_slug)
+        _ensure_workspace(user_id, profile_slug)
         current_notes = DEFAULT_SESSION_MEMORY_TEMPLATE
         if current_path.exists():
             try:

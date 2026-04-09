@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from typing import Literal
 
 from fastapi import APIRouter, Depends, Query, Request
@@ -38,7 +38,7 @@ def _add_months(value: datetime, months: int) -> datetime:
 
 
 async def _cost_trajectory(repo: Repository, range_key: OverviewRange) -> list[OverviewCostPoint]:
-    now = datetime.utcnow()
+    now = datetime.now(UTC)
     bucket_unit = "day"
     bucket_points: list[datetime] = []
     window_start = now
@@ -95,8 +95,10 @@ async def _cost_trajectory(repo: Repository, range_key: OverviewRange) -> list[O
     for bucket, cost in rows:
         if bucket is None:
             continue
-        if bucket.tzinfo is not None:
-            bucket = bucket.replace(tzinfo=None)
+        if bucket.tzinfo is None:
+            bucket = bucket.replace(tzinfo=UTC)
+        else:
+            bucket = bucket.astimezone(UTC)
         cost_by_bucket[bucket] = float(cost or 0.0)
 
     return [
@@ -111,7 +113,11 @@ async def _system_health(request: Request, repo: Repository) -> list[OverviewSer
     api_status = "healthy" if bool(getattr(runtime, "ready", False)) else "warning"
     api_detail = "ready"
     if started_at is not None:
-        uptime_seconds = max(0, int((datetime.utcnow() - started_at).total_seconds()))
+        if started_at.tzinfo is None:
+            started_at = started_at.replace(tzinfo=UTC)
+        else:
+            started_at = started_at.astimezone(UTC)
+        uptime_seconds = max(0, int((datetime.now(UTC) - started_at).total_seconds()))
         api_detail = f"ready · uptime {uptime_seconds}s" if api_status == "healthy" else f"not ready · uptime {uptime_seconds}s"
 
     db_status = "healthy"

@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import uuid
-from datetime import datetime, time as dt_time
+from datetime import UTC, datetime, time as dt_time
 from zoneinfo import ZoneInfo
 from typing import Awaitable, Callable, Optional
 
@@ -182,7 +182,7 @@ class HeartbeatService:
                         message_id=str(uuid.uuid4()),
                         channel_id=target_destination or private_session.id,
                         user_id=user.transport_user_id,
-                        timestamp=datetime.utcnow(),
+                        timestamp=datetime.now(UTC),
                         text=prompt,
                         origin="heartbeat",
                         transport_account_key=target_transport_account_key or "",

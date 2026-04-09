@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+from contextlib import asynccontextmanager
 import logging
 import secrets as stdlib_secrets
-from datetime import datetime
+from datetime import UTC, datetime
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -54,7 +55,18 @@ _logger = logging.getLogger(__name__)
 
 def create_app() -> FastAPI:
     configure_logging()
-    app = FastAPI(title="Skitter API", version="0.1.0")
+
+    @asynccontextmanager
+    async def _lifespan(app: FastAPI):
+        if sandbox_manager is not None:
+            await sandbox_manager.start()
+        try:
+            yield
+        finally:
+            await mcp_registry.shutdown()
+            await app.state.session_memory_service.stop()
+
+    app = FastAPI(title="Skitter API", version="0.1.0", lifespan=_lifespan)
     invalid_selectors = invalid_model_selectors()
     if invalid_selectors:
         available_models = ", ".join(model.name for model in list_models()) or "(none configured)"
@@ -89,7 +101,7 @@ def create_app() -> FastAPI:
     app.state.job_service = None
     app.state.session_finalizer_service = None
     app.state.user_notifier = None
-    app.state.started_at = datetime.utcnow()
+    app.state.started_at = datetime.now(UTC)
 
     app.state.runtime.ready = True
 
@@ -130,16 +142,6 @@ def create_app() -> FastAPI:
                             )
                             await repo.touch_auth_token(token)
         return await call_next(request)
-
-    @app.on_event("startup")
-    async def _start_sandbox_manager() -> None:
-        if sandbox_manager is not None:
-            await sandbox_manager.start()
-
-    @app.on_event("shutdown")
-    async def _stop_mcp_registry() -> None:
-        await mcp_registry.shutdown()
-        await app.state.session_memory_service.stop()
 
     app.include_router(sessions.router)
     app.include_router(auth.router)
