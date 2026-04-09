@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 
@@ -142,7 +142,7 @@ async def create_session(
                 "scope_id": scope_id,
                 "initiated_by_origin": origin,
             }
-            now = datetime.utcnow()
+            now = datetime.now(UTC)
             await event_bus.publish(
                 StreamEvent(
                     session_id=previous_active_id,

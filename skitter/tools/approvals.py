@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Dict, Optional
 
 
@@ -28,7 +28,7 @@ class InMemoryApprovalStore:
             approval = self.create_pending(tool_run_id)
         approval.status = "approved"
         approval.approved_by = approved_by
-        approval.approved_at = datetime.utcnow()
+        approval.approved_at = datetime.now(UTC)
         return approval
 
     def get(self, tool_run_id: str) -> Optional[ToolApproval]:

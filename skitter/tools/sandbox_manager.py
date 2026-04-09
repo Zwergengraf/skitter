@@ -6,7 +6,7 @@ import os
 import shutil
 import time
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Dict, Optional
 
@@ -94,7 +94,7 @@ class SandboxManager:
         return info.base_url
 
     async def record_activity(self, user_id: str, profile_slug: str | None = None) -> None:
-        self._last_activity[self._workspace_key(user_id, profile_slug)] = datetime.utcnow()
+        self._last_activity[self._workspace_key(user_id, profile_slug)] = datetime.now(UTC)
 
     async def ensure(self, user_id: str, profile_slug: str | None = None) -> SandboxInfo:
         if not self._ready or self._client is None:
@@ -216,7 +216,7 @@ class SandboxManager:
             container_id=container.id,
             name=name,
             base_url=base_url,
-            last_activity=self._last_activity.get(cache_key, datetime.utcnow()),
+            last_activity=self._last_activity.get(cache_key, datetime.now(UTC)),
         )
         self._cache[cache_key] = info
         return info
@@ -310,7 +310,7 @@ class SandboxManager:
         containers = await asyncio.to_thread(
             lambda: self._client.containers.list(filters={"label": "skitter_role=sandbox"})
         )
-        now = datetime.utcnow()
+        now = datetime.now(UTC)
         idle_delta = timedelta(seconds=max(60, settings.sandbox_idle_seconds))
         for container in containers:
             labels = container.labels or {}

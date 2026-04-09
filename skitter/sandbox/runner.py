@@ -11,7 +11,7 @@ import shutil
 import sys
 import time
 from contextlib import asynccontextmanager
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Dict
 from urllib.parse import urlparse
@@ -218,7 +218,7 @@ def _browser_profile_key(session_id: str) -> str:
 def _save_screenshot(workspace_root: Path, session_id: str, png: bytes) -> str:
     shots_root = workspace_root / "screenshots" / _safe_session(session_id)
     shots_root.mkdir(parents=True, exist_ok=True)
-    filename = f"{datetime.utcnow().strftime('%Y%m%d_%H%M%S_%f')}.png"
+    filename = f"{datetime.now(UTC).strftime('%Y%m%d_%H%M%S_%f')}.png"
     path = shots_root / filename
     path.write_bytes(png)
     return str(Path("screenshots") / _safe_session(session_id) / filename)
@@ -227,7 +227,7 @@ def _save_screenshot(workspace_root: Path, session_id: str, png: bytes) -> str:
 def _new_screenshot_target(workspace_root: Path, session_id: str) -> Path:
     shots_root = workspace_root / "screenshots" / _safe_session(session_id)
     shots_root.mkdir(parents=True, exist_ok=True)
-    filename = f"{datetime.utcnow().strftime('%Y%m%d_%H%M%S_%f')}.png"
+    filename = f"{datetime.now(UTC).strftime('%Y%m%d_%H%M%S_%f')}.png"
     return shots_root / filename
 
 
@@ -972,7 +972,7 @@ def create_app() -> FastAPI:
                 target = safe_path(str(path))
             else:
                 filename = Path(parsed.path).name or "download.bin"
-                date_dir = datetime.utcnow().strftime("%Y-%m-%d")
+                date_dir = datetime.now(UTC).strftime("%Y-%m-%d")
                 target = safe_path(str(Path("downloads") / date_dir / filename))
             target.parent.mkdir(parents=True, exist_ok=True)
             size = 0

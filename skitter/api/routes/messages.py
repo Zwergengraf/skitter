@@ -4,7 +4,7 @@ import base64
 import binascii
 import mimetypes
 import uuid
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -160,7 +160,7 @@ async def send_message(
         message_id=str(uuid.uuid4()),
         channel_id=payload.session_id,
         user_id=request_user_id,
-        timestamp=datetime.utcnow(),
+        timestamp=datetime.now(UTC),
         text=payload.text,
         origin=origin_hint,
         metadata=payload.metadata,
@@ -181,7 +181,7 @@ async def send_message(
         )
         await repo.set_user_meta(
             session.user_id,
-            {"last_seen_at": datetime.utcnow().isoformat()},
+            {"last_seen_at": datetime.now(UTC).isoformat()},
         )
         if profile is not None:
             await repo.update_agent_profile(
@@ -189,7 +189,7 @@ async def send_message(
                 meta_updates={
                     "last_private_origin": envelope.origin,
                     "last_private_destination_id": destination_hint,
-                    "last_seen_at": datetime.utcnow().isoformat(),
+                    "last_seen_at": datetime.now(UTC).isoformat(),
                 },
             )
     metadata = dict(metadata_input)

@@ -31,6 +31,67 @@ All clients support the `/profile` command family:
 - rename
 - archive
 - unarchive
+- show or change the profile default model
+
+### Syntax
+
+Supported forms:
+
+```text
+/profile
+/profile list
+/profile show
+/profile help
+
+/profile use <slug>
+/profile default <slug>
+
+/profile create <name>
+/profile create <name> --default
+
+/profile clone <source_slug> <new_name>
+/profile clone <source_slug> <new_name> --mode=blank
+/profile clone <source_slug> <new_name> --mode=settings
+/profile clone <source_slug> <new_name> --mode=all
+/profile clone <source_slug> <new_name> --default
+
+/profile rename <slug> <new_name>
+
+/profile archive <slug>
+/profile unarchive <slug>
+
+/profile model
+/profile model <model_name>
+/profile model default
+```
+
+Notes:
+
+- names with spaces should be quoted
+- `/profile`, `/profile list`, and `/profile show` currently behave the same
+- `/profile help` prints the syntax and examples
+- `/profile model default` resets the profile to the global default model
+- `/profile delete` is not part of the chat command family; deleting archived profiles is done in the admin web UI
+
+### Examples
+
+```text
+/profile
+/profile help
+/profile use coder
+/profile default assistant
+/profile create "Research Bot"
+/profile create "Ops Bot" --default
+/profile clone default "Writer Bot"
+/profile clone default "Fresh Copy" --mode=blank
+/profile clone assistant "Assistant Fork" --mode=all --default
+/profile rename writer "Longform Writer"
+/profile archive test-bot
+/profile unarchive test-bot
+/profile model
+/profile model local/gpt-5.4
+/profile model default
+```
 
 ## Discord-Specific Rules
 

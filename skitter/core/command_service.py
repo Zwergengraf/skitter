@@ -8,7 +8,7 @@ from .config import SECRETS_APPROVAL_BYPASS_MAGIC, settings
 from .conversation_scope import private_scope_id
 from .llm import list_models, resolve_model_name
 from .models import StreamEvent
-from .profile_service import parse_profile_command, profile_service, serialize_profile
+from .profile_service import parse_profile_command, profile_command_help_text, profile_service, serialize_profile
 from .sessions import SessionManager
 from .transport_accounts import (
     DEFAULT_DISCORD_ACCOUNT_KEY,
@@ -93,7 +93,7 @@ async def _publish_session_switch(
         "scope_id": scope_id,
         "initiated_by_origin": initiated_by_origin,
     }
-    now = datetime.utcnow()
+    now = datetime.now(UTC)
     await event_bus.publish(
         StreamEvent(
             session_id=old_session_id,
@@ -469,7 +469,10 @@ class CommandService:
         transport_account_key: str | None,
         surface_is_private: bool | None,
     ) -> CommandExecutionResult:
-        parsed = parse_profile_command(raw)
+        try:
+            parsed = parse_profile_command(raw)
+        except ValueError as exc:
+            raise ValueError(f"{exc}\n\n{profile_command_help_text()}") from exc
         action = str(parsed.get("action") or "show").strip().lower()
         default_profile = await profile_service.ensure_default_profile(repo, user_id)
         discord_accounts_by_profile = await transport_account_service.list_explicit_accounts_by_profile(
@@ -480,6 +483,9 @@ class CommandService:
         is_shared_default_discord = origin == "discord" and is_shared_default_account_key(
             transport_account_key or DEFAULT_DISCORD_ACCOUNT_KEY
         )
+
+        if action == "help":
+            return CommandExecutionResult(message=profile_command_help_text(), data={"help": True})
 
         if action == "show":
             rows = await profile_service.list_profiles(repo, user_id, include_archived=True)

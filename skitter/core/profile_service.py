@@ -14,6 +14,35 @@ from .workspace import ensure_profile_workspace, profile_workspace_root
 PROFILE_SETTINGS_DIRS = ("skills",)
 
 
+def profile_command_help_text() -> str:
+    return "\n".join(
+        [
+            "Profile command syntax:",
+            "/profile",
+            "/profile list",
+            "/profile show",
+            "/profile help",
+            "/profile use <slug>",
+            "/profile default <slug>",
+            "/profile create <name> [--default]",
+            "/profile clone <source_slug> <new_name> [--mode=blank|settings|all] [--default]",
+            "/profile rename <slug> <new_name>",
+            "/profile archive <slug>",
+            "/profile unarchive <slug>",
+            "/profile model",
+            "/profile model <model_name>",
+            "/profile model default",
+            "",
+            "Examples:",
+            '/profile create "Research Bot"',
+            "/profile use coder",
+            '/profile clone default "Writer Bot" --mode=settings',
+            "/profile model local/gpt-5.4",
+            "/profile model default",
+        ]
+    )
+
+
 def profile_default_model_value(profile: AgentProfile | None) -> str | None:
     if profile is None:
         return None
@@ -57,6 +86,8 @@ def parse_profile_command(raw: str) -> dict[str, object]:
         return {"action": "show"}
     action = tokens[0].lower()
     rest = tokens[1:]
+    if action in {"help", "--help", "-h"}:
+        return {"action": "help"}
     if action in {"list", "show"}:
         return {"action": "show"}
     if action in {"use", "default", "archive", "unarchive"}:

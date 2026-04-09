@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Iterable
 
 from ..core.models import Attachment, MessageEnvelope
@@ -44,7 +44,7 @@ class CliTransport(TransportAdapter):
                 message_id="cli",
                 channel_id="cli",
                 user_id="cli",
-                timestamp=datetime.utcnow(),
+                timestamp=datetime.now(UTC),
                 text=text,
                 origin="cli",
             )

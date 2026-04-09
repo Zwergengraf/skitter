@@ -501,7 +501,7 @@ class DiscordTransport(TransportAdapter):
                 message_id=str(message.id),
                 channel_id=str(message.channel.id),
                 user_id=str(message.author.id),
-                timestamp=message.created_at or datetime.utcnow(),
+                timestamp=message.created_at or datetime.now(UTC),
                 text=message.content,
                 attachments=[
                     Attachment(filename=a.filename, content_type=a.content_type or "", url=a.url)
@@ -849,7 +849,7 @@ class DiscordTransport(TransportAdapter):
             message_id=str(interaction.id),
             channel_id=str(interaction.channel_id),
             user_id=str(interaction.user.id),
-            timestamp=datetime.utcnow(),
+            timestamp=datetime.now(UTC),
             text="",
             attachments=[],
             origin="discord",
