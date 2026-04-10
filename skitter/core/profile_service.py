@@ -11,6 +11,7 @@ from .profiles import DEFAULT_AGENT_PROFILE_NAME, DEFAULT_AGENT_PROFILE_SLUG, no
 from .transport_accounts import discord_surface_kind
 from .workspace import ensure_profile_workspace, profile_workspace_root
 
+BOOTSTRAP_FILENAME = "BOOTSTRAP.md"
 PROFILE_SETTINGS_DIRS = ("skills",)
 
 
@@ -220,7 +221,6 @@ class ProfileService:
             slug=slug,
             make_default=make_default,
         )
-        ensure_profile_workspace(user_id, row.slug)
         if source_slug:
             source = await repo.get_agent_profile_by_slug(user_id, source_slug)
             if source is None:
@@ -231,6 +231,8 @@ class ProfileService:
                 target_slug=row.slug,
                 mode=mode,
             )
+        else:
+            ensure_profile_workspace(user_id, row.slug)
         return row
 
     async def set_default_profile(self, repo: Repository, user_id: str, slug: str) -> AgentProfile:
@@ -336,7 +338,8 @@ class ProfileService:
 
     def _clone_profile_workspace(self, *, user_id: str, source_slug: str, target_slug: str, mode: str) -> None:
         source_root = profile_workspace_root(user_id, source_slug)
-        target_root = ensure_profile_workspace(user_id, target_slug)
+        target_root = profile_workspace_root(user_id, target_slug)
+        target_root.mkdir(parents=True, exist_ok=True)
         normalized_mode = str(mode or "settings").strip().lower()
         if normalized_mode not in {"blank", "settings", "all"}:
             raise ValueError("Clone mode must be one of: blank, settings, all.")
@@ -344,7 +347,7 @@ class ProfileService:
             return
         if normalized_mode == "all":
             for child in source_root.iterdir():
-                if child.name in {".uploads", ".browser", ".attachments"}:
+                if child.name in {BOOTSTRAP_FILENAME, ".uploads", ".browser", ".attachments"}:
                     continue
                 self._copy_path(child, target_root / child.name)
             return
@@ -352,7 +355,7 @@ class ProfileService:
             if child.name in PROFILE_SETTINGS_DIRS:
                 self._copy_path(child, target_root / child.name)
                 continue
-            if child.is_file() and child.suffix.lower() == ".md":
+            if child.is_file() and child.suffix.lower() == ".md" and child.name != BOOTSTRAP_FILENAME:
                 self._copy_path(child, target_root / child.name)
 
     @staticmethod
