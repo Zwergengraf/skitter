@@ -146,6 +146,97 @@ async def test_create_blank_profile_copies_workspace_skeleton(
     _assert_workspace_scaffold(profile_workspace_root("user-1", profile.slug))
 
 
+@pytest.mark.asyncio
+async def test_clone_settings_copies_markdown_and_skills_but_not_bootstrap(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    _configure_workspace(monkeypatch, tmp_path)
+    repo = _CreateProfileRepo()
+
+    source = await repo.create_agent_profile(user_id="user-1", name="Source", slug="source")
+    source_root = ensure_profile_workspace("user-1", source.slug)
+    (source_root / "AGENTS.md").write_text("source agents", encoding="utf-8")
+    (source_root / "IDENTITY.md").write_text("source identity", encoding="utf-8")
+    (source_root / "BOOTSTRAP.md").write_text("source bootstrap", encoding="utf-8")
+    (source_root / "skills" / "starter.md").unlink()
+    (source_root / "skills" / "copied.md").write_text("copied skill", encoding="utf-8")
+    (source_root / "memory" / "note.md").write_text("secret memory", encoding="utf-8")
+    (source_root / "config.json").write_text("{}", encoding="utf-8")
+
+    cloned = await profile_service.create_profile(
+        repo,
+        "user-1",
+        name="Settings Clone",
+        source_slug=source.slug,
+        mode="settings",
+    )
+
+    cloned_root = profile_workspace_root("user-1", cloned.slug)
+    assert (cloned_root / "AGENTS.md").read_text(encoding="utf-8") == "source agents"
+    assert (cloned_root / "IDENTITY.md").read_text(encoding="utf-8") == "source identity"
+    assert (cloned_root / "skills" / "copied.md").read_text(encoding="utf-8") == "copied skill"
+    assert not (cloned_root / "skills" / "starter.md").exists()
+    assert not (cloned_root / "BOOTSTRAP.md").exists()
+    assert not (cloned_root / "memory" / "note.md").exists()
+    assert not (cloned_root / "memory").exists()
+    assert not (cloned_root / "screenshots").exists()
+    assert not (cloned_root / "config.json").exists()
+
+
+@pytest.mark.asyncio
+async def test_clone_all_copies_workspace_except_bootstrap_and_ephemera(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    _configure_workspace(monkeypatch, tmp_path)
+    repo = _CreateProfileRepo()
+
+    source = await repo.create_agent_profile(user_id="user-1", name="Source", slug="source")
+    source_root = ensure_profile_workspace("user-1", source.slug)
+    (source_root / "BOOTSTRAP.md").write_text("source bootstrap", encoding="utf-8")
+    (source_root / "memory" / "note.md").write_text("copied memory", encoding="utf-8")
+    (source_root / ".uploads").mkdir(parents=True, exist_ok=True)
+    (source_root / ".uploads" / "temp.txt").write_text("skip me", encoding="utf-8")
+
+    cloned = await profile_service.create_profile(
+        repo,
+        "user-1",
+        name="Full Clone",
+        source_slug=source.slug,
+        mode="all",
+    )
+
+    cloned_root = profile_workspace_root("user-1", cloned.slug)
+    assert not (cloned_root / "BOOTSTRAP.md").exists()
+    assert (cloned_root / "memory" / "note.md").read_text(encoding="utf-8") == "copied memory"
+    assert not (cloned_root / ".uploads").exists()
+
+
+@pytest.mark.asyncio
+async def test_clone_blank_starts_empty_without_workspace_skeleton(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    _configure_workspace(monkeypatch, tmp_path)
+    repo = _CreateProfileRepo()
+
+    source = await repo.create_agent_profile(user_id="user-1", name="Source", slug="source")
+    ensure_profile_workspace("user-1", source.slug)
+
+    cloned = await profile_service.create_profile(
+        repo,
+        "user-1",
+        name="Blank Clone",
+        source_slug=source.slug,
+        mode="blank",
+    )
+
+    cloned_root = profile_workspace_root("user-1", cloned.slug)
+    assert cloned_root.exists()
+    assert list(cloned_root.iterdir()) == []
+
+
 def test_ensure_profile_workspace_does_not_backfill_existing_workspace(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

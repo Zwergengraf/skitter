@@ -34,6 +34,14 @@ import { formatRelativeTime } from "@/lib/utils";
 type ProfileListTab = "active" | "archived";
 type ProfileCreateMode = "blank" | "settings" | "all";
 
+const cloneModeDescriptions: Record<ProfileCreateMode, string> = {
+  blank: "Start with only the workspace skeleton. This is a fresh profile with no copied setup.",
+  settings:
+    "Start from an empty workspace, then copy the source profile's top-level Markdown files and its skills folder. Memory, screenshots, uploads, and BOOTSTRAP.md are not copied.",
+  all:
+    "Start from an empty workspace, then copy the full source workspace except ephemeral caches and BOOTSTRAP.md. This includes folders like memory and screenshots.",
+};
+
 type ProfilesViewProps = {
   usersData: UserListItem[];
   usersLoading: boolean;
@@ -550,6 +558,22 @@ export function ProfilesView({
                             </SelectContent>
                           </Select>
                         </div>
+                      </div>
+                      <div className="mt-4 rounded-2xl border border-border bg-background px-4 py-3">
+                        <p className="text-[11px] font-semibold uppercase tracking-[0.2em] text-mutedForeground">
+                          What gets copied
+                        </p>
+                        <p className="mt-2 text-sm text-mutedForeground">
+                          {profileCreateSourceSlug === "blank"
+                            ? cloneModeDescriptions.blank
+                            : cloneModeDescriptions[profileCreateMode]}
+                        </p>
+                        {profileCreateSourceSlug !== "blank" ? (
+                          <p className="mt-2 text-xs text-mutedForeground">
+                            Cloned profiles do not keep <code>BOOTSTRAP.md</code>, so they will not restart the
+                            onboarding/bootstrap flow.
+                          </p>
+                        ) : null}
                       </div>
                       <div className="mt-4 flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-border bg-background px-4 py-3">
                         <div className="flex items-center gap-3">
