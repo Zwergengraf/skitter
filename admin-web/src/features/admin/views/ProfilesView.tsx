@@ -551,7 +551,7 @@ export function ProfilesView({
                           </Select>
                         </div>
                       </div>
-                      <div className="mt-4 flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-border bg-background/70 px-4 py-3">
+                      <div className="mt-4 flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-border bg-background px-4 py-3">
                         <div className="flex items-center gap-3">
                           <Switch checked={profileCreateMakeDefault} onCheckedChange={setProfileCreateMakeDefault} />
                           <div>
@@ -698,7 +698,7 @@ export function ProfilesView({
                             </div>
 
                             {detailsExpanded ? (
-                              <div className="border-t border-border/70 bg-background/60 px-5 py-5">
+                              <div className="border-t border-border/70 bg-background px-5 py-5">
                                 {profile.status === "archived" ? (
                                   <div className="rounded-2xl border border-dashed border-border bg-muted/30 px-4 py-4 text-sm text-mutedForeground">
                                     Archived profiles are hidden from normal client use. Restore the profile to edit it

@@ -43,9 +43,26 @@
     --ambient-core-3: rgba(14, 165, 233, 0.08);
     --ambient-trace: rgba(15, 118, 110, 0.12);
     --ambient-sheen: rgba(255, 255, 255, 0.28);
-    --panel-surface: rgba(255, 255, 255, 0.98);
+    --panel-surface: rgb(255, 255, 255);
     --panel-border: rgba(180, 193, 211, 0.78);
     --panel-shadow: 0 16px 34px rgba(15, 23, 42, 0.08);
+    --control-height: 2.75rem;
+    --control-padding-x: 1rem;
+    --textarea-padding-y: 0.75rem;
+    --button-height-default: 2.75rem;
+    --button-height-sm: 2rem;
+    --button-height-lg: 3rem;
+    --button-height-icon: 2.5rem;
+    --button-padding-default: 1rem;
+    --button-padding-sm: 0.75rem;
+    --button-padding-lg: 1.5rem;
+    --tabs-list-height: 2.75rem;
+    --tabs-trigger-min-height: 2rem;
+    --tabs-trigger-padding-x: 1rem;
+    --tabs-trigger-padding-y: 0.375rem;
+    --switch-width: 2.75rem;
+    --switch-height: 1.5rem;
+    --switch-thumb-size: 1.125rem;
     --radius-card: 30px;
     --radius-panel: 34px;
     --radius-control: 999px;
@@ -92,9 +109,26 @@
     --ambient-core-3: rgba(251, 146, 60, 0.12);
     --ambient-trace: rgba(34, 211, 238, 0.14);
     --ambient-sheen: rgba(125, 211, 252, 0.08);
-    --panel-surface: rgba(20, 26, 44, 0.98);
+    --panel-surface: rgb(20, 26, 44);
     --panel-border: rgba(71, 85, 105, 0.72);
     --panel-shadow: 0 20px 42px rgba(2, 8, 23, 0.36);
+    --control-height: 2.75rem;
+    --control-padding-x: 1rem;
+    --textarea-padding-y: 0.75rem;
+    --button-height-default: 2.75rem;
+    --button-height-sm: 2rem;
+    --button-height-lg: 3rem;
+    --button-height-icon: 2.5rem;
+    --button-padding-default: 1rem;
+    --button-padding-sm: 0.75rem;
+    --button-padding-lg: 1.5rem;
+    --tabs-list-height: 2.75rem;
+    --tabs-trigger-min-height: 2rem;
+    --tabs-trigger-padding-x: 1rem;
+    --tabs-trigger-padding-y: 0.375rem;
+    --switch-width: 2.75rem;
+    --switch-height: 1.5rem;
+    --switch-thumb-size: 1.125rem;
   }
 
   [data-theme="catppuccin-mocha"] {
@@ -136,9 +170,274 @@
     --ambient-core-3: rgba(250, 179, 135, 0.1);
     --ambient-trace: rgba(148, 226, 213, 0.1);
     --ambient-sheen: rgba(180, 190, 254, 0.06);
-    --panel-surface: rgba(24, 24, 37, 0.98);
+    --panel-surface: rgb(24, 24, 37);
     --panel-border: rgba(88, 91, 112, 0.8);
     --panel-shadow: 0 22px 48px rgba(17, 17, 27, 0.42);
+    --control-height: 2.75rem;
+    --control-padding-x: 1rem;
+    --textarea-padding-y: 0.75rem;
+    --button-height-default: 2.75rem;
+    --button-height-sm: 2rem;
+    --button-height-lg: 3rem;
+    --button-height-icon: 2.5rem;
+    --button-padding-default: 1rem;
+    --button-padding-sm: 0.75rem;
+    --button-padding-lg: 1.5rem;
+    --tabs-list-height: 2.75rem;
+    --tabs-trigger-min-height: 2rem;
+    --tabs-trigger-padding-x: 1rem;
+    --tabs-trigger-padding-y: 0.375rem;
+    --switch-width: 2.75rem;
+    --switch-height: 1.5rem;
+    --switch-thumb-size: 1.125rem;
+  }
+
+  [data-theme="catppuccin-frappe"] {
+    --background: 229 19% 23%;
+    --foreground: 227 70% 87%;
+    --card: 229 19% 23%;
+    --card-foreground: 227 70% 87%;
+    --muted: 230 16% 30%;
+    --muted-foreground: 228 29% 73%;
+    --primary: 277 59% 76%;
+    --primary-foreground: 229 20% 17%;
+    --accent: 199 55% 69%;
+    --accent-foreground: 229 20% 17%;
+    --border: 228 13% 44%;
+    --ring: 222 74% 74%;
+    --warning: 20 79% 70%;
+    --success: 96 44% 68%;
+    --bg-glow-1: rgba(202, 158, 230, 0.2);
+    --bg-glow-2: rgba(133, 193, 220, 0.14);
+    --bg-glow-3: rgba(35, 38, 52, 0.98);
+    --surface-soft: rgba(65, 69, 89, 0.74);
+    --sidebar-bg: rgba(41, 44, 60, 0.84);
+    --sidebar-glow: rgba(202, 158, 230, 0.18);
+    --topbar-bg: rgba(48, 52, 70, 0.88);
+    --topbar-accent: rgba(186, 187, 241, 0.12);
+    --chip-bg: rgba(65, 69, 89, 0.72);
+    --chip-border: rgba(186, 187, 241, 0.16);
+    --chip-shadow: 0 12px 24px rgba(35, 38, 52, 0.3);
+    --shadow-soft: 0 24px 54px rgba(35, 38, 52, 0.42), inset 0 1px 0 rgba(198, 208, 245, 0.04);
+    --button-shadow: 0 16px 32px rgba(202, 158, 230, 0.18);
+    --field-shadow: 0 12px 24px rgba(35, 38, 52, 0.24), inset 0 1px 0 rgba(198, 208, 245, 0.04);
+    --table-row-hover: rgba(129, 200, 190, 0.08);
+    --overlay-backdrop: rgba(35, 38, 52, 0.54);
+    --selection-bg: rgba(202, 158, 230, 0.2);
+    --hero-grid: rgba(198, 208, 245, 0.04);
+    --glow-line-accent: rgba(129, 200, 190, 0.28);
+    --ambient-core-1: rgba(202, 158, 230, 0.16);
+    --ambient-core-2: rgba(133, 193, 220, 0.12);
+    --ambient-core-3: rgba(239, 159, 118, 0.1);
+    --ambient-trace: rgba(129, 200, 190, 0.1);
+    --ambient-sheen: rgba(186, 187, 241, 0.06);
+    --panel-surface: rgb(48, 52, 70);
+    --panel-border: rgba(98, 104, 128, 0.8);
+    --panel-shadow: 0 20px 44px rgba(35, 38, 52, 0.38);
+    --control-height: 2.75rem;
+    --control-padding-x: 1rem;
+    --textarea-padding-y: 0.75rem;
+    --button-height-default: 2.75rem;
+    --button-height-sm: 2rem;
+    --button-height-lg: 3rem;
+    --button-height-icon: 2.5rem;
+    --button-padding-default: 1rem;
+    --button-padding-sm: 0.75rem;
+    --button-padding-lg: 1.5rem;
+    --tabs-list-height: 2.75rem;
+    --tabs-trigger-min-height: 2rem;
+    --tabs-trigger-padding-x: 1rem;
+    --tabs-trigger-padding-y: 0.375rem;
+    --switch-width: 2.75rem;
+    --switch-height: 1.5rem;
+    --switch-thumb-size: 1.125rem;
+  }
+
+  [data-theme="catppuccin-latte"] {
+    --background: 220 22% 92%;
+    --foreground: 234 16% 35%;
+    --card: 220 23% 95%;
+    --card-foreground: 234 16% 35%;
+    --muted: 223 16% 83%;
+    --muted-foreground: 233 10% 47%;
+    --primary: 266 85% 58%;
+    --primary-foreground: 220 23% 95%;
+    --accent: 189 70% 42%;
+    --accent-foreground: 220 23% 95%;
+    --border: 227 12% 71%;
+    --ring: 231 97% 72%;
+    --warning: 22 99% 52%;
+    --success: 109 58% 40%;
+    --bg-glow-1: rgba(136, 57, 239, 0.1);
+    --bg-glow-2: rgba(32, 159, 181, 0.08);
+    --bg-glow-3: rgba(230, 233, 239, 0.98);
+    --surface-soft: rgba(239, 241, 245, 0.82);
+    --sidebar-bg: rgba(230, 233, 239, 0.9);
+    --sidebar-glow: rgba(136, 57, 239, 0.12);
+    --topbar-bg: rgba(239, 241, 245, 0.9);
+    --topbar-accent: rgba(114, 135, 253, 0.12);
+    --chip-bg: rgba(239, 241, 245, 0.86);
+    --chip-border: rgba(114, 135, 253, 0.16);
+    --chip-shadow: 0 10px 22px rgba(108, 111, 133, 0.1);
+    --shadow-soft: 0 22px 44px rgba(108, 111, 133, 0.12), inset 0 1px 0 rgba(255, 255, 255, 0.72);
+    --button-shadow: 0 14px 28px rgba(136, 57, 239, 0.14);
+    --field-shadow: 0 10px 22px rgba(108, 111, 133, 0.08), inset 0 1px 0 rgba(255, 255, 255, 0.64);
+    --table-row-hover: rgba(23, 146, 153, 0.06);
+    --overlay-backdrop: rgba(220, 224, 232, 0.52);
+    --selection-bg: rgba(136, 57, 239, 0.18);
+    --hero-grid: rgba(114, 135, 253, 0.03);
+    --glow-line-accent: rgba(23, 146, 153, 0.22);
+    --ambient-core-1: rgba(136, 57, 239, 0.1);
+    --ambient-core-2: rgba(32, 159, 181, 0.08);
+    --ambient-core-3: rgba(254, 100, 11, 0.06);
+    --ambient-trace: rgba(114, 135, 253, 0.08);
+    --ambient-sheen: rgba(114, 135, 253, 0.08);
+    --panel-surface: rgb(239, 241, 245);
+    --panel-border: rgba(172, 176, 190, 0.88);
+    --panel-shadow: 0 16px 34px rgba(108, 111, 133, 0.1);
+    --control-height: 2.75rem;
+    --control-padding-x: 1rem;
+    --textarea-padding-y: 0.75rem;
+    --button-height-default: 2.75rem;
+    --button-height-sm: 2rem;
+    --button-height-lg: 3rem;
+    --button-height-icon: 2.5rem;
+    --button-padding-default: 1rem;
+    --button-padding-sm: 0.75rem;
+    --button-padding-lg: 1.5rem;
+    --tabs-list-height: 2.75rem;
+    --tabs-trigger-min-height: 2rem;
+    --tabs-trigger-padding-x: 1rem;
+    --tabs-trigger-padding-y: 0.375rem;
+    --switch-width: 2.75rem;
+    --switch-height: 1.5rem;
+    --switch-thumb-size: 1.125rem;
+  }
+
+  [data-theme="catppuccin-macchiato"] {
+    --background: 232 23% 18%;
+    --foreground: 227 68% 88%;
+    --card: 232 23% 18%;
+    --card-foreground: 227 68% 88%;
+    --muted: 230 19% 26%;
+    --muted-foreground: 227 27% 72%;
+    --primary: 267 83% 80%;
+    --primary-foreground: 232 23% 12%;
+    --accent: 199 66% 69%;
+    --accent-foreground: 232 23% 12%;
+    --border: 230 14% 41%;
+    --ring: 220 83% 75%;
+    --warning: 21 86% 73%;
+    --success: 105 48% 72%;
+    --bg-glow-1: rgba(198, 160, 246, 0.18);
+    --bg-glow-2: rgba(125, 196, 228, 0.14);
+    --bg-glow-3: rgba(24, 25, 38, 0.98);
+    --surface-soft: rgba(54, 58, 79, 0.74);
+    --sidebar-bg: rgba(30, 32, 48, 0.84);
+    --sidebar-glow: rgba(198, 160, 246, 0.18);
+    --topbar-bg: rgba(36, 39, 58, 0.88);
+    --topbar-accent: rgba(183, 189, 248, 0.1);
+    --chip-bg: rgba(54, 58, 79, 0.72);
+    --chip-border: rgba(183, 189, 248, 0.16);
+    --chip-shadow: 0 12px 24px rgba(24, 25, 38, 0.32);
+    --shadow-soft: 0 24px 54px rgba(24, 25, 38, 0.42), inset 0 1px 0 rgba(202, 211, 245, 0.04);
+    --button-shadow: 0 16px 32px rgba(198, 160, 246, 0.18);
+    --field-shadow: 0 12px 24px rgba(24, 25, 38, 0.24), inset 0 1px 0 rgba(202, 211, 245, 0.04);
+    --table-row-hover: rgba(139, 213, 202, 0.08);
+    --overlay-backdrop: rgba(24, 25, 38, 0.56);
+    --selection-bg: rgba(198, 160, 246, 0.2);
+    --hero-grid: rgba(202, 211, 245, 0.04);
+    --glow-line-accent: rgba(139, 213, 202, 0.28);
+    --ambient-core-1: rgba(198, 160, 246, 0.16);
+    --ambient-core-2: rgba(125, 196, 228, 0.12);
+    --ambient-core-3: rgba(245, 169, 127, 0.1);
+    --ambient-trace: rgba(139, 213, 202, 0.1);
+    --ambient-sheen: rgba(183, 189, 248, 0.06);
+    --panel-surface: rgb(36, 39, 58);
+    --panel-border: rgba(91, 96, 120, 0.8);
+    --panel-shadow: 0 22px 46px rgba(24, 25, 38, 0.4);
+    --control-height: 2.75rem;
+    --control-padding-x: 1rem;
+    --textarea-padding-y: 0.75rem;
+    --button-height-default: 2.75rem;
+    --button-height-sm: 2rem;
+    --button-height-lg: 3rem;
+    --button-height-icon: 2.5rem;
+    --button-padding-default: 1rem;
+    --button-padding-sm: 0.75rem;
+    --button-padding-lg: 1.5rem;
+    --tabs-list-height: 2.75rem;
+    --tabs-trigger-min-height: 2rem;
+    --tabs-trigger-padding-x: 1rem;
+    --tabs-trigger-padding-y: 0.375rem;
+    --switch-width: 2.75rem;
+    --switch-height: 1.5rem;
+    --switch-thumb-size: 1.125rem;
+  }
+
+  [data-theme="flat-dark"] {
+    --background: 220 18% 10%;
+    --foreground: 210 18% 92%;
+    --card: 220 18% 11%;
+    --card-foreground: 210 18% 92%;
+    --muted: 220 16% 15%;
+    --muted-foreground: 214 12% 66%;
+    --primary: 191 100% 63%;
+    --primary-foreground: 220 18% 8%;
+    --accent: 154 75% 54%;
+    --accent-foreground: 220 18% 8%;
+    --border: 220 12% 22%;
+    --ring: 191 100% 63%;
+    --warning: 39 100% 62%;
+    --success: 154 75% 54%;
+    --bg-glow-1: rgba(17, 24, 39, 0);
+    --bg-glow-2: rgba(17, 24, 39, 0);
+    --bg-glow-3: rgba(17, 19, 24, 1);
+    --surface-soft: rgba(18, 21, 27, 1);
+    --sidebar-bg: rgba(16, 18, 23, 1);
+    --sidebar-glow: rgba(0, 0, 0, 0);
+    --topbar-bg: rgba(16, 18, 23, 1);
+    --topbar-accent: rgba(0, 0, 0, 0);
+    --chip-bg: rgba(17, 20, 25, 1);
+    --chip-border: rgba(73, 85, 106, 0.8);
+    --chip-shadow: none;
+    --shadow-soft: none;
+    --button-shadow: none;
+    --field-shadow: none;
+    --table-row-hover: rgba(125, 211, 252, 0.06);
+    --overlay-backdrop: rgba(4, 7, 12, 0.78);
+    --selection-bg: rgba(125, 211, 252, 0.18);
+    --hero-grid: rgba(0, 0, 0, 0);
+    --glow-line-accent: rgba(125, 211, 252, 0.2);
+    --ambient-core-1: rgba(34, 211, 238, 0.08);
+    --ambient-core-2: rgba(16, 185, 129, 0.06);
+    --ambient-core-3: rgba(56, 189, 248, 0.04);
+    --ambient-trace: rgba(125, 211, 252, 0.14);
+    --ambient-sheen: rgba(125, 211, 252, 0.08);
+    --panel-surface: rgb(17, 19, 24);
+    --panel-border: rgba(73, 85, 106, 0.82);
+    --panel-shadow: none;
+    --control-height: 2.5rem;
+    --control-padding-x: 0.875rem;
+    --textarea-padding-y: 0.625rem;
+    --button-height-default: 2.5rem;
+    --button-height-sm: 1.875rem;
+    --button-height-lg: 2.875rem;
+    --button-height-icon: 2.25rem;
+    --button-padding-default: 0.875rem;
+    --button-padding-sm: 0.625rem;
+    --button-padding-lg: 1.25rem;
+    --tabs-list-height: 2.5rem;
+    --tabs-trigger-min-height: 1.875rem;
+    --tabs-trigger-padding-x: 0.75rem;
+    --tabs-trigger-padding-y: 0.25rem;
+    --switch-width: 2.375rem;
+    --switch-height: 1.25rem;
+    --switch-thumb-size: 0.875rem;
+    --radius-card: 0px;
+    --radius-panel: 0px;
+    --radius-control: 0px;
+    --radius-block: 0px;
   }
 
   * {
@@ -151,7 +450,10 @@
 
   html.dark,
   html[data-theme="dark"],
-  html[data-theme="catppuccin-mocha"] {
+  html[data-theme="catppuccin-frappe"],
+  html[data-theme="catppuccin-macchiato"],
+  html[data-theme="catppuccin-mocha"],
+  html[data-theme="flat-dark"] {
     color-scheme: dark;
   }
 
@@ -162,6 +464,7 @@
       radial-gradient(circle at 86% 16%, var(--ambient-core-2), transparent 30%),
       linear-gradient(160deg, var(--bg-glow-3) 0%, hsl(var(--background)) 46%, hsl(var(--background)) 100%);
     background-attachment: fixed;
+    isolation: isolate;
     min-height: 100vh;
     overflow-x: hidden;
     position: relative;
@@ -176,6 +479,7 @@
     position: fixed;
     inset: -18vh -16vw;
     pointer-events: none;
+    z-index: -4;
     background:
       radial-gradient(44% 34% at 18% 18%, var(--ambient-core-1), transparent 68%),
       radial-gradient(34% 26% at 78% 18%, var(--ambient-core-2), transparent 70%),
@@ -191,6 +495,7 @@
     position: fixed;
     inset: -10vh -12vw 0;
     pointer-events: none;
+    z-index: -4;
     background:
       conic-gradient(from 210deg at 82% 18%, transparent 0deg, var(--ambient-sheen) 22deg, transparent 58deg, transparent 360deg),
       conic-gradient(from 34deg at 14% 74%, transparent 0deg, var(--ambient-sheen) 18deg, transparent 54deg, transparent 360deg),
@@ -200,6 +505,34 @@
     opacity: 0.62;
     transform-origin: center;
     animation: bg-sheen-drift 18s ease-in-out infinite alternate;
+  }
+
+  [data-theme="flat-dark"] body {
+    background-color: hsl(var(--background));
+    background-image: none;
+  }
+
+  [data-theme="flat-dark"] body::before {
+    inset: auto;
+    top: 8vh;
+    left: 10vw;
+    width: 30vw;
+    height: 18vh;
+    background: rgba(17, 19, 24, 0.98);
+    border: 1px solid rgba(125, 211, 252, 0.12);
+    box-shadow:
+      42vw 10vh 0 0 rgba(14, 16, 21, 0.96),
+      42vw 10vh 0 1px rgba(52, 211, 153, 0.1),
+      10vw 42vh 0 0 rgba(14, 16, 21, 0.92),
+      10vw 42vh 0 1px rgba(125, 211, 252, 0.08);
+    filter: none;
+    opacity: 1;
+    transform: rotate(-8deg);
+    animation: flat-panel-drift 28s ease-in-out infinite alternate;
+  }
+
+  [data-theme="flat-dark"] body::after {
+    content: none;
   }
 
   ::selection {
@@ -248,6 +581,31 @@
     filter: blur(90px);
     opacity: 0.32;
     animation: bg-aurora-drift 30s ease-in-out infinite reverse;
+  }
+
+  [data-theme="flat-dark"] .app-shell::before {
+    right: 7vw;
+    top: 12vh;
+    width: 18vw;
+    height: 18vw;
+    background: rgba(17, 19, 24, 0.94);
+    border: 1px solid rgba(125, 211, 252, 0.14);
+    filter: none;
+    mask-image: none;
+    opacity: 0.38;
+    animation: flat-frame-drift 20s ease-in-out infinite alternate;
+  }
+
+  [data-theme="flat-dark"] .app-shell::after {
+    left: 9vw;
+    bottom: 10vh;
+    width: 14vw;
+    height: 14vw;
+    background: rgba(13, 15, 19, 0.94);
+    border: 1px solid rgba(52, 211, 153, 0.14);
+    filter: none;
+    opacity: 0.3;
+    animation: flat-frame-drift 24s ease-in-out infinite alternate-reverse;
   }
 
   .shell-content,
@@ -380,8 +738,24 @@
     background: linear-gradient(135deg, #22d3ee 0%, #fb923c 100%);
   }
 
+  [data-theme-swatch="catppuccin-latte"] {
+    background: linear-gradient(135deg, #8839ef 0%, #209fb5 55%, #fe640b 100%);
+  }
+
+  [data-theme-swatch="catppuccin-frappe"] {
+    background: linear-gradient(135deg, #ca9ee6 0%, #85c1dc 55%, #ef9f76 100%);
+  }
+
+  [data-theme-swatch="catppuccin-macchiato"] {
+    background: linear-gradient(135deg, #c6a0f6 0%, #7dc4e4 55%, #f5a97f 100%);
+  }
+
   [data-theme-swatch="catppuccin-mocha"] {
     background: linear-gradient(135deg, #cba6f7 0%, #74c7ec 55%, #fab387 100%);
+  }
+
+  [data-theme-swatch="flat-dark"] {
+    background: #38bdf8;
   }
 
   .panel-card {
@@ -424,6 +798,27 @@
       color 180ms ease;
   }
 
+  .theme-button[data-size="default"] {
+    height: var(--button-height-default);
+    padding-inline: var(--button-padding-default);
+  }
+
+  .theme-button[data-size="sm"] {
+    height: var(--button-height-sm);
+    padding-inline: var(--button-padding-sm);
+  }
+
+  .theme-button[data-size="lg"] {
+    height: var(--button-height-lg);
+    padding-inline: var(--button-padding-lg);
+  }
+
+  .theme-button[data-size="icon"] {
+    height: var(--button-height-icon);
+    padding: 0;
+    width: var(--button-height-icon);
+  }
+
   .theme-button[data-variant="default"] {
     background-image: linear-gradient(135deg, hsl(var(--primary)) 0%, hsl(var(--accent)) 100%);
     box-shadow: var(--button-shadow);
@@ -456,8 +851,40 @@
     box-shadow: var(--field-shadow);
   }
 
+  .theme-field.theme-control {
+    min-height: var(--control-height);
+    padding-inline: var(--control-padding-x);
+  }
+
+  .theme-field.theme-textarea {
+    padding: var(--textarea-padding-y) var(--control-padding-x);
+  }
+
   textarea.theme-field {
     border-radius: var(--radius-block);
+  }
+
+  .theme-tabs-list {
+    border-radius: var(--radius-control);
+    min-height: var(--tabs-list-height);
+  }
+
+  .theme-tabs-trigger {
+    border-radius: var(--radius-control);
+    min-height: var(--tabs-trigger-min-height);
+    padding: var(--tabs-trigger-padding-y) var(--tabs-trigger-padding-x);
+  }
+
+  .theme-switch {
+    border-radius: var(--radius-control);
+    height: var(--switch-height);
+    width: var(--switch-width);
+  }
+
+  .theme-switch-thumb {
+    border-radius: var(--radius-control);
+    height: var(--switch-thumb-size);
+    width: var(--switch-thumb-size);
   }
 
   .theme-popover {
@@ -512,6 +939,119 @@
     @apply absolute inset-0;
     background: linear-gradient(90deg, transparent 0%, var(--glow-line-accent) 50%, transparent 100%);
     animation: bar 6s linear infinite;
+  }
+
+  [data-theme="flat-dark"] .sidebar-shell,
+  [data-theme="flat-dark"] .topbar-banner,
+  [data-theme="flat-dark"] .theme-card,
+  [data-theme="flat-dark"] .panel-card,
+  [data-theme="flat-dark"] .theme-popover,
+  [data-theme="flat-dark"] .theme-dialog,
+  [data-theme="flat-dark"] .theme-status-card,
+  [data-theme="flat-dark"] .data-chip {
+    backdrop-filter: none;
+    background-image: none;
+  }
+
+  [data-theme="flat-dark"] .sidebar-shell {
+    background: hsl(var(--sidebar-bg));
+    box-shadow: none;
+  }
+
+  [data-theme="flat-dark"] .sidebar-shell::before,
+  [data-theme="flat-dark"] .topbar-banner::before,
+  [data-theme="flat-dark"] .theme-nav-button[data-active="true"]::after {
+    display: none;
+  }
+
+  [data-theme="flat-dark"] .topbar-banner {
+    background: hsl(var(--topbar-bg));
+    box-shadow: none;
+  }
+
+  [data-theme="flat-dark"] .theme-popover,
+  [data-theme="flat-dark"] .theme-dialog {
+    background: var(--panel-surface);
+  }
+
+  [data-theme="flat-dark"] .theme-nav-button,
+  [data-theme="flat-dark"] .theme-status-card,
+  [data-theme="flat-dark"] .theme-card,
+  [data-theme="flat-dark"] .panel-card,
+  [data-theme="flat-dark"] .theme-popover,
+  [data-theme="flat-dark"] .theme-dialog,
+  [data-theme="flat-dark"] .theme-field,
+  [data-theme="flat-dark"] .theme-tabs-list,
+  [data-theme="flat-dark"] .theme-tabs-trigger,
+  [data-theme="flat-dark"] .theme-status-badge,
+  [data-theme="flat-dark"] .data-chip {
+    box-shadow: none;
+  }
+
+  [data-theme="flat-dark"] .theme-button[data-variant="default"],
+  [data-theme="flat-dark"] .theme-nav-button[data-active="true"] {
+    background: hsl(var(--primary));
+    background-image: none;
+    box-shadow: none;
+    color: hsl(var(--primary-foreground));
+  }
+
+  [data-theme="flat-dark"] .theme-button[data-variant="outline"],
+  [data-theme="flat-dark"] .theme-button[data-variant="secondary"],
+  [data-theme="flat-dark"] .theme-button[data-variant="ghost"],
+  [data-theme="flat-dark"] .theme-tabs-list,
+  [data-theme="flat-dark"] .theme-tabs-trigger[data-state="inactive"] {
+    background: hsl(var(--muted));
+  }
+
+  [data-theme="flat-dark"] .theme-field,
+  [data-theme="flat-dark"] .theme-status-card,
+  [data-theme="flat-dark"] .theme-dialog,
+  [data-theme="flat-dark"] .theme-popover {
+    background: hsl(var(--card));
+  }
+
+  [data-theme="flat-dark"] .theme-button:hover,
+  [data-theme="flat-dark"] .theme-nav-button:hover {
+    transform: none;
+  }
+
+  [data-theme="flat-dark"] .theme-button[data-variant="default"]:hover {
+    filter: none;
+  }
+
+  [data-theme="flat-dark"] .theme-status-badge {
+    background: hsl(var(--muted));
+    border-color: hsl(var(--border));
+    color: hsl(var(--success));
+  }
+
+  [data-theme="flat-dark"] .glow-line::after {
+    background: rgba(125, 211, 252, 0.2);
+  }
+
+  [data-theme="flat-dark"] .theme-swatch {
+    box-shadow: none;
+  }
+
+  [data-theme="flat-dark"] .rounded-full,
+  [data-theme="flat-dark"] .rounded-3xl,
+  [data-theme="flat-dark"] .rounded-2xl,
+  [data-theme="flat-dark"] .rounded-xl,
+  [data-theme="flat-dark"] .rounded-lg {
+    border-radius: 0 !important;
+  }
+
+  [data-theme="flat-dark"] .shadow,
+  [data-theme="flat-dark"] .shadow-sm,
+  [data-theme="flat-dark"] .shadow-soft {
+    box-shadow: none !important;
+  }
+
+  [data-theme="flat-dark"] .backdrop-blur,
+  [data-theme="flat-dark"] .backdrop-blur-sm {
+    -webkit-backdrop-filter: none !important;
+    backdrop-filter: none !important;
   }
 }
 
@@ -598,6 +1138,26 @@
   100% {
     transform: translate3d(1%, 1%, 0) rotate(360deg);
     opacity: 0.24;
+  }
+}
+
+@keyframes flat-panel-drift {
+  0% {
+    transform: translate3d(0, 0, 0) rotate(-8deg);
+  }
+
+  100% {
+    transform: translate3d(3vw, 1vh, 0) rotate(-4deg);
+  }
+}
+
+@keyframes flat-frame-drift {
+  0% {
+    transform: translate3d(0, 0, 0);
+  }
+
+  100% {
+    transform: translate3d(-1vw, 2vh, 0);
   }
 }
 
