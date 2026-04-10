@@ -37,6 +37,7 @@ Commands:
   install              Create missing config/env files, generate secrets, build and start the core stack.
   install-cli          Install the skitter-node CLI globally via uv tool from this checkout.
   install-tui          Install the skitter-tui CLI globally via uv tool from this checkout.
+  rebuild              Rebuild images and refresh installed CLIs from the current checkout without changing git state.
   upgrade [target]     Upgrade to current branch, latest tag, or a specific tag; refresh installed CLIs if present; then rebuild/restart.
   restart              Restart the running Docker Compose services (useful after config changes).
   logs [service]       Follow Docker Compose logs (default service: api).
@@ -56,6 +57,7 @@ Examples:
   ./setup.sh install
   ./setup.sh install-cli
   ./setup.sh install-tui
+  ./setup.sh rebuild
   ./setup.sh doctor
   ./setup.sh status
   ./setup.sh restart
@@ -355,6 +357,20 @@ upgrade_installed_uv_tools() {
 
 cmd_install() {
   require_tool git
+  require_tool docker
+  require_tool python3
+  require_tool openssl
+  require_docker_compose
+  require_docker_running
+  ensure_env_file
+  ensure_config_file
+  upgrade_installed_uv_tools
+  build_images
+  start_stack
+  print_install_summary
+}
+
+cmd_rebuild() {
   require_tool docker
   require_tool python3
   require_tool openssl
@@ -732,6 +748,10 @@ main() {
     install-tui)
       shift
       cmd_install_tui "$@"
+      ;;
+    rebuild)
+      shift
+      cmd_rebuild "$@"
       ;;
     upgrade)
       shift

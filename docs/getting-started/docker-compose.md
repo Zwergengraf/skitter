@@ -13,6 +13,7 @@ Useful follow-ups:
 ```bash
 ./setup.sh doctor
 ./setup.sh status
+./setup.sh rebuild
 ./setup.sh restart
 ./setup.sh logs api
 ./setup.sh backup
@@ -20,6 +21,8 @@ Useful follow-ups:
 ./setup.sh upgrade latest
 ./setup.sh uninstall
 ```
+
+Use `./setup.sh rebuild` when you want to rebuild the stack from local source changes, such as a custom sandbox Dockerfile, without changing the checked-out git ref.
 
 ## Services in `docker-compose.yml`
 

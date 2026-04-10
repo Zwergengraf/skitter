@@ -86,6 +86,7 @@ Other useful commands:
 ```bash
 ./setup.sh doctor
 ./setup.sh status
+./setup.sh rebuild
 ./setup.sh restart
 ./setup.sh logs api
 ./setup.sh backup
@@ -95,6 +96,7 @@ Other useful commands:
 ```
 
 If you installed `skitter-node` or `skitter-tui` with `./setup.sh install-cli` or `./setup.sh install-tui`, `./setup.sh upgrade ...` also refreshes those CLI environments automatically.
+Use `./setup.sh rebuild` when you want to apply local code or Dockerfile changes from your current checkout without changing the checked-out git ref.
 
 If you want the manual path instead, keep reading below.
 
@@ -237,7 +239,7 @@ skitter-node --api-url "http://<api-host>:8000" --token "<token>" --name "<node-
 ```
 
 After the first run, you can start the executor again by simply running `skitter-node`. The config is stored in `$HOME/.config/skitter-node/config.yaml`.
-If you update the repo later and want to refresh the CLI environment, run `./setup.sh install-cli` again.
+If you update the repo later and want to refresh the CLI environment, run `./setup.sh rebuild` or `./setup.sh install-cli` again.
 
 4. Node appears online in Executors view once connected.
 
@@ -320,6 +322,7 @@ skitter-tui --api-url http://localhost:8000 --access-token <USER_ACCESS_TOKEN>
 ```
 
 If you update the repo later and want to refresh the TUI environment, run `./setup.sh install-tui` again.
+`./setup.sh rebuild` also refreshes installed CLI environments from the current checkout.
 
 If you do not have a token yet, start TUI and use:
 

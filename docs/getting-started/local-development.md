@@ -11,6 +11,12 @@ This page is the practical day-to-day workflow for developing Skitter locally.
 
 ## Recommended Run Order
 
+For Docker-based rebuilds from your current checkout, you can also use:
+
+```bash
+./setup.sh rebuild
+```
+
 1. Start PostgreSQL:
 
 ```bash

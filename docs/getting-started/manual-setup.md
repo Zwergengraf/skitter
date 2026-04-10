@@ -15,6 +15,7 @@ Useful companions:
 ./setup.sh install-tui
 ./setup.sh doctor
 ./setup.sh status
+./setup.sh rebuild
 ./setup.sh restart
 ./setup.sh logs api
 ./setup.sh backup
@@ -22,6 +23,8 @@ Useful companions:
 ./setup.sh upgrade latest
 ./setup.sh uninstall
 ```
+
+Use `./setup.sh rebuild` when you want to apply local code or Dockerfile changes from your current checkout without changing the checked-out git ref.
 
 ## Prerequisites
 
