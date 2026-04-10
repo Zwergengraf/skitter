@@ -38,6 +38,14 @@
     --selection-bg: rgba(17, 94, 89, 0.22);
     --hero-grid: rgba(17, 94, 89, 0.06);
     --glow-line-accent: rgba(17, 94, 89, 0.3);
+    --ambient-core-1: rgba(15, 118, 110, 0.12);
+    --ambient-core-2: rgba(249, 115, 22, 0.1);
+    --ambient-core-3: rgba(14, 165, 233, 0.08);
+    --ambient-trace: rgba(15, 118, 110, 0.12);
+    --ambient-sheen: rgba(255, 255, 255, 0.28);
+    --panel-surface: rgba(255, 255, 255, 0.98);
+    --panel-border: rgba(180, 193, 211, 0.78);
+    --panel-shadow: 0 16px 34px rgba(15, 23, 42, 0.08);
     --radius-card: 30px;
     --radius-panel: 34px;
     --radius-control: 999px;
@@ -79,12 +87,20 @@
     --selection-bg: rgba(34, 211, 238, 0.22);
     --hero-grid: rgba(125, 211, 252, 0.05);
     --glow-line-accent: rgba(34, 211, 238, 0.32);
+    --ambient-core-1: rgba(34, 211, 238, 0.16);
+    --ambient-core-2: rgba(99, 102, 241, 0.12);
+    --ambient-core-3: rgba(251, 146, 60, 0.12);
+    --ambient-trace: rgba(34, 211, 238, 0.14);
+    --ambient-sheen: rgba(125, 211, 252, 0.08);
+    --panel-surface: rgba(20, 26, 44, 0.98);
+    --panel-border: rgba(71, 85, 105, 0.72);
+    --panel-shadow: 0 20px 42px rgba(2, 8, 23, 0.36);
   }
 
   [data-theme="catppuccin-mocha"] {
     --background: 240 21% 15%;
     --foreground: 226 64% 88%;
-    --card: 237 16% 23%;
+    --card: 240 21% 15%;
     --card-foreground: 226 64% 88%;
     --muted: 234 13% 31%;
     --muted-foreground: 228 24% 72%;
@@ -115,6 +131,14 @@
     --selection-bg: rgba(203, 166, 247, 0.24);
     --hero-grid: rgba(205, 214, 244, 0.04);
     --glow-line-accent: rgba(148, 226, 213, 0.3);
+    --ambient-core-1: rgba(203, 166, 247, 0.16);
+    --ambient-core-2: rgba(116, 199, 236, 0.12);
+    --ambient-core-3: rgba(250, 179, 135, 0.1);
+    --ambient-trace: rgba(148, 226, 213, 0.1);
+    --ambient-sheen: rgba(180, 190, 254, 0.06);
+    --panel-surface: rgba(24, 24, 37, 0.98);
+    --panel-border: rgba(88, 91, 112, 0.8);
+    --panel-shadow: 0 22px 48px rgba(17, 17, 27, 0.42);
   }
 
   * {
@@ -134,9 +158,9 @@
   body {
     @apply bg-background text-foreground font-body antialiased;
     background-image:
-      radial-gradient(circle at top, var(--bg-glow-1), transparent 55%),
-      radial-gradient(circle at 20% 20%, var(--bg-glow-2), transparent 40%),
-      linear-gradient(135deg, var(--bg-glow-3), transparent 70%);
+      radial-gradient(circle at 12% 10%, var(--ambient-core-1), transparent 28%),
+      radial-gradient(circle at 86% 16%, var(--ambient-core-2), transparent 30%),
+      linear-gradient(160deg, var(--bg-glow-3) 0%, hsl(var(--background)) 46%, hsl(var(--background)) 100%);
     background-attachment: fixed;
     min-height: 100vh;
     overflow-x: hidden;
@@ -149,28 +173,33 @@
 
   body::before {
     content: "";
-    inset: 0;
     position: fixed;
+    inset: -18vh -16vw;
     pointer-events: none;
-    background-image:
-      linear-gradient(90deg, transparent calc(100% - 1px), var(--hero-grid) calc(100% - 1px)),
-      linear-gradient(180deg, transparent calc(100% - 1px), var(--hero-grid) calc(100% - 1px));
-    background-size: 72px 72px;
-    mask-image: radial-gradient(circle at center, black 0%, black 55%, transparent 88%);
-    opacity: 0.7;
+    background:
+      radial-gradient(44% 34% at 18% 18%, var(--ambient-core-1), transparent 68%),
+      radial-gradient(34% 26% at 78% 18%, var(--ambient-core-2), transparent 70%),
+      radial-gradient(36% 28% at 68% 78%, var(--ambient-core-3), transparent 72%);
+    filter: blur(72px);
+    opacity: 0.78;
+    transform-origin: center;
+    animation: bg-aurora-drift 26s ease-in-out infinite alternate;
   }
 
   body::after {
     content: "";
     position: fixed;
-    right: -12vw;
-    bottom: -18vh;
-    width: 42vw;
-    height: 42vw;
+    inset: -10vh -12vw 0;
     pointer-events: none;
-    background: radial-gradient(circle, var(--bg-glow-2), transparent 64%);
-    filter: blur(36px);
-    opacity: 0.65;
+    background:
+      conic-gradient(from 210deg at 82% 18%, transparent 0deg, var(--ambient-sheen) 22deg, transparent 58deg, transparent 360deg),
+      conic-gradient(from 34deg at 14% 74%, transparent 0deg, var(--ambient-sheen) 18deg, transparent 54deg, transparent 360deg),
+      radial-gradient(48% 42% at 80% 14%, var(--ambient-trace), transparent 72%),
+      radial-gradient(40% 36% at 18% 86%, var(--ambient-trace), transparent 72%);
+    filter: blur(18px);
+    opacity: 0.62;
+    transform-origin: center;
+    animation: bg-sheen-drift 18s ease-in-out infinite alternate;
   }
 
   ::selection {
@@ -186,9 +215,45 @@
     isolation: isolate;
   }
 
+  .app-shell::before {
+    content: "";
+    position: fixed;
+    right: -12vw;
+    top: 8vh;
+    width: 44vw;
+    height: 44vw;
+    pointer-events: none;
+    z-index: -2;
+    background:
+      radial-gradient(circle at center, transparent 56%, var(--ambient-trace) 57%, transparent 59%),
+      radial-gradient(circle at center, transparent 68%, var(--ambient-trace) 69%, transparent 71%),
+      radial-gradient(circle at center, transparent 80%, var(--ambient-trace) 81%, transparent 83%);
+    filter: blur(1px);
+    mask-image: linear-gradient(135deg, transparent 8%, black 28%, black 78%, transparent 100%);
+    opacity: 0.28;
+    transform-origin: center;
+    animation: bg-ring-drift 34s linear infinite;
+  }
+
+  .app-shell::after {
+    content: "";
+    position: fixed;
+    left: -16vw;
+    bottom: -20vh;
+    width: 48vw;
+    height: 48vw;
+    pointer-events: none;
+    z-index: -2;
+    background: radial-gradient(circle, var(--ambient-core-3), transparent 64%);
+    filter: blur(90px);
+    opacity: 0.32;
+    animation: bg-aurora-drift 30s ease-in-out infinite reverse;
+  }
+
   .shell-content,
   .shell-frame {
     position: relative;
+    z-index: 1;
   }
 
   .sidebar-shell {
@@ -321,11 +386,11 @@
 
   .panel-card {
     @apply border p-6 shadow-soft;
-    backdrop-filter: blur(10px);
-    background: hsl(var(--card) / 0.95);
-    border-color: hsl(var(--border) / 0.78);
+    backdrop-filter: none;
+    background: var(--panel-surface);
+    border-color: var(--panel-border);
     border-radius: var(--radius-card);
-    box-shadow: var(--field-shadow);
+    box-shadow: var(--panel-shadow);
   }
 
   .data-chip {
@@ -340,11 +405,11 @@
   }
 
   .theme-card {
-    backdrop-filter: blur(10px);
-    background: hsl(var(--card) / 0.96);
-    border-color: hsl(var(--border) / 0.82);
+    backdrop-filter: none;
+    background: var(--panel-surface);
+    border-color: var(--panel-border);
     border-radius: var(--radius-card);
-    box-shadow: var(--field-shadow);
+    box-shadow: var(--panel-shadow);
   }
 
   .theme-button {
@@ -475,7 +540,7 @@
   }
 }
 
-  @media (max-width: 900px) {
+@media (max-width: 900px) {
   .topbar-banner {
     flex-direction: column;
     padding: 1.5rem;
@@ -485,5 +550,62 @@
   .theme-picker__trigger {
     max-width: none;
     width: 100%;
+  }
+}
+
+@keyframes bg-aurora-drift {
+  0% {
+    transform: translate3d(-2%, -2%, 0) scale(0.98);
+    opacity: 0.56;
+  }
+
+  50% {
+    opacity: 0.84;
+  }
+
+  100% {
+    transform: translate3d(4%, 3%, 0) scale(1.05);
+    opacity: 0.68;
+  }
+}
+
+@keyframes bg-sheen-drift {
+  0% {
+    transform: translate3d(-6%, -3%, 0) rotate(-8deg);
+    opacity: 0.18;
+  }
+
+  50% {
+    opacity: 0.34;
+  }
+
+  100% {
+    transform: translate3d(8%, 4%, 0) rotate(7deg);
+    opacity: 0.22;
+  }
+}
+
+@keyframes bg-ring-drift {
+  0% {
+    transform: translate3d(0, 0, 0) rotate(0deg);
+    opacity: 0.22;
+  }
+
+  50% {
+    opacity: 0.34;
+  }
+
+  100% {
+    transform: translate3d(1%, 1%, 0) rotate(360deg);
+    opacity: 0.24;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  body::before,
+  body::after,
+  .app-shell::before,
+  .app-shell::after {
+    animation: none;
   }
 }
