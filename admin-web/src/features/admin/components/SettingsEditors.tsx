@@ -106,7 +106,7 @@ function StructuredEditorShell({
   children: ReactNode;
 }) {
   return (
-    <Card className="border-border/80 bg-card/95 shadow-sm">
+    <Card className="border-border/80 bg-card shadow-sm">
       <CardHeader className="space-y-1">
         <div className="flex items-center justify-between gap-3">
           <div className="flex items-center gap-3">
@@ -163,7 +163,7 @@ export function ConfigCategoryCard({
 
       return (
         <div className="space-y-3">
-          <div className="space-y-2 rounded-2xl border border-border/70 bg-background/70 p-3">
+          <div className="space-y-2 rounded-2xl border border-border/70 bg-background p-3">
             {chain.length ? (
               chain.map((item, index) => (
                 <div
@@ -184,7 +184,7 @@ export function ConfigCategoryCard({
                     updateConfigValue(field.key, reorderListValues(chain, draggingModelChain.index, index));
                     setDraggingModelChain(null);
                   }}
-                  className="flex items-center gap-3 rounded-xl border border-border/60 bg-card/90 px-3 py-2"
+                  className="flex items-center gap-3 rounded-xl border border-border/60 bg-card px-3 py-2"
                 >
                   <button
                     type="button"
@@ -306,7 +306,7 @@ export function ConfigCategoryCard({
   };
 
   return (
-    <Card key={category.id} className="border-border/80 bg-card/95 shadow-sm">
+    <Card key={category.id} className="border-border/80 bg-card shadow-sm">
       <CardHeader className="space-y-1">
         <CardTitle className="text-base">{category.label}</CardTitle>
         <CardDescription>
@@ -599,7 +599,7 @@ export function ModelsEditor({
                       Add override
                     </Button>
                   </div>
-                  <div className="space-y-3 rounded-2xl border border-border/70 bg-background/70 p-3">
+                  <div className="space-y-3 rounded-2xl border border-border/70 bg-background p-3">
                     {reasoningRows.length ? (
                       reasoningRows.map((row, rowIndex) => (
                         <div
@@ -905,7 +905,7 @@ export function McpServersEditor({
                       Add header
                     </Button>
                   </div>
-                  <div className="space-y-3 rounded-2xl border border-border/70 bg-background/70 p-3">
+                  <div className="space-y-3 rounded-2xl border border-border/70 bg-background p-3">
                     {headerRows.length ? (
                       headerRows.map((row, rowIndex) => (
                         <div
@@ -987,7 +987,7 @@ export function McpServersEditor({
                       Add env var
                     </Button>
                   </div>
-                  <div className="space-y-3 rounded-2xl border border-border/70 bg-background/70 p-3">
+                  <div className="space-y-3 rounded-2xl border border-border/70 bg-background p-3">
                     {envRows.length ? (
                       envRows.map((row, rowIndex) => (
                         <div

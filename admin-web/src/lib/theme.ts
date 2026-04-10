@@ -1,24 +1,101 @@
 export const THEME_STORAGE_KEY = "theme";
 
-export const getStoredTheme = (): "dark" | "light" => {
+export type AdminThemeId =
+  | "light"
+  | "dark"
+  | "catppuccin-latte"
+  | "catppuccin-frappe"
+  | "catppuccin-macchiato"
+  | "catppuccin-mocha"
+  | "flat-dark";
+
+interface AdminThemeOption {
+  id: AdminThemeId;
+  label: string;
+  description: string;
+  appearance: "light" | "dark";
+}
+
+export const ADMIN_THEMES: readonly AdminThemeOption[] = [
+  {
+    id: "light",
+    label: "Solar Dune",
+    description: "Warm parchment panels with copper telemetry accents.",
+    appearance: "light",
+  },
+  {
+    id: "dark",
+    label: "Night Shift",
+    description: "A moody control-room palette with electric depth.",
+    appearance: "dark",
+  },
+  {
+    id: "flat-dark",
+    label: "Flat Dark",
+    description: "Square, dense, and contrasty with a restrained control-room aesthetic.",
+    appearance: "dark",
+  },
+  {
+    id: "catppuccin-latte",
+    label: "Catppuccin Latte",
+    description: "Light Catppuccin flavor with soft pastel contrast.",
+    appearance: "light",
+  },
+  {
+    id: "catppuccin-frappe",
+    label: "Catppuccin Frappé",
+    description: "Muted pastel dusk based on Catppuccin Frappé flavor.",
+    appearance: "dark",
+  },
+  {
+    id: "catppuccin-macchiato",
+    label: "Catppuccin Macchiato",
+    description: "Balanced cool-night contrast from Catppuccin Macchiato flavor.",
+    appearance: "dark",
+  },
+  {
+    id: "catppuccin-mocha",
+    label: "Catppuccin Mocha",
+    description: "Pastel midnight surfaces inspired by Catppuccin Mocha flavor.",
+    appearance: "dark",
+  }
+];
+
+const DEFAULT_THEME: AdminThemeId = "dark";
+
+const isAdminThemeId = (value: string | null): value is AdminThemeId =>
+  ADMIN_THEMES.some((theme) => theme.id === value);
+
+export const getStoredTheme = (): AdminThemeId => {
   try {
-    return localStorage.getItem(THEME_STORAGE_KEY) === "light" ? "light" : "dark";
+    const storedTheme = localStorage.getItem(THEME_STORAGE_KEY);
+    return isAdminThemeId(storedTheme) ? storedTheme : DEFAULT_THEME;
   } catch {
-    return "dark";
+    return DEFAULT_THEME;
   }
 };
 
-export const applyTheme = (isDark: boolean): void => {
-  document.documentElement.classList.toggle("dark", isDark);
+export const getThemeOption = (themeId: AdminThemeId): AdminThemeOption =>
+  ADMIN_THEMES.find((theme) => theme.id === themeId) ?? ADMIN_THEMES[1];
+
+export const isDarkTheme = (themeId: AdminThemeId): boolean =>
+  getThemeOption(themeId).appearance === "dark";
+
+export const applyTheme = (themeId: AdminThemeId): void => {
+  const root = document.documentElement;
+  root.dataset.theme = themeId;
+  root.classList.toggle("dark", isDarkTheme(themeId));
+  root.style.colorScheme = isDarkTheme(themeId) ? "dark" : "light";
+
   try {
-    localStorage.setItem(THEME_STORAGE_KEY, isDark ? "dark" : "light");
+    localStorage.setItem(THEME_STORAGE_KEY, themeId);
   } catch {
     // Ignore storage failures and keep the in-memory theme.
   }
 };
 
-export const initializeTheme = (): boolean => {
-  const isDark = getStoredTheme() === "dark";
-  document.documentElement.classList.toggle("dark", isDark);
-  return isDark;
+export const initializeTheme = (): AdminThemeId => {
+  const themeId = getStoredTheme();
+  applyTheme(themeId);
+  return themeId;
 };

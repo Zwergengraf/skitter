@@ -88,7 +88,7 @@ import {
   setStoredApiKey,
   streamAdminEvents,
 } from "@/lib/api";
-import { applyTheme, getStoredTheme } from "@/lib/theme";
+import { applyTheme, getStoredTheme, type AdminThemeId } from "@/lib/theme";
 import type { NavItemId } from "@/components/navigation";
 import type {
   AdminLiveEvent,
@@ -360,7 +360,7 @@ export default function App() {
   const [apiKeyDraft, setApiKeyDraft] = useState<string>(() => getStoredApiKey());
   const [apiKeyDialogError, setApiKeyDialogError] = useState<string | null>(null);
   const [apiKeySaving, setApiKeySaving] = useState<boolean>(false);
-  const [isDark, setIsDark] = useState<boolean>(() => getStoredTheme() === "dark");
+  const [theme, setTheme] = useState<AdminThemeId>(() => getStoredTheme());
   const sessionMessagesEndRef = useRef<HTMLDivElement | null>(null);
   const liveEventsEndRef = useRef<HTMLDivElement | null>(null);
 
@@ -404,8 +404,8 @@ export default function App() {
   }, [liveEvents, liveEventKindFilter, liveEventLevelFilter, liveEventSearch]);
 
   useEffect(() => {
-    applyTheme(isDark);
-  }, [isDark]);
+    applyTheme(theme);
+  }, [theme]);
 
   useEffect(() => {
     setApiAuthFailureHandler((error) => {
@@ -2812,9 +2812,9 @@ export default function App() {
   return (
     <div className="app-shell">
       <Sidebar active={active} onSelect={setActive} />
-      <div className="flex flex-col gap-8 px-10 py-10 pl-[300px]">
-        <div className="mx-auto flex w-full max-w-[1520px] flex-col gap-8">
-          <Topbar isDark={isDark} onToggleTheme={setIsDark} />
+      <div className="shell-content flex flex-col gap-8 px-10 py-10 pl-[300px]">
+        <div className="shell-frame mx-auto flex w-full max-w-[1520px] flex-col gap-8">
+          <Topbar theme={theme} onThemeChange={setTheme} />
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-3">
               <div className="data-chip text-[10px] text-mutedForeground">{activeLabel}</div>
