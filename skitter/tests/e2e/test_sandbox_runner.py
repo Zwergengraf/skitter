@@ -124,6 +124,28 @@ async def test_runner_shell_supports_multiline_bash_script(runner_workspace: tup
     assert "done" in body["stdout"]
 
 
+def test_windows_shell_command_uses_powershell(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(runner_module.sys, "platform", "win32")
+    monkeypatch.setattr(
+        runner_module.shutil,
+        "which",
+        lambda command: "C:/Program Files/PowerShell/7/pwsh.exe" if command == "pwsh" else None,
+    )
+
+    argv = runner_module._shell_argv_for_command("Get-Location")
+
+    assert argv == [
+        "C:/Program Files/PowerShell/7/pwsh.exe",
+        "-NoLogo",
+        "-NoProfile",
+        "-NonInteractive",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-Command",
+        "Get-Location",
+    ]
+
+
 @pytest.mark.asyncio
 async def test_runner_apply_patch_updates_file_with_plain_relative_paths(
     runner_workspace: tuple[Path, object]
@@ -182,6 +204,69 @@ async def test_runner_apply_patch_uses_git_style_strip_level(
 
 
 @pytest.mark.asyncio
+async def test_runner_apply_patch_fallback_updates_plain_relative_paths(
+    runner_workspace: tuple[Path, object],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    workspace_root, app = runner_workspace
+    original_which = runner_module.shutil.which
+    monkeypatch.setattr(runner_module.shutil, "which", lambda command: None if command == "patch" else original_which(command))
+    target = workspace_root / "fallback.txt"
+    target.write_text("old\n", encoding="utf-8")
+    patch = "".join(
+        difflib.unified_diff(
+            ["old\n"],
+            ["new\n"],
+            fromfile="fallback.txt",
+            tofile="fallback.txt",
+        )
+    )
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response = await _execute(client, tool="apply_patch", payload={"patch": patch})
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "ok"
+    assert body["exit_code"] == 0
+    assert body["strip"] == 0
+    assert "patching file fallback.txt" in body["stdout"]
+    assert target.read_text(encoding="utf-8") == "new\n"
+
+
+@pytest.mark.asyncio
+async def test_runner_apply_patch_fallback_uses_git_style_strip_level(
+    runner_workspace: tuple[Path, object],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    workspace_root, app = runner_workspace
+    original_which = runner_module.shutil.which
+    monkeypatch.setattr(runner_module.shutil, "which", lambda command: None if command == "patch" else original_which(command))
+    target = workspace_root / "src" / "fallback.py"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text("print('old')\n", encoding="utf-8")
+    patch = "".join(
+        difflib.unified_diff(
+            ["print('old')\n"],
+            ["print('new')\n"],
+            fromfile="a/src/fallback.py",
+            tofile="b/src/fallback.py",
+        )
+    )
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response = await _execute(client, tool="apply_patch", payload={"patch": patch})
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "ok"
+    assert body["exit_code"] == 0
+    assert body["strip"] == 1
+    assert "src/fallback.py" in body["stdout"]
+    assert target.read_text(encoding="utf-8") == "print('new')\n"
+
+
+@pytest.mark.asyncio
 async def test_runner_notify_routes_to_host_notification_helper(
     runner_workspace: tuple[Path, object],
     monkeypatch: pytest.MonkeyPatch,
@@ -200,6 +285,27 @@ async def test_runner_notify_routes_to_host_notification_helper(
 
     assert response.status_code == 200
     assert response.json()["status"] == "ok"
+
+
+@pytest.mark.asyncio
+async def test_windows_notify_uses_powershell(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured: dict[str, object] = {}
+
+    async def fake_run_host_command(*argv: str, timeout_seconds: float) -> tuple[int, str, str]:
+        captured["argv"] = argv
+        captured["timeout_seconds"] = timeout_seconds
+        return 0, "", ""
+
+    monkeypatch.setattr(runner_module.sys, "platform", "win32")
+    monkeypatch.setattr(runner_module, "_powershell_executable", lambda: "pwsh")
+    monkeypatch.setattr(runner_module, "_run_host_command", fake_run_host_command)
+
+    result = await runner_module._execute_notify({"title": "Skitter", "message": "Done"})
+
+    assert result["status"] == "ok"
+    assert captured["argv"][0] == "pwsh"
+    assert "System.Windows.Forms.NotifyIcon" in captured["argv"][-1]
+    assert captured["timeout_seconds"] == 10.0
 
 
 @pytest.mark.asyncio
@@ -233,6 +339,28 @@ async def test_runner_screenshot_routes_to_host_screenshot_helper(
     assert response.json()["height_px"] == 900
     assert response.json()["cursor_x"] == 320
     assert response.json()["cursor_y"] == 240
+
+
+def test_windows_screenshot_helper_uses_imagegrab(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    target = tmp_path / "shot.png"
+
+    class FakeImage:
+        size = (123, 45)
+
+        def save(self, path: Path, format: str) -> None:
+            assert format == "PNG"
+            Path(path).write_bytes(b"png")
+
+    class FakeImageGrab:
+        @staticmethod
+        def grab(*, all_screens: bool):
+            assert all_screens is True
+            return FakeImage()
+
+    monkeypatch.setattr(runner_module, "ImageGrab", FakeImageGrab)
+
+    assert runner_module._win_screenshot_sync(target) == (123, 45)
+    assert target.read_bytes() == b"png"
 
 
 @pytest.mark.asyncio
@@ -278,3 +406,42 @@ async def test_runner_mouse_and_keyboard_tools_route_to_helpers(
     assert click_resp.status_code == 200
     assert type_resp.status_code == 200
     assert press_resp.status_code == 200
+
+
+def test_windows_mouse_and_keyboard_helpers_use_user32(monkeypatch: pytest.MonkeyPatch) -> None:
+    class FakeUser32:
+        def __init__(self) -> None:
+            self.cursor: tuple[int, int] | None = None
+            self.sent_counts: list[int] = []
+
+        def SetCursorPos(self, x: int, y: int) -> bool:
+            self.cursor = (x, y)
+            return True
+
+        def GetCursorPos(self, point_ptr) -> bool:
+            point_ptr._obj.x = 7
+            point_ptr._obj.y = 9
+            return True
+
+        def SendInput(self, count: int, input_array, input_size: int) -> int:
+            self.sent_counts.append(count)
+            return count
+
+    fake_user32 = FakeUser32()
+    monkeypatch.setattr(runner_module.sys, "platform", "win32")
+    monkeypatch.setattr(runner_module, "_user32", fake_user32)
+
+    assert runner_module._win_cursor_position() == (7, 9)
+    assert runner_module._win_mouse_move_sync(10.2, 20.6) == {"status": "ok", "x": 10.2, "y": 20.6}
+    assert fake_user32.cursor == (10, 21)
+
+    click_result = runner_module._win_mouse_click_sync(1, 2, "right", 2)
+    assert click_result["status"] == "ok"
+    assert click_result["button"] == "right"
+
+    type_result = runner_module._win_keyboard_type_sync("Az")
+    assert type_result["chars"] == 2
+
+    press_result = runner_module._win_keyboard_press_sync("enter", ["ctrl", "windows"])
+    assert press_result["key"] == "enter"
+    assert fake_user32.sent_counts == [4, 4, 6]

@@ -87,6 +87,11 @@ class NodeConfig:
 
 
 def _default_config_path() -> Path:
+    if sys.platform == "win32":
+        appdata = os.environ.get("APPDATA")
+        if appdata:
+            return Path(appdata) / "skitter-node" / "config.yaml"
+        return Path.home() / "AppData" / "Roaming" / "skitter-node" / "config.yaml"
     home = Path.home()
     return home / ".config" / "skitter-node" / "config.yaml"
 
@@ -278,22 +283,58 @@ def _screen_recording_permission_status() -> dict[str, str]:
     )
 
 
+def _windows_desktop_interaction_permission_status() -> dict[str, str]:
+    return _permission_info(
+        "Desktop Interaction",
+        "not_required",
+        (
+            "No separate Windows permission is required. The node must run in an interactive user session, "
+            "and it can only control elevated windows when the node is also elevated."
+        ),
+    )
+
+
+def _powershell_command() -> str | None:
+    return shutil.which("pwsh") or shutil.which("powershell.exe") or shutil.which("powershell")
+
+
 def _supports_notify() -> bool:
+    if sys.platform == "win32":
+        return _powershell_command() is not None
     if sys.platform == "darwin":
         return shutil.which("osascript") is not None
     return shutil.which("notify-send") is not None
 
 
 def _supports_screenshot() -> bool:
+    if sys.platform == "win32":
+        try:
+            from PIL import ImageGrab as _image_grab  # noqa: F401
+        except ImportError:
+            return False
+        return True
     if sys.platform == "darwin":
         return shutil.which("screencapture") is not None
     return any(shutil.which(command) for command in ("gnome-screenshot", "grim", "scrot"))
 
 
 def _supports_mouse_keyboard() -> bool:
+    if sys.platform == "win32":
+        return bool(getattr(ctypes, "windll", None) and getattr(ctypes.windll, "user32", None))
     if sys.platform != "darwin":
         return False
     return _load_application_services_permissions() is not None
+
+
+def _permission_key_for(feature: str) -> str | None:
+    if sys.platform == "darwin":
+        if feature == "screenshot":
+            return "screen_recording"
+        if feature in {"mouse", "keyboard"}:
+            return "accessibility"
+    if sys.platform == "win32" and feature in {"screenshot", "mouse", "keyboard"}:
+        return "desktop_interaction"
+    return None
 
 
 def _device_feature_state(
@@ -344,10 +385,13 @@ def _device_feature_state(
 
 
 def _host_permissions() -> dict[str, dict[str, str]]:
-    return {
+    permissions = {
         "accessibility": _accessibility_permission_status(),
         "screen_recording": _screen_recording_permission_status(),
     }
+    if sys.platform == "win32":
+        permissions["desktop_interaction"] = _windows_desktop_interaction_permission_status()
+    return permissions
 
 
 def _device_feature_statuses(
@@ -366,21 +410,21 @@ def _device_feature_statuses(
             enabled=bool(config.screenshot_enabled),
             supported=_supports_screenshot(),
             unsupported_detail="Host screenshots are not supported on this executor.",
-            permission_key="screen_recording" if sys.platform == "darwin" else None,
+            permission_key=_permission_key_for("screenshot"),
             permission_status=resolved_permissions,
         ),
         "mouse": _device_feature_state(
             enabled=bool(config.mouse_enabled),
             supported=_supports_mouse_keyboard(),
-            unsupported_detail="Host mouse control is currently supported on macOS nodes only.",
-            permission_key="accessibility" if sys.platform == "darwin" else None,
+            unsupported_detail="Host mouse control is currently supported on macOS and Windows nodes only.",
+            permission_key=_permission_key_for("mouse"),
             permission_status=resolved_permissions,
         ),
         "keyboard": _device_feature_state(
             enabled=bool(config.keyboard_enabled),
             supported=_supports_mouse_keyboard(),
-            unsupported_detail="Host keyboard control is currently supported on macOS nodes only.",
-            permission_key="accessibility" if sys.platform == "darwin" else None,
+            unsupported_detail="Host keyboard control is currently supported on macOS and Windows nodes only.",
+            permission_key=_permission_key_for("keyboard"),
             permission_status=resolved_permissions,
         ),
     }
@@ -395,6 +439,16 @@ def _capabilities_payload(config: NodeConfig) -> dict[str, Any]:
         "permissions": permissions,
         "device_features": _device_feature_statuses(config, permissions=permissions),
     }
+
+
+def _node_platform() -> str:
+    if sys.platform == "win32":
+        return "windows"
+    if sys.platform == "darwin":
+        return "darwin"
+    if sys.platform.startswith("linux"):
+        return "linux"
+    return platform.system().lower() or sys.platform
 
 
 def _tool_enabled(config: NodeConfig, tool: str) -> tuple[bool, str | None]:
@@ -594,7 +648,7 @@ class NodeClient:
             payload = {
                 "type": "heartbeat",
                 "name": self._config.name,
-                "platform": platform.system().lower(),
+                "platform": _node_platform(),
                 "hostname": socket.gethostname(),
                 "capabilities": _capabilities_payload(self._config),
             }

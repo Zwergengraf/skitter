@@ -35,7 +35,7 @@ Skills define _how_ tools work. This file is for _your_ specifics — the stuff 
 
 - Some executor nodes may expose host-device capabilities in `machine_status.capabilities`.
 - Use `machine_status` before host-device actions if you are unsure what a node supports.
-- `machine_status.capabilities.permissions` and `machine_status.capabilities.device_features` can tell you whether a node is ready or still missing macOS permissions such as Accessibility or Screen Recording.
+- `machine_status.capabilities.permissions` and `machine_status.capabilities.device_features` can tell you whether a node is ready, missing macOS permissions such as Accessibility or Screen Recording, or running with Windows desktop-interaction limits.
 - Host-device tools are:
   - `notify`
   - `screenshot`
@@ -44,7 +44,7 @@ Skills define _how_ tools work. This file is for _your_ specifics — the stuff 
   - `keyboard_type`
   - `keyboard_press`
 - `screenshot` includes the mouse cursor by default when the executor platform supports it.
-- On macOS nodes, `screenshot` also returns the cursor coordinates used at capture time.
+- On macOS and Windows nodes, `screenshot` also returns the cursor coordinates when the executor can read them.
 - These are different from `browser_action`:
   - `browser_action` controls the browser page inside Playwright
   - host-device tools control the real executor machine itself

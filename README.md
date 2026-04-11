@@ -47,7 +47,7 @@ It supports the current standard LLM APIs: OpenAI and Anthropic. Provider-specif
 | Standalone TUI | `/skitter-tui` | Remote terminal chat client over API |
 | macOS Menubar App | `/skitter-menubar` | Native companion app with quick chat + status |
 | Native iOS App | `/skitter-ios` | Universal iPhone/iPad client with chat, inline approvals, voice mode, and notification support |
-| Executor Node | `/skitter/node` | External host runner (macOS/Linux) that connects to API via WebSocket |
+| Executor Node | `/skitter/node` | External host runner (macOS/Linux/Windows) that connects to API via WebSocket |
 
 ## Prerequisites
 
@@ -226,20 +226,37 @@ Selection behavior:
 
 1. Open Admin Web UI → **Executors**.
 2. Click **Add executor node** and create token/command.
-3. Clone the repo on the target host (macOS/Linux), then install the node CLI:
+3. Clone the repo on the target host, then install the node CLI.
+
+macOS/Linux:
 
 ```bash
 ./setup.sh install-cli
 ```
 
-Then run the generated command:
+Windows PowerShell:
+
+```powershell
+uv tool install --force --editable .
+```
+
+Then run the generated command for your platform.
+
+macOS/Linux:
 
 ```bash
 skitter-node --api-url "http://<api-host>:8000" --token "<token>" --name "<node-name>" --workspace-root "<path>" --write-config
 ```
 
-After the first run, you can start the executor again by simply running `skitter-node`. The config is stored in `$HOME/.config/skitter-node/config.yaml`.
-If you update the repo later and want to refresh the CLI environment, run `./setup.sh rebuild` or `./setup.sh install-cli` again.
+Windows PowerShell:
+
+```powershell
+skitter-node --api-url "http://<api-host>:8000" --token "<token>" --name "<node-name>" --workspace-root "$env:USERPROFILE\SkitterNode\workspace" --write-config
+```
+
+After the first run, you can start the executor again by simply running `skitter-node`.
+The config is stored in `$HOME/.config/skitter-node/config.yaml` on macOS/Linux and `%APPDATA%\skitter-node\config.yaml` on Windows.
+If you update the repo later and want to refresh the CLI environment, run `./setup.sh rebuild` or `./setup.sh install-cli` on macOS/Linux, or `uv tool install --force --editable .` on Windows.
 
 4. Node appears online in Executors view once connected.
 
@@ -266,8 +283,11 @@ capabilities:
 - If a tool is not enabled, API requests to that node return a clear error for that tool.
 - `notify`, `screenshot`, `mouse`, and `keyboard` are separate host-device capabilities.
 - `notify` is enabled by default on new nodes.
-- `mouse` and `keyboard` control currently work on macOS nodes and require Accessibility permission.
+- `mouse` and `keyboard` control currently work on macOS and Windows nodes.
+- On macOS, mouse and keyboard control require Accessibility permission.
+- On Windows, desktop control requires an interactive user session. The node can only control elevated/admin windows when the node is also elevated.
 - `screenshot` on macOS requires Screen Recording permission for the executor process.
+- `screenshot` on Windows uses Pillow's ImageGrab support.
 - You can also override from CLI/env:
   - `--tools read,write,list,shell`
   - `SKITTER_NODE_TOOLS=read,write,list,shell`
@@ -275,6 +295,13 @@ capabilities:
   - `--enable-screenshot true`
   - `--enable-mouse true`
   - `--enable-keyboard true`
+
+Browser tools are optional on host nodes. To use `browser` and `browser_action` on Windows, install Playwright into the same environment and install Chromium:
+
+```powershell
+uv tool install --force --editable . --with playwright
+uv tool run --from playwright playwright install chromium
+```
 
 ### Manage executors
 

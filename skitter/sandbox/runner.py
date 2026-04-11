@@ -4,6 +4,7 @@ import asyncio
 import base64
 import ctypes
 import ctypes.util
+import locale
 import json
 import mimetypes
 import os
@@ -20,6 +21,11 @@ import httpx
 from fastapi import FastAPI, HTTPException
 from PIL import Image
 from pydantic import BaseModel
+
+try:
+    from PIL import ImageGrab
+except ImportError:  # pragma: no cover - optional on some Pillow builds
+    ImageGrab = None
 
 try:
     from playwright.async_api import async_playwright, BrowserContext, Page, TimeoutError as PlaywrightTimeoutError
@@ -197,6 +203,125 @@ _MAC_MODIFIER_FLAGS: dict[str, int] = {
     "fn": _CG_FLAG_MASK_FUNCTION,
 }
 
+_INPUT_MOUSE = 0
+_INPUT_KEYBOARD = 1
+
+_MOUSEEVENTF_LEFTDOWN = 0x0002
+_MOUSEEVENTF_LEFTUP = 0x0004
+_MOUSEEVENTF_RIGHTDOWN = 0x0008
+_MOUSEEVENTF_RIGHTUP = 0x0010
+
+_KEYEVENTF_KEYUP = 0x0002
+_KEYEVENTF_UNICODE = 0x0004
+
+_VK_BACK = 0x08
+_VK_TAB = 0x09
+_VK_RETURN = 0x0D
+_VK_SHIFT = 0x10
+_VK_CONTROL = 0x11
+_VK_MENU = 0x12
+_VK_ESCAPE = 0x1B
+_VK_SPACE = 0x20
+_VK_PRIOR = 0x21
+_VK_NEXT = 0x22
+_VK_END = 0x23
+_VK_HOME = 0x24
+_VK_LEFT = 0x25
+_VK_UP = 0x26
+_VK_RIGHT = 0x27
+_VK_DOWN = 0x28
+_VK_DELETE = 0x2E
+_VK_LWIN = 0x5B
+
+_ULONG_PTR = ctypes.c_ulonglong if ctypes.sizeof(ctypes.c_void_p) == 8 else ctypes.c_ulong
+
+
+class POINT(ctypes.Structure):
+    _fields_ = [("x", ctypes.c_long), ("y", ctypes.c_long)]
+
+
+class MOUSEINPUT(ctypes.Structure):
+    _fields_ = [
+        ("dx", ctypes.c_long),
+        ("dy", ctypes.c_long),
+        ("mouseData", ctypes.c_ulong),
+        ("dwFlags", ctypes.c_ulong),
+        ("time", ctypes.c_ulong),
+        ("dwExtraInfo", _ULONG_PTR),
+    ]
+
+
+class KEYBDINPUT(ctypes.Structure):
+    _fields_ = [
+        ("wVk", ctypes.c_ushort),
+        ("wScan", ctypes.c_ushort),
+        ("dwFlags", ctypes.c_ulong),
+        ("time", ctypes.c_ulong),
+        ("dwExtraInfo", _ULONG_PTR),
+    ]
+
+
+class HARDWAREINPUT(ctypes.Structure):
+    _fields_ = [
+        ("uMsg", ctypes.c_ulong),
+        ("wParamL", ctypes.c_ushort),
+        ("wParamH", ctypes.c_ushort),
+    ]
+
+
+class INPUT_UNION(ctypes.Union):
+    _fields_ = [
+        ("mi", MOUSEINPUT),
+        ("ki", KEYBDINPUT),
+        ("hi", HARDWAREINPUT),
+    ]
+
+
+class INPUT(ctypes.Structure):
+    _fields_ = [("type", ctypes.c_ulong), ("union", INPUT_UNION)]
+
+
+_WIN_KEYCODES: dict[str, int] = {
+    "enter": _VK_RETURN,
+    "return": _VK_RETURN,
+    "tab": _VK_TAB,
+    "space": _VK_SPACE,
+    "escape": _VK_ESCAPE,
+    "esc": _VK_ESCAPE,
+    "backspace": _VK_BACK,
+    "delete": _VK_DELETE,
+    "left": _VK_LEFT,
+    "arrowleft": _VK_LEFT,
+    "up": _VK_UP,
+    "arrowup": _VK_UP,
+    "right": _VK_RIGHT,
+    "arrowright": _VK_RIGHT,
+    "down": _VK_DOWN,
+    "arrowdown": _VK_DOWN,
+    "home": _VK_HOME,
+    "end": _VK_END,
+    "page_up": _VK_PRIOR,
+    "pageup": _VK_PRIOR,
+    "page_down": _VK_NEXT,
+    "pagedown": _VK_NEXT,
+}
+for _idx in range(1, 25):
+    _WIN_KEYCODES[f"f{_idx}"] = 0x70 + _idx - 1
+
+_WIN_MODIFIER_KEYCODES: dict[str, int] = {
+    "shift": _VK_SHIFT,
+    "control": _VK_CONTROL,
+    "ctrl": _VK_CONTROL,
+    "alt": _VK_MENU,
+    "option": _VK_MENU,
+    "cmd": _VK_LWIN,
+    "command": _VK_LWIN,
+    "win": _VK_LWIN,
+    "windows": _VK_LWIN,
+}
+
+_user32: Any | None = None
+
 
 def _get_lock(profile_id: str) -> asyncio.Lock:
     lock = _locks.get(profile_id)
@@ -241,6 +366,232 @@ def _image_pixel_size(path: Path) -> tuple[int, int] | None:
     return None
 
 
+def _decode_process_output(data: bytes) -> str:
+    encoding = locale.getpreferredencoding(False) or "utf-8"
+    try:
+        return data.decode(encoding, errors="replace")
+    except LookupError:
+        return data.decode("utf-8", errors="replace")
+
+
+def _powershell_executable() -> str | None:
+    return shutil.which("pwsh") or shutil.which("powershell.exe") or shutil.which("powershell")
+
+
+def _powershell_argv(command: str) -> list[str]:
+    executable = _powershell_executable()
+    if not executable:
+        raise HTTPException(status_code=503, detail="PowerShell is not available on this executor")
+    return [
+        executable,
+        "-NoLogo",
+        "-NoProfile",
+        "-NonInteractive",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-Command",
+        command,
+    ]
+
+
+def _shell_argv_for_command(command: str) -> list[str]:
+    if sys.platform == "win32":
+        return _powershell_argv(command)
+    shell_path = "/bin/bash" if Path("/bin/bash").exists() else "/bin/sh"
+    return [shell_path, "-lc", command]
+
+
+def _powershell_single_quoted(value: str) -> str:
+    return "'" + str(value).replace("'", "''") + "'"
+
+
+def _clean_patch_header_path(value: str) -> str:
+    path = str(value or "").strip().split("\t", 1)[0].strip()
+    if path.startswith('"') and path.endswith('"') and len(path) >= 2:
+        path = path[1:-1]
+    return path
+
+
+def _detect_patch_strip_count(patch_text: str) -> int:
+    for raw_line in patch_text.splitlines():
+        if raw_line.startswith("--- ") or raw_line.startswith("+++ "):
+            candidate = _clean_patch_header_path(raw_line[4:])
+            if not candidate or candidate == "/dev/null":
+                continue
+            if candidate.startswith(("a/", "b/")):
+                return 1
+            return 0
+    return 0
+
+
+def _strip_patch_path(path: str, strip_count: int) -> str:
+    cleaned = _clean_patch_header_path(path)
+    if cleaned in {"", "/dev/null"}:
+        return cleaned
+    if strip_count <= 0:
+        return cleaned
+    prefix = ""
+    remainder = cleaned
+    if remainder.startswith("/"):
+        prefix = "/"
+        remainder = remainder.lstrip("/")
+    parts = [part for part in remainder.replace("\\", "/").split("/") if part]
+    stripped = "/".join(parts[strip_count:])
+    return f"{prefix}{stripped}" if prefix else stripped
+
+
+def _patch_target_path(working_dir: Path, old_path: str, new_path: str, strip_count: int) -> Path:
+    preferred = new_path if _clean_patch_header_path(new_path) != "/dev/null" else old_path
+    stripped = _strip_patch_path(preferred, strip_count)
+    if not stripped or stripped == "/dev/null":
+        raise ValueError("patch target path is missing")
+    target = Path(stripped)
+    if target.is_absolute():
+        return target
+    return working_dir / target
+
+
+def _parse_hunk_header(line: str) -> int:
+    marker = line.split(" ", 2)[1]
+    old_range = marker[1:]
+    start_text = old_range.split(",", 1)[0]
+    return int(start_text)
+
+
+def _consume_patch_line(original: list[str], index: int, expected: str, target: Path) -> str:
+    if index >= len(original):
+        raise ValueError(f"patch context did not match {target}: reached end of file")
+    actual = original[index]
+    if actual != expected and actual.rstrip("\r\n") != expected.rstrip("\r\n"):
+        raise ValueError(f"patch context did not match {target}")
+    return actual
+
+
+def _apply_single_file_patch(target: Path, hunks: list[tuple[int, list[str]]], *, delete_file: bool) -> None:
+    original = target.read_text(encoding="utf-8", errors="replace").splitlines(keepends=True) if target.exists() else []
+    output: list[str] = []
+    source_index = 0
+    for old_start, hunk_lines in hunks:
+        hunk_start = max(0, old_start - 1)
+        if hunk_start < source_index:
+            raise ValueError(f"overlapping patch hunks for {target}")
+        output.extend(original[source_index:hunk_start])
+        source_index = hunk_start
+        for raw in hunk_lines:
+            if not raw:
+                continue
+            marker = raw[0]
+            content = raw[1:]
+            if marker == " ":
+                output.append(_consume_patch_line(original, source_index, content, target))
+                source_index += 1
+            elif marker == "-":
+                _consume_patch_line(original, source_index, content, target)
+                source_index += 1
+            elif marker == "+":
+                output.append(content)
+            elif marker == "\\":
+                continue
+            else:
+                raise ValueError(f"unsupported patch line for {target}: {raw[:40]}")
+    output.extend(original[source_index:])
+    if delete_file:
+        try:
+            target.unlink()
+        except FileNotFoundError:
+            pass
+        return
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text("".join(output), encoding="utf-8")
+
+
+def _apply_unified_patch_fallback(patch_text: str, working_dir: Path, strip_count: int) -> str:
+    lines = str(patch_text).splitlines(keepends=True)
+    index = 0
+    patched: list[str] = []
+    while index < len(lines):
+        line = lines[index]
+        if not line.startswith("--- "):
+            index += 1
+            continue
+        old_path = line[4:].rstrip("\r\n")
+        index += 1
+        if index >= len(lines) or not lines[index].startswith("+++ "):
+            raise ValueError("malformed patch: expected +++ header")
+        new_path = lines[index][4:].rstrip("\r\n")
+        index += 1
+        target = _patch_target_path(working_dir, old_path, new_path, strip_count)
+        delete_file = _clean_patch_header_path(new_path) == "/dev/null"
+        hunks: list[tuple[int, list[str]]] = []
+        while index < len(lines):
+            current = lines[index]
+            if current.startswith("--- ") and index + 1 < len(lines) and lines[index + 1].startswith("+++ "):
+                break
+            if not current.startswith("@@ "):
+                index += 1
+                continue
+            old_start = _parse_hunk_header(current)
+            index += 1
+            hunk_lines: list[str] = []
+            while index < len(lines):
+                current = lines[index]
+                if current.startswith("@@ ") or (
+                    current.startswith("--- ") and index + 1 < len(lines) and lines[index + 1].startswith("+++ ")
+                ):
+                    break
+                if current[:1] in {" ", "-", "+", "\\"}:
+                    hunk_lines.append(current)
+                index += 1
+            hunks.append((old_start, hunk_lines))
+        if not hunks:
+            raise ValueError(f"patch for {target} did not contain any hunks")
+        _apply_single_file_patch(target, hunks, delete_file=delete_file)
+        patched.append(str(target.relative_to(working_dir) if target.is_relative_to(working_dir) else target))
+    if not patched:
+        raise ValueError("patch did not contain any file changes")
+    return "".join(f"patching file {path}\n" for path in patched)
+
+
+async def _execute_apply_patch(patch_text: str, working_dir: Path, strip_count: int) -> dict[str, Any]:
+    use_fallback = sys.platform == "win32" or shutil.which("patch") is None
+    if use_fallback:
+        try:
+            stdout = await asyncio.to_thread(_apply_unified_patch_fallback, patch_text, working_dir, strip_count)
+        except Exception as exc:
+            return {"status": "error", "exit_code": 1, "stdout": "", "stderr": str(exc), "strip": strip_count}
+        return {"status": "ok", "exit_code": 0, "stdout": stdout, "stderr": "", "strip": strip_count}
+
+    argv = [
+        "patch",
+        "--batch",
+        "--forward",
+        "--reject-file=-",
+        f"-p{strip_count}",
+    ]
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            *argv,
+            cwd=str(working_dir),
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+    except FileNotFoundError:
+        try:
+            stdout = await asyncio.to_thread(_apply_unified_patch_fallback, patch_text, working_dir, strip_count)
+        except Exception as exc:
+            return {"status": "error", "exit_code": 1, "stdout": "", "stderr": str(exc), "strip": strip_count}
+        return {"status": "ok", "exit_code": 0, "stdout": stdout, "stderr": "", "strip": strip_count}
+    stdout, stderr = await proc.communicate(str(patch_text).encode("utf-8"))
+    return {
+        "status": "ok" if proc.returncode == 0 else "error",
+        "exit_code": proc.returncode,
+        "stdout": _decode_process_output(stdout)[:12000],
+        "stderr": _decode_process_output(stderr)[:12000],
+        "strip": strip_count,
+    }
+
+
 async def _run_host_command(*argv: str, timeout_seconds: float = 15.0) -> tuple[int, str, str]:
     try:
         proc = await asyncio.create_subprocess_exec(
@@ -255,7 +606,7 @@ async def _run_host_command(*argv: str, timeout_seconds: float = 15.0) -> tuple[
     except asyncio.TimeoutError as exc:
         proc.kill()
         raise HTTPException(status_code=504, detail=f"{argv[0]} timed out on this executor") from exc
-    return proc.returncode, stdout.decode("utf-8", errors="replace"), stderr.decode("utf-8", errors="replace")
+    return proc.returncode, _decode_process_output(stdout), _decode_process_output(stderr)
 
 
 def _load_application_services():
@@ -438,6 +789,184 @@ def _mac_keyboard_press_sync(key: str, modifiers: list[str] | None) -> dict[str,
     return {"status": "ok", "key": normalized, "modifiers": list(modifiers or [])}
 
 
+def _load_user32() -> Any:
+    if sys.platform != "win32":
+        raise HTTPException(status_code=503, detail="Windows desktop control is only available on Windows nodes")
+    global _user32
+    if _user32 is not None:
+        return _user32
+    windll = getattr(ctypes, "windll", None)
+    if windll is None:
+        raise HTTPException(status_code=503, detail="Win32 user32 APIs are not available on this executor")
+    user32 = windll.user32
+    user32.SetCursorPos.argtypes = [ctypes.c_int, ctypes.c_int]
+    user32.SetCursorPos.restype = ctypes.c_bool
+    user32.GetCursorPos.argtypes = [ctypes.POINTER(POINT)]
+    user32.GetCursorPos.restype = ctypes.c_bool
+    user32.SendInput.argtypes = [ctypes.c_uint, ctypes.POINTER(INPUT), ctypes.c_int]
+    user32.SendInput.restype = ctypes.c_uint
+    _user32 = user32
+    return user32
+
+
+def _win_cursor_position() -> tuple[int, int] | None:
+    try:
+        user32 = _load_user32()
+        point = POINT()
+        if not user32.GetCursorPos(ctypes.byref(point)):
+            return None
+        return int(point.x), int(point.y)
+    except HTTPException:
+        return None
+
+
+def _win_keyboard_input(*, vk: int = 0, scan: int = 0, flags: int = 0) -> INPUT:
+    return INPUT(
+        type=_INPUT_KEYBOARD,
+        union=INPUT_UNION(
+            ki=KEYBDINPUT(
+                wVk=vk,
+                wScan=scan,
+                dwFlags=flags,
+                time=0,
+                dwExtraInfo=0,
+            )
+        ),
+    )
+
+
+def _win_mouse_input(flags: int) -> INPUT:
+    return INPUT(
+        type=_INPUT_MOUSE,
+        union=INPUT_UNION(
+            mi=MOUSEINPUT(
+                dx=0,
+                dy=0,
+                mouseData=0,
+                dwFlags=flags,
+                time=0,
+                dwExtraInfo=0,
+            )
+        ),
+    )
+
+
+def _win_send_inputs(inputs: list[INPUT]) -> None:
+    user32 = _load_user32()
+    input_array = (INPUT * len(inputs))(*inputs)
+    sent = user32.SendInput(len(inputs), input_array, ctypes.sizeof(INPUT))
+    if sent != len(inputs):
+        raise HTTPException(status_code=503, detail="Windows SendInput failed on this executor")
+
+
+def _win_key_down(vk: int) -> INPUT:
+    return _win_keyboard_input(vk=vk)
+
+
+def _win_key_up(vk: int) -> INPUT:
+    return _win_keyboard_input(vk=vk, flags=_KEYEVENTF_KEYUP)
+
+
+def _win_mouse_button(button: str) -> tuple[int, int]:
+    normalized = str(button or "left").strip().lower()
+    if normalized == "left":
+        return _MOUSEEVENTF_LEFTDOWN, _MOUSEEVENTF_LEFTUP
+    if normalized == "right":
+        return _MOUSEEVENTF_RIGHTDOWN, _MOUSEEVENTF_RIGHTUP
+    raise HTTPException(status_code=400, detail="button must be left or right")
+
+
+def _win_mouse_move_sync(x: float, y: float) -> dict[str, Any]:
+    user32 = _load_user32()
+    target_x = int(round(float(x)))
+    target_y = int(round(float(y)))
+    if not user32.SetCursorPos(target_x, target_y):
+        raise HTTPException(status_code=503, detail="Windows SetCursorPos failed on this executor")
+    return {"status": "ok", "x": float(x), "y": float(y)}
+
+
+def _win_mouse_click_sync(x: float, y: float, button: str, click_count: int) -> dict[str, Any]:
+    _win_mouse_move_sync(x, y)
+    down_flag, up_flag = _win_mouse_button(button)
+    inputs: list[INPUT] = []
+    for _ in range(max(1, int(click_count))):
+        inputs.append(_win_mouse_input(down_flag))
+        inputs.append(_win_mouse_input(up_flag))
+    _win_send_inputs(inputs)
+    return {
+        "status": "ok",
+        "x": float(x),
+        "y": float(y),
+        "button": str(button or "left"),
+        "click_count": max(1, int(click_count)),
+    }
+
+
+def _win_keyboard_type_sync(text: str) -> dict[str, Any]:
+    content = str(text or "")
+    if not content:
+        raise HTTPException(status_code=400, detail="text is required")
+    inputs: list[INPUT] = []
+    encoded = content.encode("utf-16-le")
+    units = [int.from_bytes(encoded[idx : idx + 2], "little") for idx in range(0, len(encoded), 2)]
+    for unit in units:
+        inputs.append(_win_keyboard_input(scan=unit, flags=_KEYEVENTF_UNICODE))
+        inputs.append(_win_keyboard_input(scan=unit, flags=_KEYEVENTF_UNICODE | _KEYEVENTF_KEYUP))
+    _win_send_inputs(inputs)
+    return {"status": "ok", "text": content, "chars": len(content)}
+
+
+def _win_keycode(key: str) -> int:
+    normalized = str(key or "").strip().lower()
+    if not normalized:
+        raise HTTPException(status_code=400, detail="key is required")
+    if len(normalized) == 1 and normalized.isalpha():
+        return ord(normalized.upper())
+    if len(normalized) == 1 and normalized.isdigit():
+        return ord(normalized)
+    keycode = _WIN_KEYCODES.get(normalized)
+    if keycode is None:
+        raise HTTPException(status_code=400, detail=f"Unsupported key: {key}")
+    return keycode
+
+
+def _win_modifier_keycodes(modifiers: list[str] | None) -> list[int]:
+    keycodes: list[int] = []
+    for modifier in modifiers or []:
+        normalized = str(modifier or "").strip().lower()
+        if not normalized:
+            continue
+        keycode = _WIN_MODIFIER_KEYCODES.get(normalized)
+        if keycode is None:
+            raise HTTPException(status_code=400, detail=f"Unsupported modifier: {modifier}")
+        keycodes.append(keycode)
+    return keycodes
+
+
+def _win_keyboard_press_sync(key: str, modifiers: list[str] | None) -> dict[str, Any]:
+    normalized = str(key or "").strip().lower()
+    keycode = _win_keycode(normalized)
+    modifier_keycodes = _win_modifier_keycodes(modifiers)
+    inputs: list[INPUT] = []
+    for modifier in modifier_keycodes:
+        inputs.append(_win_key_down(modifier))
+    inputs.append(_win_key_down(keycode))
+    inputs.append(_win_key_up(keycode))
+    for modifier in reversed(modifier_keycodes):
+        inputs.append(_win_key_up(modifier))
+    _win_send_inputs(inputs)
+    return {"status": "ok", "key": normalized, "modifiers": list(modifiers or [])}
+
+
+def _win_screenshot_sync(target: Path) -> tuple[int | None, int | None]:
+    if ImageGrab is None:
+        raise HTTPException(status_code=503, detail="Pillow ImageGrab is not available on this executor")
+    image = ImageGrab.grab(all_screens=True)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    image.save(target, format="PNG")
+    return int(image.size[0]), int(image.size[1])
+
+
 async def _execute_notify(payload: Dict[str, Any]) -> dict[str, Any]:
     title = str(payload.get("title") or "Skitter").strip() or "Skitter"
     message = str(payload.get("message") or "").strip()
@@ -446,6 +975,22 @@ async def _execute_notify(payload: Dict[str, Any]) -> dict[str, Any]:
     if sys.platform == "darwin":
         script = f"display notification {json.dumps(message)} with title {json.dumps(title)}"
         code, stdout, stderr = await _run_host_command("osascript", "-e", script, timeout_seconds=10.0)
+    elif sys.platform == "win32":
+        script = "\n".join(
+            [
+                "Add-Type -AssemblyName System.Windows.Forms",
+                "Add-Type -AssemblyName System.Drawing",
+                "$notify = New-Object System.Windows.Forms.NotifyIcon",
+                "$notify.Icon = [System.Drawing.SystemIcons]::Information",
+                f"$notify.BalloonTipTitle = {_powershell_single_quoted(title)}",
+                f"$notify.BalloonTipText = {_powershell_single_quoted(message)}",
+                "$notify.Visible = $true",
+                "$notify.ShowBalloonTip(3500)",
+                "Start-Sleep -Milliseconds 3800",
+                "$notify.Dispose()",
+            ]
+        )
+        code, stdout, stderr = await _run_host_command(*_powershell_argv(script), timeout_seconds=10.0)
     elif shutil.which("notify-send"):
         code, stdout, stderr = await _run_host_command("notify-send", title, message, timeout_seconds=10.0)
     else:
@@ -459,13 +1004,25 @@ async def _execute_notify(payload: Dict[str, Any]) -> dict[str, Any]:
 async def _execute_screenshot(workspace_root: Path, session_id: str, payload: Dict[str, Any]) -> dict[str, Any]:
     target = _new_screenshot_target(workspace_root, session_id)
     include_cursor = bool(payload.get("include_cursor", True))
-    cursor_position: tuple[int, int] | None = _mac_cursor_position() if sys.platform == "darwin" else None
+    cursor_position: tuple[int, int] | None = None
+    if sys.platform == "darwin":
+        cursor_position = _mac_cursor_position()
+    elif sys.platform == "win32":
+        cursor_position = _win_cursor_position()
     if sys.platform == "darwin":
         argv = ["screencapture", "-x"]
         if include_cursor:
             argv.append("-C")
         argv.append(str(target))
         code, stdout, stderr = await _run_host_command(*argv, timeout_seconds=20.0)
+    elif sys.platform == "win32":
+        try:
+            width_px, height_px = await asyncio.to_thread(_win_screenshot_sync, target)
+        except HTTPException:
+            raise
+        except Exception as exc:
+            raise HTTPException(status_code=503, detail=f"Windows screenshot capture failed: {exc}") from exc
+        code, stdout, stderr = 0, "", ""
     elif shutil.which("gnome-screenshot"):
         argv = ["gnome-screenshot", "-f", str(target)]
         if include_cursor:
@@ -497,8 +1054,8 @@ async def _execute_screenshot(workspace_root: Path, session_id: str, payload: Di
     if not target.exists():
         raise HTTPException(status_code=500, detail="Screenshot command finished without creating an image")
     pixel_size = _image_pixel_size(target)
-    width_px = pixel_size[0] if pixel_size else None
-    height_px = pixel_size[1] if pixel_size else None
+    width_px = width_px if sys.platform == "win32" else pixel_size[0] if pixel_size else None
+    height_px = height_px if sys.platform == "win32" else pixel_size[1] if pixel_size else None
     cursor_x = cursor_position[0] if cursor_position else None
     cursor_y = cursor_position[1] if cursor_position else None
     return {
@@ -515,20 +1072,30 @@ async def _execute_screenshot(workspace_root: Path, session_id: str, payload: Di
 
 
 async def _execute_mouse_move(payload: Dict[str, Any]) -> dict[str, Any]:
-    if sys.platform != "darwin":
-        raise HTTPException(status_code=503, detail="Host mouse control is currently supported on macOS nodes only")
     if payload.get("x") is None or payload.get("y") is None:
         raise HTTPException(status_code=400, detail="x and y are required")
+    if sys.platform == "win32":
+        return await asyncio.to_thread(_win_mouse_move_sync, float(payload["x"]), float(payload["y"]))
+    if sys.platform != "darwin":
+        raise HTTPException(status_code=503, detail="Host mouse control is currently supported on macOS and Windows nodes only")
     return await asyncio.to_thread(_mac_mouse_move_sync, float(payload["x"]), float(payload["y"]))
 
 
 async def _execute_mouse_click(payload: Dict[str, Any]) -> dict[str, Any]:
-    if sys.platform != "darwin":
-        raise HTTPException(status_code=503, detail="Host mouse control is currently supported on macOS nodes only")
     if payload.get("x") is None or payload.get("y") is None:
         raise HTTPException(status_code=400, detail="x and y are required")
     button = str(payload.get("button") or "left")
     click_count = int(payload.get("click_count", 1))
+    if sys.platform == "win32":
+        return await asyncio.to_thread(
+            _win_mouse_click_sync,
+            float(payload["x"]),
+            float(payload["y"]),
+            button,
+            click_count,
+        )
+    if sys.platform != "darwin":
+        raise HTTPException(status_code=503, detail="Host mouse control is currently supported on macOS and Windows nodes only")
     return await asyncio.to_thread(
         _mac_mouse_click_sync,
         float(payload["x"]),
@@ -539,16 +1106,20 @@ async def _execute_mouse_click(payload: Dict[str, Any]) -> dict[str, Any]:
 
 
 async def _execute_keyboard_type(payload: Dict[str, Any]) -> dict[str, Any]:
+    if sys.platform == "win32":
+        return await asyncio.to_thread(_win_keyboard_type_sync, str(payload.get("text") or ""))
     if sys.platform != "darwin":
-        raise HTTPException(status_code=503, detail="Host keyboard control is currently supported on macOS nodes only")
+        raise HTTPException(status_code=503, detail="Host keyboard control is currently supported on macOS and Windows nodes only")
     return await asyncio.to_thread(_mac_keyboard_type_sync, str(payload.get("text") or ""))
 
 
 async def _execute_keyboard_press(payload: Dict[str, Any]) -> dict[str, Any]:
-    if sys.platform != "darwin":
-        raise HTTPException(status_code=503, detail="Host keyboard control is currently supported on macOS nodes only")
     raw_modifiers = payload.get("modifiers")
     modifiers = [str(item) for item in raw_modifiers] if isinstance(raw_modifiers, list) else []
+    if sys.platform == "win32":
+        return await asyncio.to_thread(_win_keyboard_press_sync, str(payload.get("key") or ""), modifiers)
+    if sys.platform != "darwin":
+        raise HTTPException(status_code=503, detail="Host keyboard control is currently supported on macOS and Windows nodes only")
     return await asyncio.to_thread(_mac_keyboard_press_sync, str(payload.get("key") or ""), modifiers)
 
 
@@ -666,18 +1237,6 @@ def create_app() -> FastAPI:
 
     def _payload_path(payload: Dict[str, Any]) -> str:
         return payload.get("path") or payload.get("file_path") or ""
-
-    def _detect_patch_strip_count(patch_text: str) -> int:
-        for raw_line in patch_text.splitlines():
-            if raw_line.startswith("--- ") or raw_line.startswith("+++ "):
-                candidate = raw_line[4:].strip()
-                if not candidate or candidate == "/dev/null":
-                    continue
-                header_path = candidate.split("\t", 1)[0].strip()
-                if header_path.startswith(("a/", "b/")):
-                    return 1
-                return 0
-        return 0
 
     def _workspace_response_path(target: Path) -> str:
         try:
@@ -921,36 +1480,9 @@ def create_app() -> FastAPI:
             if not working_dir.is_dir():
                 raise HTTPException(status_code=400, detail="cwd is not a directory")
             strip_count = _detect_patch_strip_count(str(patch_text))
-            argv = [
-                "patch",
-                "--batch",
-                "--forward",
-                "--reject-file=-",
-                f"-p{strip_count}",
-            ]
-            try:
-                proc = await asyncio.create_subprocess_exec(
-                    *argv,
-                    cwd=str(working_dir),
-                    stdin=asyncio.subprocess.PIPE,
-                    stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.PIPE,
-                )
-            except FileNotFoundError as exc:
-                raise HTTPException(status_code=503, detail="patch command is not available on this executor") from exc
-            stdout, stderr = await proc.communicate(str(patch_text).encode("utf-8"))
-
-            def _trim_patch_output(data: bytes) -> str:
-                return data.decode("utf-8", errors="replace")[:12000]
-
-            return {
-                "status": "ok" if proc.returncode == 0 else "error",
-                "exit_code": proc.returncode,
-                "stdout": _trim_patch_output(stdout),
-                "stderr": _trim_patch_output(stderr),
-                "cwd": _workspace_response_path(working_dir),
-                "strip": strip_count,
-            }
+            result = await _execute_apply_patch(str(patch_text), working_dir, strip_count)
+            result["cwd"] = _workspace_response_path(working_dir)
+            return result
 
         if req.tool == "http_fetch":
             url = req.payload.get("url")
@@ -1025,8 +1557,7 @@ def create_app() -> FastAPI:
             if args:
                 argv = [str(arg) for arg in args]
             else:
-                shell_path = "/bin/bash" if Path("/bin/bash").exists() else "/bin/sh"
-                argv = [shell_path, "-lc", str(cmd)]
+                argv = _shell_argv_for_command(str(cmd))
 
             try:
                 env = os.environ.copy()
@@ -1083,7 +1614,7 @@ def create_app() -> FastAPI:
                 return result
 
             def _trim(data: bytes) -> str:
-                text = data.decode("utf-8", errors="replace")
+                text = _decode_process_output(data)
                 return _redact(text[:10000])
 
             return {
