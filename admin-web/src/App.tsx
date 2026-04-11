@@ -299,6 +299,7 @@ export default function App() {
     executorName: string;
     token: string;
     command: string;
+    windowsCommand: string;
     configYaml: string;
   } | null>(null);
   const [executorForm, setExecutorForm] = useState({
@@ -1548,11 +1549,18 @@ export default function App() {
 
       const apiUrl = executorForm.api_url.trim().replace(/\/+$/, "");
       const workspaceRoot = executorForm.workspace_root.trim() || "workspace";
+      const windowsWorkspaceRoot =
+        workspaceRoot === "workspace" ? String.raw`$env:USERPROFILE\SkitterNode\workspace` : workspaceRoot;
       const command =
         `skitter-node --api-url "${apiUrl}" ` +
         `--token "${token.token}" ` +
         `--name "${executor.name}" ` +
         `--workspace-root "${workspaceRoot}" --write-config`;
+      const windowsCommand =
+        `skitter-node --api-url "${apiUrl}" ` +
+        `--token "${token.token}" ` +
+        `--name "${executor.name}" ` +
+        `--workspace-root "${windowsWorkspaceRoot}" --write-config`;
       const configYaml =
         `api_url: ${apiUrl}\n` +
         `token: ${token.token}\n` +
@@ -1583,6 +1591,7 @@ export default function App() {
         executorName: executor.name,
         token: token.token,
         command,
+        windowsCommand,
         configYaml,
       });
       refreshSandbox();

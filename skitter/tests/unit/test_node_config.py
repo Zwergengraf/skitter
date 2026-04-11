@@ -11,7 +11,10 @@ from skitter.node.__main__ import (
     NodeConfig,
     _capabilities_payload,
     _build_arg_parser,
+    _default_config_path,
+    _host_permissions,
     _normalize_tools,
+    _node_platform,
     _resolve_config,
     _tool_enabled,
 )
@@ -29,6 +32,27 @@ def test_normalize_tools_fallbacks_to_default_when_empty() -> None:
 
 def test_default_node_tools_matches_runner_surface() -> None:
     assert "apply_patch" in DEFAULT_NODE_TOOLS
+
+
+def test_default_config_path_uses_appdata_on_windows(monkeypatch, tmp_path: Path) -> None:
+    appdata = tmp_path / "AppData" / "Roaming"
+    monkeypatch.setattr(node_main.sys, "platform", "win32")
+    monkeypatch.setenv("APPDATA", str(appdata))
+
+    assert _default_config_path() == appdata / "skitter-node" / "config.yaml"
+
+
+def test_default_config_path_uses_xdg_style_path_off_windows(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setattr(node_main.sys, "platform", "linux")
+    monkeypatch.setattr(node_main.Path, "home", lambda: tmp_path)
+
+    assert _default_config_path() == tmp_path / ".config" / "skitter-node" / "config.yaml"
+
+
+def test_node_platform_normalizes_windows(monkeypatch) -> None:
+    monkeypatch.setattr(node_main.sys, "platform", "win32")
+
+    assert _node_platform() == "windows"
 
 
 def test_device_capability_tools_are_separate_from_default_allowlist() -> None:
@@ -221,5 +245,69 @@ def test_capabilities_payload_reports_unsupported_platform_helpers(monkeypatch) 
     payload = _capabilities_payload(cfg)
 
     assert payload["device_features"]["screenshot"]["state"] == "ready"
+    assert payload["device_features"]["mouse"]["state"] == "unsupported"
+    assert payload["device_features"]["keyboard"]["state"] == "unsupported"
+
+
+def test_windows_host_permissions_include_desktop_interaction(monkeypatch) -> None:
+    monkeypatch.setattr(node_main.sys, "platform", "win32")
+
+    permissions = _host_permissions()
+
+    assert permissions["desktop_interaction"]["label"] == "Desktop Interaction"
+    assert permissions["desktop_interaction"]["status"] == "not_required"
+    assert "interactive user session" in permissions["desktop_interaction"]["detail"]
+
+
+def test_capabilities_payload_reports_ready_windows_helpers(monkeypatch) -> None:
+    cfg = NodeConfig(
+        api_url="http://localhost:8000",
+        token="token-1",
+        name="node-1",
+        workspace_root="workspace",
+        notify_enabled=True,
+        screenshot_enabled=True,
+        mouse_enabled=True,
+        keyboard_enabled=True,
+    )
+
+    monkeypatch.setattr(node_main.sys, "platform", "win32")
+    monkeypatch.setattr(node_main, "_supports_notify", lambda: True)
+    monkeypatch.setattr(node_main, "_supports_screenshot", lambda: True)
+    monkeypatch.setattr(node_main, "_supports_mouse_keyboard", lambda: True)
+
+    payload = _capabilities_payload(cfg)
+
+    assert payload["permissions"]["desktop_interaction"]["status"] == "not_required"
+    assert payload["device_features"]["notify"]["state"] == "ready"
+    assert payload["device_features"]["screenshot"]["state"] == "ready"
+    assert payload["device_features"]["screenshot"]["permission"] == "desktop_interaction"
+    assert payload["device_features"]["mouse"]["state"] == "ready"
+    assert payload["device_features"]["mouse"]["permission"] == "desktop_interaction"
+    assert payload["device_features"]["keyboard"]["state"] == "ready"
+    assert payload["device_features"]["keyboard"]["permission"] == "desktop_interaction"
+
+
+def test_capabilities_payload_reports_unsupported_windows_helpers(monkeypatch) -> None:
+    cfg = NodeConfig(
+        api_url="http://localhost:8000",
+        token="token-1",
+        name="node-1",
+        workspace_root="workspace",
+        notify_enabled=True,
+        screenshot_enabled=True,
+        mouse_enabled=True,
+        keyboard_enabled=True,
+    )
+
+    monkeypatch.setattr(node_main.sys, "platform", "win32")
+    monkeypatch.setattr(node_main, "_supports_notify", lambda: False)
+    monkeypatch.setattr(node_main, "_supports_screenshot", lambda: False)
+    monkeypatch.setattr(node_main, "_supports_mouse_keyboard", lambda: False)
+
+    payload = _capabilities_payload(cfg)
+
+    assert payload["device_features"]["notify"]["state"] == "unsupported"
+    assert payload["device_features"]["screenshot"]["state"] == "unsupported"
     assert payload["device_features"]["mouse"]["state"] == "unsupported"
     assert payload["device_features"]["keyboard"]["state"] == "unsupported"

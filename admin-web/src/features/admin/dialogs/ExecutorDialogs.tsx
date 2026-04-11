@@ -33,6 +33,7 @@ type ExecutorOnboardingResult = {
   executorName: string;
   token: string;
   command: string;
+  windowsCommand: string;
   configYaml: string;
 } | null;
 
@@ -79,7 +80,7 @@ export function ExecutorOnboardingDialog({
       <DialogContent className="w-[94vw] max-w-4xl max-h-[88vh] overflow-y-auto">
         <DialogHeader>
           <DialogTitle>Add Executor Node</DialogTitle>
-          <DialogDescription>Create a node executor, mint a token, and generate a launch command.</DialogDescription>
+          <DialogDescription>Create a node executor, mint a token, and generate launch commands for macOS, Linux, and Windows.</DialogDescription>
         </DialogHeader>
 
         <div className="grid gap-3 md:grid-cols-2">
@@ -115,7 +116,7 @@ export function ExecutorOnboardingDialog({
             <Input
               value={executorForm.name}
               onChange={(event) => setExecutorForm((current) => ({ ...current, name: event.target.value }))}
-              placeholder="macbook-main"
+              placeholder="workstation-main"
             />
           </div>
           <div>
@@ -128,7 +129,7 @@ export function ExecutorOnboardingDialog({
                   workspace_root: event.target.value,
                 }))
               }
-              placeholder="workspace"
+              placeholder={String.raw`workspace or C:\Users\you\SkitterNode\workspace`}
             />
           </div>
           <div>
@@ -149,9 +150,9 @@ export function ExecutorOnboardingDialog({
         </div>
 
         {executorOnboardingResult ? (
-          <div className="grid gap-3 lg:grid-cols-2">
+          <div className="grid gap-3 lg:grid-cols-3">
             <div>
-              <p className="text-xs uppercase tracking-[0.2em] text-mutedForeground">Launch command</p>
+              <p className="text-xs uppercase tracking-[0.2em] text-mutedForeground">macOS / Linux</p>
               <Textarea className="mt-2 min-h-[120px] font-mono text-xs" readOnly value={executorOnboardingResult.command} />
               <div className="mt-2 flex items-center gap-2">
                 <Button
@@ -166,6 +167,22 @@ export function ExecutorOnboardingDialog({
                 <span className="text-xs text-mutedForeground">
                   Executor `{executorOnboardingResult.executorName}` created.
                 </span>
+              </div>
+            </div>
+            <div>
+              <p className="text-xs uppercase tracking-[0.2em] text-mutedForeground">Windows PowerShell</p>
+              <Textarea className="mt-2 min-h-[120px] font-mono text-xs" readOnly value={executorOnboardingResult.windowsCommand} />
+              <div className="mt-2 flex items-center gap-2">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => {
+                    void navigator.clipboard.writeText(executorOnboardingResult.windowsCommand).catch(() => undefined);
+                  }}
+                >
+                  Copy command
+                </Button>
+                <span className="text-xs text-mutedForeground">Runs in PowerShell.</span>
               </div>
             </div>
             <div>
