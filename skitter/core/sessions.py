@@ -240,6 +240,20 @@ class SessionManager:
             transport=origin,
             data={"scope_type": scope_type, "scope_id": scope_id},
         )
+        emit_hook = getattr(self.runtime, "emit_hook", None)
+        if callable(emit_hook):
+            await emit_hook(
+                "session.started",
+                {
+                    "session_id": new_session.id,
+                    "user_id": user_id,
+                    "agent_profile_id": agent_profile_id,
+                    "agent_profile_slug": agent_profile_slug,
+                    "origin": origin,
+                    "scope_type": scope_type,
+                    "scope_id": scope_id,
+                },
+            )
         return None, new_session.id
 
     async def reindex_memories(self, user_id: str, *, agent_profile_id: str, agent_profile_slug: str) -> dict:
@@ -252,6 +266,18 @@ class SessionManager:
         query: str,
         *,
         agent_profile_id: str,
+        agent_profile_slug: str | None = None,
         top_k: int = 5,
     ) -> list[dict]:
+        memory_hub = getattr(self.runtime, "memory_hub", None)
+        if memory_hub is not None:
+            return await memory_hub.search(
+                user_id,
+                query,
+                top_k,
+                agent_profile_id=agent_profile_id,
+                agent_profile_slug=agent_profile_slug,
+                origin="command",
+                source="command",
+            )
         return await self.memory_service.search(user_id, query, top_k, agent_profile_id=agent_profile_id)

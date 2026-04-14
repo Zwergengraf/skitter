@@ -14,6 +14,7 @@ from ..data.repositories import Repository
 from .config import settings
 from .events import EventBus
 from .llm import build_llm, list_models, resolve_model_name
+from .memory_provider import MemoryItem, MemoryStoreRequest, SessionMemoryUpdated
 from .profiles import DEFAULT_AGENT_PROFILE_SLUG
 from .workspace import ensure_user_workspace, user_workspace_root
 
@@ -244,13 +245,17 @@ def is_session_memory_empty(content: str) -> bool:
 
 
 class SessionMemoryService:
-    def __init__(self, event_bus: EventBus) -> None:
+    def __init__(self, event_bus: EventBus, memory_hub=None) -> None:
         self.event_bus = event_bus
+        self._memory_hub = memory_hub
         self._tasks: dict[str, asyncio.Task[None]] = {}
         self._dirty: set[str] = set()
         self._force: set[str] = set()
         self._model_overrides: dict[str, str] = {}
         self._locks: dict[str, asyncio.Lock] = {}
+
+    def set_memory_hub(self, memory_hub) -> None:
+        self._memory_hub = memory_hub
 
     async def stop(self) -> None:
         tasks = list(self._tasks.values())
@@ -416,6 +421,43 @@ class SessionMemoryService:
                     "recent_tokens": recent_tokens,
                 },
             )
+            if self._memory_hub is not None:
+                ctx = self._memory_hub.context_for(
+                    user_id=user_id,
+                    agent_profile_id=agent_profile_id,
+                    agent_profile_slug=profile_slug,
+                    session_id=session_id,
+                    origin="session_memory",
+                    scope_type=str(getattr(session_row, "scope_type", "private") or "private"),
+                    scope_id=str(getattr(session_row, "scope_id", "") or ""),
+                )
+                await self._memory_hub.on_session_memory_updated(
+                    ctx,
+                    SessionMemoryUpdated(
+                        session_id=session_id,
+                        path=relative_path,
+                        content=updated,
+                    ),
+                )
+                await self._memory_hub.store(
+                    ctx,
+                    MemoryStoreRequest(
+                        items=[
+                            MemoryItem(
+                                content=updated,
+                                kind="summary",
+                                tags=["session_memory", f"session:{session_id}"],
+                                source="session_memory",
+                                metadata={
+                                    "source": current_path.name,
+                                    "path": str(current_path),
+                                    "index_file": True,
+                                },
+                            )
+                        ],
+                        source="session_memory",
+                    ),
+                )
             return updated
         except Exception as exc:
             async with SessionLocal() as session:

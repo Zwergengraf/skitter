@@ -9,12 +9,47 @@ from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, Tool
 from skitter.core.config import settings
 from skitter.core.events import EventBus
 from skitter.core.graph import UserPromptRequired
+from skitter.core.llm import ResolvedModel
+from skitter.core.memory_provider import ContextContribution, MemoryContext, MemoryContextResult
 from skitter.core.models import MessageEnvelope, SKITTER_NO_REPLY
+from skitter.core.plugins import HookBus
 from skitter.core.runtime import AgentRuntime
 
 
 def _runtime() -> AgentRuntime:
     return AgentRuntime(event_bus=EventBus(), graph=object())
+
+
+def test_get_graph_passes_hook_bus_and_rebuilds_when_it_changes(monkeypatch) -> None:
+    calls: list[dict] = []
+    first_bus = HookBus()
+    second_bus = HookBus()
+    runtime = AgentRuntime(event_bus=EventBus(), hook_bus=first_bus)
+    resolved = ResolvedModel(
+        name="provider/main",
+        provider="provider",
+        provider_api_type="openai",
+        model="test-model",
+        api_base="http://localhost",
+        api_key="test-key",
+    )
+
+    def _fake_build_graph(**kwargs):
+        calls.append(kwargs)
+        return object()
+
+    monkeypatch.setattr("skitter.core.runtime.build_graph", _fake_build_graph)
+
+    first_graph = runtime._get_graph("provider/main", resolved_model=resolved)
+    cached_graph = runtime._get_graph("provider/main", resolved_model=resolved)
+    runtime.set_hook_bus(second_bus)
+    rebuilt_graph = runtime._get_graph("provider/main", resolved_model=resolved)
+
+    assert first_graph is cached_graph
+    assert rebuilt_graph is not first_graph
+    assert len(calls) == 2
+    assert calls[0]["hook_bus"] is first_bus
+    assert calls[1]["hook_bus"] is second_bus
 
 
 def test_sanitize_tool_sequence_removes_orphan_and_incomplete_tool_messages() -> None:
@@ -554,6 +589,63 @@ class _NoReplyGraph:
         return {"messages": [AIMessage(content=SKITTER_NO_REPLY)]}
 
 
+class _MemoryContextGraph:
+    def __init__(self) -> None:
+        self.invocations = []
+
+    async def ainvoke(self, payload, **_kwargs):
+        messages = list(payload["messages"])
+        self.invocations.append(messages)
+        return {"messages": messages + [AIMessage(content="Used memory context.")]}
+
+
+class _SimpleGraph:
+    async def ainvoke(self, payload, **_kwargs):
+        messages = list(payload["messages"])
+        return {"messages": messages + [AIMessage(content="Hooked response.")]}
+
+
+class _RecordingGraph:
+    def __init__(self) -> None:
+        self.invocations = []
+
+    async def ainvoke(self, payload, **_kwargs):
+        messages = list(payload["messages"])
+        self.invocations.append(messages)
+        return {"messages": messages + [AIMessage(content="Original response.")]}
+
+
+class _MemoryHubStub:
+    def __init__(self) -> None:
+        self.requests = []
+
+    def context_for(self, **kwargs):
+        return MemoryContext(
+            user_id=kwargs["user_id"],
+            agent_profile_id=str(kwargs.get("agent_profile_id") or ""),
+            agent_profile_slug=str(kwargs.get("agent_profile_slug") or ""),
+            session_id=kwargs.get("session_id"),
+            run_id=kwargs.get("run_id"),
+            origin=str(kwargs.get("origin") or ""),
+            transport_account_key=kwargs.get("transport_account_key"),
+            scope_type=str(kwargs.get("scope_type") or "private"),
+            scope_id=str(kwargs.get("scope_id") or ""),
+        )
+
+    async def build_context(self, ctx, request):
+        self.requests.append((ctx, request))
+        return MemoryContextResult(
+            contributions=[
+                ContextContribution(
+                    provider_id="external",
+                    title="Preference",
+                    content="The user prefers concise implementation plans.",
+                    priority=10,
+                )
+            ]
+        )
+
+
 @pytest.mark.asyncio
 async def test_handle_message_returns_pending_prompt_when_ask_user_is_triggered(monkeypatch) -> None:
     runtime = AgentRuntime(event_bus=EventBus(), graph=_PromptGraph())
@@ -622,6 +714,243 @@ async def test_handle_message_returns_pending_prompt_when_ask_user_is_triggered(
         "- macbook\n"
         "Custom free-text replies were allowed."
     )
+
+
+@pytest.mark.asyncio
+async def test_handle_message_injects_memory_context_without_persisting_it(monkeypatch) -> None:
+    graph = _MemoryContextGraph()
+    memory_hub = _MemoryHubStub()
+    runtime = AgentRuntime(event_bus=EventBus(), graph=graph, memory_hub=memory_hub)
+
+    async def _fake_ensure_history(session_id: str) -> None:
+        runtime._history.setdefault(session_id, [SystemMessage(content="system")])
+
+    async def _noop_async(*_args, **_kwargs) -> None:
+        return None
+
+    async def _fake_get_session_model(_session_id: str, _envelope) -> str:
+        return "provider/main"
+
+    monkeypatch.setattr("skitter.core.runtime.list_models", lambda: [object()])
+    monkeypatch.setattr("skitter.core.runtime.resolve_model_name", lambda _value=None, purpose="main": "provider/main")
+    monkeypatch.setattr("skitter.core.runtime.resolve_model_candidates", lambda _value, purpose="main": ["provider/main"])
+    monkeypatch.setattr(
+        "skitter.core.runtime.resolve_model",
+        lambda _value, purpose="main": type(
+            "Resolved",
+            (),
+            {
+                "input_cost_per_1m": 0.0,
+                "output_cost_per_1m": 0.0,
+                "provider_api_type": "openai",
+                "model": "provider/main",
+                "name": "provider/main",
+                "api_base": "",
+            },
+        )(),
+    )
+    monkeypatch.setattr("skitter.core.runtime.collect_usage", lambda _messages, _message_id: None)
+    monkeypatch.setattr(runtime, "_ensure_history", _fake_ensure_history)
+    monkeypatch.setattr(runtime, "_get_session_model", _fake_get_session_model)
+    monkeypatch.setattr(runtime, "_ensure_system_prompt", lambda history, _user_id: None)
+    monkeypatch.setattr(runtime, "_compact_history_for_context", _noop_async)
+    monkeypatch.setattr(runtime, "_trace_create", _noop_async)
+    monkeypatch.setattr(runtime, "_trace_update", _noop_async)
+    monkeypatch.setattr(runtime, "_trace_event", _noop_async)
+
+    envelope = MessageEnvelope(
+        message_id="msg-memory",
+        channel_id="chan-1",
+        user_id="user-1",
+        timestamp=datetime.now(UTC),
+        text="What should I do next?",
+        origin="tui",
+        metadata={
+            "internal_user_id": "user-1",
+            "agent_profile_id": "profile-1",
+            "agent_profile_slug": "coder",
+        },
+    )
+
+    response = await runtime.handle_message("session-memory", envelope)
+
+    assert response.text == "Used memory context."
+    invoked_messages = graph.invocations[0]
+    memory_messages = [
+        msg for msg in invoked_messages if getattr(msg, "additional_kwargs", {}).get("memory_context")
+    ]
+    assert len(memory_messages) == 1
+    assert "The user prefers concise implementation plans." in memory_messages[0].content
+    assert all(
+        not getattr(msg, "additional_kwargs", {}).get("memory_context")
+        for msg in runtime._history["session-memory"]
+    )
+    assert [type(msg).__name__ for msg in runtime._history["session-memory"]] == [
+        "SystemMessage",
+        "HumanMessage",
+        "AIMessage",
+    ]
+    assert memory_hub.requests[0][1].query == "What should I do next?"
+
+
+@pytest.mark.asyncio
+async def test_handle_message_emits_run_hooks(monkeypatch) -> None:
+    events: list[tuple[str, dict]] = []
+    hook_bus = HookBus(default_timeout_seconds=1.0)
+    hook_bus.register(
+        "run.started",
+        lambda event: events.append(("started", dict(event))),
+        plugin_id="test",
+    )
+    hook_bus.register(
+        "run.finished",
+        lambda event: events.append(("finished", dict(event))),
+        plugin_id="test",
+    )
+    runtime = AgentRuntime(event_bus=EventBus(), graph=_SimpleGraph(), hook_bus=hook_bus)
+
+    async def _fake_ensure_history(session_id: str) -> None:
+        runtime._history.setdefault(session_id, [SystemMessage(content="system")])
+
+    async def _noop_async(*_args, **_kwargs) -> None:
+        return None
+
+    async def _fake_get_session_model(_session_id: str, _envelope) -> str:
+        return "provider/main"
+
+    monkeypatch.setattr("skitter.core.runtime.list_models", lambda: [object()])
+    monkeypatch.setattr("skitter.core.runtime.resolve_model_name", lambda _value=None, purpose="main": "provider/main")
+    monkeypatch.setattr("skitter.core.runtime.resolve_model_candidates", lambda _value, purpose="main": ["provider/main"])
+    monkeypatch.setattr(
+        "skitter.core.runtime.resolve_model",
+        lambda _value, purpose="main": type(
+            "Resolved",
+            (),
+            {
+                "input_cost_per_1m": 0.0,
+                "output_cost_per_1m": 0.0,
+                "provider_api_type": "openai",
+                "model": "provider/main",
+                "name": "provider/main",
+                "api_base": "",
+            },
+        )(),
+    )
+    monkeypatch.setattr("skitter.core.runtime.collect_usage", lambda _messages, _message_id: None)
+    monkeypatch.setattr(runtime, "_ensure_history", _fake_ensure_history)
+    monkeypatch.setattr(runtime, "_get_session_model", _fake_get_session_model)
+    monkeypatch.setattr(runtime, "_ensure_system_prompt", lambda history, _user_id: None)
+    monkeypatch.setattr(runtime, "_compact_history_for_context", _noop_async)
+    monkeypatch.setattr(runtime, "_trace_create", _noop_async)
+    monkeypatch.setattr(runtime, "_trace_update", _noop_async)
+    monkeypatch.setattr(runtime, "_trace_event", _noop_async)
+
+    envelope = MessageEnvelope(
+        message_id="msg-hooks",
+        channel_id="chan-1",
+        user_id="transport-user",
+        timestamp=datetime.now(UTC),
+        text="Please handle this.",
+        origin="tui",
+        metadata={
+            "internal_user_id": "user-1",
+            "agent_profile_id": "profile-1",
+            "agent_profile_slug": "coder",
+            "scope_type": "private",
+            "scope_id": "private:profile-1",
+        },
+    )
+
+    response = await runtime.handle_message("session-hooks", envelope)
+
+    assert response.text == "Hooked response."
+    assert [name for name, _event in events] == ["started", "finished"]
+    assert events[0][1]["run_id"] == response.run_id
+    assert events[0][1]["model"] == "provider/main"
+    assert events[0][1]["agent_profile_id"] == "profile-1"
+    assert events[0][1]["scope_id"] == "private:profile-1"
+    assert events[1][1]["status"] == "completed"
+    assert events[1][1]["response_text"] == "Hooked response."
+    assert events[1][1]["duration_ms"] >= 0
+
+
+@pytest.mark.asyncio
+async def test_handle_message_applies_llm_transform_hook_patches(monkeypatch) -> None:
+    graph = _RecordingGraph()
+    hook_bus = HookBus(default_timeout_seconds=1.0)
+    hook_bus.register(
+        "before_llm_call",
+        lambda event: {"append_messages": [SystemMessage(content=f"hook saw {event['model']}")]},
+        plugin_id="before",
+    )
+    hook_bus.register(
+        "llm.after_call",
+        lambda event: {
+            "messages": list(event["result_messages"]) + [AIMessage(content="Patched response.")]
+        },
+        plugin_id="after",
+    )
+    runtime = AgentRuntime(event_bus=EventBus(), graph=graph, hook_bus=hook_bus)
+
+    async def _fake_ensure_history(session_id: str) -> None:
+        runtime._history.setdefault(session_id, [SystemMessage(content="system")])
+
+    async def _noop_async(*_args, **_kwargs) -> None:
+        return None
+
+    async def _fake_get_session_model(_session_id: str, _envelope) -> str:
+        return "provider/main"
+
+    monkeypatch.setattr("skitter.core.runtime.list_models", lambda: [object()])
+    monkeypatch.setattr("skitter.core.runtime.resolve_model_name", lambda _value=None, purpose="main": "provider/main")
+    monkeypatch.setattr("skitter.core.runtime.resolve_model_candidates", lambda _value, purpose="main": ["provider/main"])
+    monkeypatch.setattr(
+        "skitter.core.runtime.resolve_model",
+        lambda _value, purpose="main": type(
+            "Resolved",
+            (),
+            {
+                "input_cost_per_1m": 0.0,
+                "output_cost_per_1m": 0.0,
+                "provider_api_type": "openai",
+                "model": "provider/main",
+                "name": "provider/main",
+                "api_base": "",
+            },
+        )(),
+    )
+    monkeypatch.setattr("skitter.core.runtime.collect_usage", lambda _messages, _message_id: None)
+    monkeypatch.setattr(runtime, "_ensure_history", _fake_ensure_history)
+    monkeypatch.setattr(runtime, "_get_session_model", _fake_get_session_model)
+    monkeypatch.setattr(runtime, "_ensure_system_prompt", lambda history, _user_id: None)
+    monkeypatch.setattr(runtime, "_compact_history_for_context", _noop_async)
+    monkeypatch.setattr(runtime, "_trace_create", _noop_async)
+    monkeypatch.setattr(runtime, "_trace_update", _noop_async)
+    monkeypatch.setattr(runtime, "_trace_event", _noop_async)
+
+    envelope = MessageEnvelope(
+        message_id="msg-llm-hooks",
+        channel_id="chan-1",
+        user_id="transport-user",
+        timestamp=datetime.now(UTC),
+        text="Please handle this.",
+        origin="tui",
+        metadata={
+            "internal_user_id": "user-1",
+            "agent_profile_id": "profile-1",
+            "agent_profile_slug": "coder",
+        },
+    )
+
+    response = await runtime.handle_message("session-llm-hooks", envelope)
+
+    assert response.text == "Patched response."
+    assert any(
+        isinstance(msg, SystemMessage) and msg.content == "hook saw provider/main"
+        for msg in graph.invocations[0]
+    )
+    assert isinstance(runtime._history["session-llm-hooks"][-1], AIMessage)
+    assert runtime._history["session-llm-hooks"][-1].content == "Patched response."
 
 
 @pytest.mark.asyncio

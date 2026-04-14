@@ -146,6 +146,18 @@ def test_windows_shell_command_uses_powershell(monkeypatch: pytest.MonkeyPatch) 
     ]
 
 
+def test_execute_request_timeout_defaults_to_ten_minutes() -> None:
+    req = runner_module.ExecuteRequest(session_id="session-1", tool="shell", payload={})
+
+    assert runner_module._request_timeout_seconds(req) == 600.0
+
+
+def test_execute_request_timeout_uses_explicit_value() -> None:
+    req = runner_module.ExecuteRequest(session_id="session-1", tool="shell", payload={}, timeout_s=123)
+
+    assert runner_module._request_timeout_seconds(req) == 123.0
+
+
 @pytest.mark.asyncio
 async def test_runner_apply_patch_updates_file_with_plain_relative_paths(
     runner_workspace: tuple[Path, object]

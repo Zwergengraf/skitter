@@ -42,6 +42,7 @@ class ExecuteRequest(BaseModel):
     session_id: str
     tool: str
     payload: Dict[str, Any]
+    timeout_s: float | None = None
 
 
 class TaskStatusRequest(BaseModel):
@@ -399,6 +400,14 @@ def _shell_argv_for_command(command: str) -> list[str]:
         return _powershell_argv(command)
     shell_path = "/bin/bash" if Path("/bin/bash").exists() else "/bin/sh"
     return [shell_path, "-lc", command]
+
+
+def _request_timeout_seconds(req: ExecuteRequest, default: float = 600.0) -> float:
+    try:
+        value = float(req.timeout_s) if req.timeout_s is not None else default
+    except (TypeError, ValueError):
+        value = default
+    return max(1.0, value)
 
 
 def _powershell_single_quoted(value: str) -> str:
@@ -1597,7 +1606,7 @@ def create_app() -> FastAPI:
                     stderr=asyncio.subprocess.PIPE,
                 )
                 try:
-                    stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=60)
+                    stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=_request_timeout_seconds(req))
                 except asyncio.TimeoutError:
                     proc.kill()
                     return {"status": "timeout", "exit_code": None, "stdout": "", "stderr": "Timed out"}

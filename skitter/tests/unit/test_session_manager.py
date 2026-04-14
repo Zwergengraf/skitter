@@ -240,6 +240,51 @@ async def test_start_new_session_queues_background_summary_without_blocking(
 
 
 @pytest.mark.asyncio
+async def test_start_new_session_emits_plugin_session_started_hook(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo = _FakeRepo()
+    token = object()
+    monkeypatch.setattr(sessions_module, "SessionLocal", lambda: _SessionCtx(token))
+    monkeypatch.setattr(sessions_module, "Repository", lambda _session: repo)
+    monkeypatch.setattr(sessions_module, "ensure_profile_workspace", lambda _user_id, _profile_slug=None: None)
+    monkeypatch.setattr(sessions_module, "resolve_model_name", lambda _value, purpose: f"{purpose}-model")
+
+    class _RuntimeCapture(_RuntimeStub):
+        hooks: list[tuple[str, dict]] = []
+
+        async def emit_hook(self, hook_name: str, event: dict) -> None:
+            self.hooks.append((hook_name, event))
+
+    runtime = _RuntimeCapture()
+    manager = SessionManager(runtime=runtime)
+
+    _summary_path, new_session_id = await manager.start_new_session_for_scope(
+        user_id="user-1",
+        agent_profile_id="profile-default",
+        agent_profile_slug="default",
+        scope_type="private",
+        scope_id="private:profile-default",
+        origin="discord",
+    )
+
+    assert runtime.hooks == [
+        (
+            "session.started",
+            {
+                "session_id": new_session_id,
+                "user_id": "user-1",
+                "agent_profile_id": "profile-default",
+                "agent_profile_slug": "default",
+                "origin": "discord",
+                "scope_type": "private",
+                "scope_id": "private:profile-default",
+            },
+        )
+    ]
+
+
+@pytest.mark.asyncio
 async def test_new_sessions_use_profile_default_model_when_available(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

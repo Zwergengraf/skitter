@@ -117,6 +117,24 @@ class _MemoryLLM:
         return AIMessage(content=self.content)
 
 
+class _MemoryHubStub:
+    def __init__(self) -> None:
+        self.contexts = []
+        self.updated = []
+        self.stores = []
+
+    def context_for(self, **kwargs):
+        self.contexts.append(kwargs)
+        return kwargs
+
+    async def on_session_memory_updated(self, ctx, event) -> None:
+        self.updated.append((ctx, event))
+
+    async def store(self, ctx, request):
+        self.stores.append((ctx, request))
+        return type("StoreResult", (), {"stored": 1, "errors": {}})()
+
+
 class _ArchiveLLM:
     def __init__(self, content: str) -> None:
         self.content = content
@@ -248,6 +266,42 @@ async def test_session_memory_creates_sidecar_after_init_threshold(
     assert "current file" in prompt.lower()
     assert "user: I want help planning" in prompt
     assert "assistant: We can compare Lisbon and Porto" in prompt
+
+
+@pytest.mark.asyncio
+async def test_session_memory_routes_durable_store_through_memory_hub(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    row = _SessionRow(id="session-hub", user_id="user-1", last_input_tokens=5000)
+    messages = [
+        _MessageRow("m1", "user", "remember the deployment constraint", datetime.now(UTC)),
+        _MessageRow("m2", "assistant", "noted", datetime.now(UTC)),
+    ]
+    repo = _FakeRepo(row, messages)
+    token = object()
+    memory_hub = _MemoryHubStub()
+    monkeypatch.setattr(session_memory_module, "SessionLocal", lambda: _SessionCtx(token))
+    monkeypatch.setattr(session_memory_module, "Repository", lambda _session: repo)
+    monkeypatch.setattr(session_memory_module, "user_workspace_root", lambda user_id: tmp_path / user_id)
+    monkeypatch.setattr(session_memory_module, "ensure_user_workspace", lambda user_id: (tmp_path / user_id / "memory").mkdir(parents=True, exist_ok=True) or (tmp_path / user_id))
+    monkeypatch.setattr(session_memory_module.settings, "session_memory_enabled", True)
+    monkeypatch.setattr(session_memory_module.settings, "session_memory_init_tokens", 10)
+    monkeypatch.setattr(session_memory_module.settings, "session_memory_update_tokens", 10)
+    monkeypatch.setattr(session_memory_module, "list_models", lambda: [object()])
+    llm = _MemoryLLM(VALID_UPDATED_NOTES)
+    monkeypatch.setattr(session_memory_module, "build_llm", lambda model_name, purpose="main": llm)
+    service = SessionMemoryService(EventBus(), memory_hub=memory_hub)
+
+    updated = await service.refresh_session_memory("session-hub", model_name="provider/main", force=False)
+
+    assert updated == VALID_UPDATED_NOTES
+    assert len(memory_hub.updated) == 1
+    assert len(memory_hub.stores) == 1
+    store_request = memory_hub.stores[0][1]
+    assert store_request.source == "session_memory"
+    assert store_request.items[0].metadata["index_file"] is True
+    assert store_request.items[0].metadata["source"] == "session-hub.md"
 
 
 @pytest.mark.asyncio

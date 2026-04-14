@@ -258,6 +258,7 @@ class SecretOut(BaseModel):
 class MemoryForgetRequest(BaseModel):
     user_id: str
     agent_profile_id: str | None = None
+    provider_id: str | None = None
 
 
 class EventOut(BaseModel):

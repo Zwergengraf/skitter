@@ -97,6 +97,7 @@ Important meaning:
 ## Executors and Sandbox
 
 - `executors.auto_docker_default`: auto-create a managed Docker executor when needed
+- `executors.request_timeout_seconds`: default timeout for executor tool requests such as shell commands
 - `sandbox.*`: image/network/idle behavior for managed profile-aware sandbox containers
 
 Skitter no longer uses a shared Docker sandbox fallback URL. Docker-backed sandbox execution is managed per profile.

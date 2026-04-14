@@ -10,6 +10,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from ..core.events import EventBus
+from ..core.memory_hub import MemoryHub
+from ..core.plugins import HookBus, PluginDiagnostic, PluginRegistry
 from ..core.runtime import AgentRuntime
 from ..core.scheduler import SchedulerService
 from ..core.session_memory import SessionMemoryService
@@ -37,6 +39,7 @@ from .routes import (
     messages,
     models,
     overview,
+    plugins,
     profiles,
     runs,
     sandbox,
@@ -58,11 +61,51 @@ def create_app() -> FastAPI:
 
     @asynccontextmanager
     async def _lifespan(app: FastAPI):
+        plugin_registry = getattr(app.state, "plugin_registry", None)
+        memory_hub = getattr(app.state, "memory_hub", None)
+        if plugin_registry is not None:
+            await plugin_registry.load()
+        if memory_hub is not None and plugin_registry is not None:
+            for plugin_id, provider in plugin_registry.memory_providers:
+                try:
+                    memory_hub.add_external_provider(plugin_id, provider)
+                except Exception as exc:
+                    plugin_registry.diagnostics.append(
+                        PluginDiagnostic(
+                            plugin_id=plugin_id,
+                            level="error",
+                            message="Memory provider registration failed",
+                            detail=str(exc) or exc.__class__.__name__,
+                        )
+                    )
+        if memory_hub is not None:
+            await memory_hub.startup()
         if sandbox_manager is not None:
             await sandbox_manager.start()
+        hook_bus = getattr(app.state, "hook_bus", None)
+        if hook_bus is not None:
+            await hook_bus.emit(
+                "server.started",
+                {
+                    "started_at": app.state.started_at.isoformat(),
+                    "plugin_root": settings.plugins_root,
+                    "plugin_count": len(getattr(plugin_registry, "plugins", {}) or {}) if plugin_registry is not None else 0,
+                },
+            )
         try:
             yield
         finally:
+            hook_bus = getattr(app.state, "hook_bus", None)
+            if hook_bus is not None:
+                await hook_bus.emit(
+                    "server.stopping",
+                    {
+                        "started_at": app.state.started_at.isoformat(),
+                        "stopping_at": datetime.now(UTC).isoformat(),
+                    },
+                )
+            if memory_hub is not None:
+                await memory_hub.shutdown()
             await mcp_registry.shutdown()
             await app.state.session_memory_service.stop()
 
@@ -87,14 +130,28 @@ def create_app() -> FastAPI:
     )
 
     app.state.event_bus = EventBus(admin_buffer_size=settings.admin_event_buffer_size)
+    app.state.hook_bus = HookBus()
+    app.state.plugin_registry = PluginRegistry(
+        hook_bus=app.state.hook_bus,
+        plugin_root=settings.plugins_root,
+    )
+    app.state.memory_hub = MemoryHub(
+        hook_bus=app.state.hook_bus,
+        external_provider_id=settings.memory_external_provider,
+        context_timeout_seconds=settings.memory_context_timeout_seconds,
+        recall_timeout_seconds=settings.memory_recall_timeout_seconds,
+        store_timeout_seconds=settings.memory_store_timeout_seconds,
+    )
     app.state.approval_service = ToolApprovalService(app.state.event_bus)
     app.state.user_prompt_service = UserPromptService(app.state.event_bus)
     app.state.runtime = AgentRuntime(
         app.state.event_bus,
         approval_service=app.state.approval_service,
         user_prompt_service=app.state.user_prompt_service,
+        memory_hub=app.state.memory_hub,
+        hook_bus=app.state.hook_bus,
     )
-    app.state.session_memory_service = SessionMemoryService(app.state.event_bus)
+    app.state.session_memory_service = SessionMemoryService(app.state.event_bus, memory_hub=app.state.memory_hub)
     app.state.runtime.set_session_memory_service(app.state.session_memory_service)
     app.state.scheduler_service = SchedulerService(app.state.runtime)
     app.state.runtime.set_scheduler_service(app.state.scheduler_service)
@@ -160,6 +217,7 @@ def create_app() -> FastAPI:
     app.include_router(memory.router)
     app.include_router(mcp.router)
     app.include_router(overview.router)
+    app.include_router(plugins.router)
     app.include_router(profiles.router)
     app.include_router(schedules.router)
     app.include_router(users.router)

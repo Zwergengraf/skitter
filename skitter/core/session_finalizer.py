@@ -8,6 +8,7 @@ from pathlib import Path
 
 from ..data.db import SessionLocal
 from ..data.repositories import Repository
+from .memory_provider import MemoryItem, MemoryStoreRequest, SessionArchived
 from .memory_service import MemoryService
 from .sessions import current_summary_date, session_summary_relative_path, write_session_summary_file
 
@@ -82,13 +83,57 @@ class SessionFinalizerService:
             user_id=user_id,
             data={"model": model_name},
         )
+        memory_hub = getattr(self.runtime, "memory_hub", None)
+        agent_profile_id = str(getattr(session_row, "agent_profile_id", "") or "").strip()
+        memory_ctx = None
+        if memory_hub is not None:
+            memory_ctx = memory_hub.context_for(
+                user_id=user_id,
+                agent_profile_id=agent_profile_id or None,
+                session_id=session_id,
+                origin="archive",
+                scope_type=str(getattr(session_row, "scope_type", "private") or "private"),
+                scope_id=str(getattr(session_row, "scope_id", "") or ""),
+            )
+            await memory_hub.before_session_archive(memory_ctx, session_id)
         try:
             summary_date = current_summary_date()
             summary = await self.runtime.summarize_session(session_id, model_name=model_name)
             summary_path, _ = write_session_summary_file(user_id, session_id, summary, target_date=summary_date)
-            indexed = await self.memory_service.index_file(user_id, session_id, summary_path, force=True)
+            if memory_hub is not None and memory_ctx is not None:
+                store_result = await memory_hub.store(
+                    memory_ctx,
+                    MemoryStoreRequest(
+                        items=[
+                            MemoryItem(
+                                content=str(summary),
+                                kind="summary",
+                                tags=["archive", f"session:{session_id}"],
+                                source="archive",
+                                metadata={
+                                    "source": summary_path.name,
+                                    "path": str(summary_path),
+                                    "index_file": True,
+                                },
+                            )
+                        ],
+                        source="archive",
+                    ),
+                )
+                indexed = store_result.stored > 0
+            else:
+                indexed = await self.memory_service.index_file(user_id, session_id, summary_path, force=True)
             if not indexed:
                 raise RuntimeError("summary embedding/indexing did not produce any memory entries")
+            if memory_hub is not None and memory_ctx is not None:
+                await memory_hub.on_session_archived(
+                    memory_ctx,
+                    SessionArchived(
+                        session_id=session_id,
+                        archive_summary=str(summary),
+                        session_memory_path=None,
+                    ),
+                )
         except Exception as exc:  # pragma: no cover - covered via service tests
             await self._record_failure(session_id, exc)
             return

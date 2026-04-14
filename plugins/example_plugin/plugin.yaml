@@ -1,0 +1,31 @@
+id: example_plugin
+enabled: false
+required: false
+version: 0.1.0
+description: Reference plugin that logs non-memory Skitter hook payloads.
+entrypoint: example_plugin:register
+capabilities:
+  hooks:
+    - server.started
+    - server.stopping
+    - session.started
+    - run.started
+    - run.finished
+    - tool_call.started
+    - tool_call.finished
+    - tool_call.failed
+    - llm.before_call
+    - llm.after_call
+config_schema:
+  type: object
+  properties:
+    logger_name:
+      type: string
+    log_level:
+      type: string
+    priority:
+      type: integer
+config:
+  logger_name: skitter.plugins.example_plugin
+  log_level: debug
+  priority: 100

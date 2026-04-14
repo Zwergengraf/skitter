@@ -132,7 +132,12 @@ async def delete_profile(
         raise HTTPException(status_code=404, detail="Profile not found")
     owner_user_id = _profile_owner_user_id(request, current)
     try:
-        deleted = await profile_service.delete_profile(repo, owner_user_id, current.slug)
+        deleted = await profile_service.delete_profile(
+            repo,
+            owner_user_id,
+            current.slug,
+            memory_hub=getattr(request.app.state, "memory_hub", None),
+        )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc) or "Invalid request") from exc
     if not deleted:

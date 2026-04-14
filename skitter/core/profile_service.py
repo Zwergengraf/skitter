@@ -7,7 +7,8 @@ from pathlib import Path
 from ..data.models import AgentProfile
 from ..data.repositories import Repository
 from .llm import resolve_model_name
-from .profiles import DEFAULT_AGENT_PROFILE_NAME, DEFAULT_AGENT_PROFILE_SLUG, normalize_profile_slug
+from .memory_provider import MemoryForgetRequest, MemoryForgetSelector
+from .profiles import DEFAULT_AGENT_PROFILE_NAME, DEFAULT_AGENT_PROFILE_SLUG, normalize_profile_slug, private_profile_scope_id
 from .transport_accounts import discord_surface_kind
 from .workspace import ensure_profile_workspace, profile_workspace_root
 
@@ -271,7 +272,7 @@ class ProfileService:
         ensure_profile_workspace(user_id, updated.slug)
         return updated
 
-    async def delete_profile(self, repo: Repository, user_id: str, slug: str) -> bool:
+    async def delete_profile(self, repo: Repository, user_id: str, slug: str, *, memory_hub=None) -> bool:
         profile = await repo.get_agent_profile_by_slug(user_id, slug)
         if profile is None:
             raise ValueError("Profile not found.")
@@ -280,6 +281,26 @@ class ProfileService:
             raise ValueError("The default profile cannot be deleted.")
         if profile.status != "archived":
             raise ValueError("Only archived profiles can be deleted.")
+        if memory_hub is not None:
+            ctx = memory_hub.context_for(
+                user_id=user_id,
+                agent_profile_id=profile.id,
+                agent_profile_slug=profile.slug,
+                origin="profile_delete",
+                scope_type="private",
+                scope_id=private_profile_scope_id(profile.id),
+            )
+            await memory_hub.forget(
+                ctx,
+                MemoryForgetRequest(
+                    selector=MemoryForgetSelector(
+                        user_id=user_id,
+                        agent_profile_id=profile.id,
+                        all_for_profile=True,
+                    ),
+                    include_builtin=False,
+                ),
+            )
         deleted = await repo.delete_agent_profile(profile.id)
         if deleted:
             self._delete_profile_workspace(user_id=user_id, profile_slug=profile.slug)

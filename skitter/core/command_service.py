@@ -241,6 +241,7 @@ class CommandService:
                 user.id,
                 query,
                 agent_profile_id=profile.id,
+                agent_profile_slug=profile.slug,
                 top_k=5,
             )
             return CommandExecutionResult(

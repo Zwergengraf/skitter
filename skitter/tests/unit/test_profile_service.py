@@ -111,6 +111,20 @@ class _DeleteProfileRepo:
         return False
 
 
+class _MemoryHubStub:
+    def __init__(self) -> None:
+        self.contexts = []
+        self.requests = []
+
+    def context_for(self, **kwargs):
+        self.contexts.append(kwargs)
+        return kwargs
+
+    async def forget(self, ctx, request):
+        self.requests.append((ctx, request))
+        return SimpleNamespace(deleted=3, errors={}, unsupported=False)
+
+
 @pytest.mark.asyncio
 async def test_ensure_default_profile_creates_workspace_from_skeleton(
     monkeypatch: pytest.MonkeyPatch,
@@ -272,3 +286,25 @@ async def test_delete_archived_profile_removes_workspace(
     assert deleted is True
     assert repo.deleted_ids == ["profile-scratch"]
     assert not workspace.exists()
+
+
+@pytest.mark.asyncio
+async def test_delete_archived_profile_forgets_external_memory_before_delete(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    _configure_workspace(monkeypatch, tmp_path)
+    repo = _DeleteProfileRepo()
+    memory_hub = _MemoryHubStub()
+
+    workspace = profile_workspace_root("user-1", "scratch")
+    workspace.mkdir(parents=True, exist_ok=True)
+
+    deleted = await profile_service.delete_profile(repo, "user-1", "scratch", memory_hub=memory_hub)
+
+    assert deleted is True
+    assert memory_hub.contexts[0]["agent_profile_id"] == "profile-scratch"
+    assert memory_hub.contexts[0]["agent_profile_slug"] == "scratch"
+    assert memory_hub.requests[0][1].selector.all_for_profile is True
+    assert memory_hub.requests[0][1].include_builtin is False
+    assert repo.deleted_ids == ["profile-scratch"]

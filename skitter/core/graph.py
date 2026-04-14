@@ -32,8 +32,14 @@ from ..tools.sandbox_client import ToolRunnerClient
 from ..data.db import SessionLocal
 from ..data.models import SCHEDULED_JOB_MODEL_MAIN
 from ..data.repositories import Repository
-from .embeddings import EmbeddingsClient
-from .memory_service import MemoryService
+from .memory_hub import MemoryHub
+from .memory_provider import (
+    MemoryForgetRequest,
+    MemoryForgetSelector,
+    MemoryItem,
+    MemoryStoreRequest,
+)
+from .plugins.hooks import HookBus
 from .workspace import user_workspace_root
 from .secrets import SecretsManager
 from .mcp import MCPError, extract_mcp_text, mcp_registry
@@ -193,7 +199,7 @@ def current_user_id() -> str:
     return _user_id()
 
 
-async def _maybe_approve(
+async def _request_tool_approval(
     tool_name: str,
     payload: dict,
     approval_service: ToolApprovalService | None,
@@ -245,6 +251,8 @@ def build_graph(
     job_service=None,
     event_bus=None,
     discord_mention_service=None,
+    memory_hub: MemoryHub | None = None,
+    hook_bus: HookBus | None = None,
     model_name: str | None = None,
     purpose: str = "main",
     include_subagent_tools: bool = True,
@@ -252,8 +260,8 @@ def build_graph(
 ):
     client = ToolRunnerClient()
     policy = ToolApprovalPolicy()
-    embedder = EmbeddingsClient()
-    memory_service = MemoryService(embedder=embedder)
+    active_memory_hub = memory_hub or MemoryHub()
+    active_hook_bus = hook_bus or getattr(active_memory_hub, "hook_bus", None)
     worker_model_name = model_name or resolve_model_name(None, purpose="main")
     subagent_service: SubAgentService | None = None
     if include_subagent_tools:
@@ -264,6 +272,8 @@ def build_graph(
                 job_service=None,
                 event_bus=event_bus,
                 discord_mention_service=discord_mention_service,
+                memory_hub=active_memory_hub,
+                hook_bus=active_hook_bus,
                 model_name=worker_model,
                 purpose="main",
                 include_subagent_tools=False,
@@ -570,6 +580,81 @@ def build_graph(
             "is_user_default": row.id == user_default_id,
         }
 
+    def _tool_hook_payload(
+        tool_name: str | None,
+        payload: dict[str, Any] | None = None,
+        *,
+        tool_run_id: str | None = None,
+        status: str | None = None,
+        output: dict[str, Any] | None = None,
+        executor_id: str | None = None,
+    ) -> dict[str, Any]:
+        data: dict[str, Any] = {
+            "tool_name": tool_name,
+            "tool_run_id": tool_run_id,
+            "session_id": _session_id(),
+            "user_id": _user_id(),
+            "run_id": _run_id() or None,
+            "message_id": _message_id() or None,
+            "origin": _origin(),
+            "transport_account_key": _transport_account_key() or None,
+            "scope_type": _scope_type(),
+            "scope_id": _scope_id(),
+        }
+        if payload is not None:
+            data["input"] = payload
+        if output is not None:
+            data["output"] = output
+        if status is not None:
+            data["status"] = status
+        if executor_id is not None:
+            data["executor_id"] = executor_id
+        return data
+
+    async def _emit_tool_hook(hook_name: str, payload: dict[str, Any]) -> None:
+        if active_hook_bus is None:
+            return
+        await active_hook_bus.emit(hook_name, payload)
+
+    async def _emit_tool_started(tool_name: str, payload: dict[str, Any], tool_run_id: str) -> None:
+        await _emit_tool_hook(
+            "tool_call.started",
+            _tool_hook_payload(tool_name, payload, tool_run_id=tool_run_id, status="started"),
+        )
+
+    async def _emit_tool_finished(
+        tool_name: str | None,
+        status: str,
+        output: dict[str, Any],
+        *,
+        tool_run_id: str,
+        executor_id: str | None = None,
+    ) -> None:
+        hook_name = "tool_call.failed" if status in {"failed", "denied"} else "tool_call.finished"
+        await _emit_tool_hook(
+            hook_name,
+            _tool_hook_payload(
+                tool_name,
+                tool_run_id=tool_run_id,
+                status=status,
+                output=output,
+                executor_id=executor_id,
+            ),
+        )
+
+    def _current_memory_context(source: str):
+        return active_memory_hub.context_for(
+            user_id=_user_id(),
+            agent_profile_id=current_agent_profile_id().strip() or None,
+            agent_profile_slug=current_agent_profile_slug().strip() or None,
+            session_id=_session_id(),
+            run_id=_run_id() or None,
+            origin=source or _origin(),
+            transport_account_key=_transport_account_key() or None,
+            scope_type=_scope_type(),
+            scope_id=_scope_id(),
+        )
+
     async def _create_auto_tool_run(tool_name: str, payload: dict[str, Any]) -> str:
         async with SessionLocal() as session:
             repo = Repository(session)
@@ -595,6 +680,7 @@ def build_graph(
                 transport=_origin(),
                 data={"tool_name": tool_name, "input": payload},
             )
+        await _emit_tool_started(tool_name, payload, tool_run.id)
         return tool_run.id
 
     async def _enforce_tool_budget(tool_name: str, payload: dict[str, Any]) -> str | None:
@@ -646,6 +732,25 @@ def build_graph(
                 transport=_origin(),
                 data={"tool_name": tool_name, "output": output, "status": status},
             )
+        await _emit_tool_finished(tool_name, status, output, tool_run_id=tool_run_id, executor_id=executor_id)
+
+    async def _maybe_approve(
+        tool_name: str,
+        payload: dict,
+        approval_service: ToolApprovalService | None,
+        policy: ToolApprovalPolicy,
+    ) -> ApprovalDecision:
+        decision = await _request_tool_approval(tool_name, payload, approval_service, policy)
+        if decision.approved:
+            await _emit_tool_started(tool_name, payload, decision.tool_run_id)
+        else:
+            await _emit_tool_finished(
+                tool_name,
+                "denied",
+                {"error": "Request was denied by the user."},
+                tool_run_id=decision.tool_run_id,
+            )
+        return decision
 
     async def _fail_untracked_call(tool_name: str, payload: dict[str, Any], message: str) -> str:
         tool_run_id = await _create_auto_tool_run(tool_name, payload)
@@ -2118,16 +2223,164 @@ def build_graph(
             await _complete_tool_run(tool_run_id, "failed", {"error": "query is required"})
             return "memory_search error: query is required"
         try:
-            results = await memory_service.search(
+            results = await active_memory_hub.search(
                 _user_id(),
                 query,
                 top_k,
                 agent_profile_id=current_agent_profile_id().strip() or None,
+                agent_profile_slug=current_agent_profile_slug().strip() or None,
+                session_id=_session_id(),
+                run_id=_run_id() or None,
+                origin=_origin(),
+                transport_account_key=_transport_account_key() or None,
+                scope_type=_scope_type(),
+                scope_id=_scope_id(),
+                source="tool",
             )
         except Exception as exc:
             await _complete_tool_run(tool_run_id, "failed", {"error": str(exc)})
             return f"memory_search error: {exc}"
         output = {"query": query, "results": results}
+        await _complete_tool_run(tool_run_id, "completed", output)
+        return json.dumps(output)
+
+    @tool("memory_remember")
+    async def memory_remember(
+        content: str,
+        kind: str = "fact",
+        tags: Optional[list[str]] = None,
+        importance: Optional[float] = None,
+        confidence: Optional[float] = None,
+    ) -> str:
+        """Store a durable memory for the active profile.
+
+        Use this only when the user explicitly asks Skitter to remember
+        something, or when a stable preference, decision, or open loop is
+        clearly worth keeping across future sessions.
+        """
+        normalized_tags = [str(tag).strip() for tag in (tags or []) if str(tag).strip()]
+        payload: dict[str, Any] = {
+            "content": content,
+            "kind": kind,
+            "tags": normalized_tags,
+            "importance": importance,
+            "confidence": confidence,
+        }
+        budget_message = await _enforce_tool_budget("memory_remember", payload)
+        if budget_message:
+            return budget_message
+        if not content.strip():
+            return await _fail_untracked_call("memory_remember", payload, "memory_remember error: content is required")
+        decision = await _maybe_approve("memory_remember", payload, approval_service, policy)
+        if not decision.approved:
+            return "memory_remember denied"
+        item = MemoryItem(
+            content=content.strip(),
+            kind=str(kind or "fact").strip() or "fact",
+            importance=importance,
+            confidence=confidence,
+            tags=normalized_tags,
+            source="tool",
+            metadata={
+                "source": "memory_remember",
+                "tool": "memory_remember",
+            },
+        )
+        try:
+            result = await active_memory_hub.store(
+                _current_memory_context("tool"),
+                MemoryStoreRequest(items=[item], source="tool"),
+            )
+        except Exception as exc:
+            await _complete_tool_run(decision.tool_run_id, "failed", {"error": str(exc)})
+            return f"memory_remember error: {exc}"
+        output = {"stored": result.stored, "errors": result.errors}
+        status = "completed" if result.stored > 0 or not result.errors else "failed"
+        await _complete_tool_run(decision.tool_run_id, status, output)
+        return json.dumps(output)
+
+    @tool("memory_forget")
+    async def memory_forget(
+        all_for_profile: bool = False,
+        provider_id: Optional[str] = None,
+        memory_ids: Optional[list[str]] = None,
+        tags: Optional[list[str]] = None,
+        source: Optional[str] = None,
+        confirm: Optional[str] = None,
+    ) -> str:
+        """Forget memories for the active profile.
+
+        Prefer targeted selectors (`memory_ids`, `tags`, `source`) when a
+        provider supports them. To wipe all memory for the current profile,
+        the user must explicitly request that and the tool call must pass
+        `all_for_profile=true` with `confirm="FORGET_PROFILE_MEMORY"`.
+        """
+        normalized_memory_ids = [str(item).strip() for item in (memory_ids or []) if str(item).strip()]
+        normalized_tags = [str(tag).strip() for tag in (tags or []) if str(tag).strip()]
+        normalized_source = str(source or "").strip() or None
+        normalized_provider_id = str(provider_id or "").strip() or None
+        payload: dict[str, Any] = {
+            "all_for_profile": all_for_profile,
+            "provider_id": normalized_provider_id,
+            "memory_ids": normalized_memory_ids,
+            "tags": normalized_tags,
+            "source": normalized_source,
+        }
+        budget_message = await _enforce_tool_budget("memory_forget", payload)
+        if budget_message:
+            return budget_message
+        if not all_for_profile and not normalized_memory_ids and not normalized_tags and not normalized_source:
+            return await _fail_untracked_call(
+                "memory_forget",
+                payload,
+                "memory_forget error: provide memory_ids, tags, source, or all_for_profile=true",
+            )
+        if all_for_profile and str(confirm or "").strip() != "FORGET_PROFILE_MEMORY":
+            return await _fail_untracked_call(
+                "memory_forget",
+                payload,
+                "memory_forget error: profile-wide forget requires confirm='FORGET_PROFILE_MEMORY'",
+            )
+        decision = await _maybe_approve("memory_forget", payload, approval_service, policy)
+        if not decision.approved:
+            return "memory_forget denied"
+        ctx = _current_memory_context("tool")
+        try:
+            result = await active_memory_hub.forget(
+                ctx,
+                MemoryForgetRequest(
+                    selector=MemoryForgetSelector(
+                        user_id=_user_id(),
+                        agent_profile_id=current_agent_profile_id().strip() or "",
+                        provider_id=normalized_provider_id,
+                        memory_ids=normalized_memory_ids or None,
+                        tags=normalized_tags or None,
+                        source=normalized_source,
+                        all_for_profile=bool(all_for_profile),
+                    )
+                ),
+            )
+        except Exception as exc:
+            await _complete_tool_run(decision.tool_run_id, "failed", {"error": str(exc)})
+            return f"memory_forget error: {exc}"
+        output = {"deleted": result.deleted, "unsupported": result.unsupported, "errors": result.errors}
+        status = "completed" if result.deleted > 0 or result.unsupported or not result.errors else "failed"
+        await _complete_tool_run(decision.tool_run_id, status, output)
+        return json.dumps(output)
+
+    @tool("memory_status")
+    async def memory_status() -> str:
+        """Inspect configured memory providers and background memory sync status."""
+        payload: dict[str, Any] = {}
+        budget_message = await _enforce_tool_budget("memory_status", payload)
+        if budget_message:
+            return budget_message
+        tool_run_id = await _create_auto_tool_run("memory_status", payload)
+        try:
+            output = await active_memory_hub.status(_current_memory_context("tool"))
+        except Exception as exc:
+            await _complete_tool_run(tool_run_id, "failed", {"error": str(exc)})
+            return f"memory_status error: {exc}"
         await _complete_tool_run(tool_run_id, "completed", output)
         return json.dumps(output)
 
@@ -2435,6 +2688,9 @@ def build_graph(
         mcp_list_tools,
         mcp_call,
         memory_search,
+        memory_remember,
+        memory_forget,
+        memory_status,
         web_search,
         web_fetch,
         schedule_create,
