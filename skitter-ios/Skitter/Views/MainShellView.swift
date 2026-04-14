@@ -924,11 +924,7 @@ private struct MessageBubble: View {
             }
             if message.role != .user {
                 Button("Speak Message") {
-                    speaker.speak(
-                        message.shareText,
-                        preferredVoiceIdentifier: settings.effectiveSpeechSynthesisVoiceIdentifier,
-                        preferredLanguageIdentifier: settings.defaultSpeechSynthesisLanguageIdentifier
-                    )
+                    speakWithConfiguredProvider(message.shareText, speaker: speaker, settings: settings, model: model)
                 }
             }
         }
@@ -1427,6 +1423,9 @@ private struct VoiceScreen: View {
         if speaker.isSpeaking {
             return "Speaking reply"
         }
+        if speaker.isPreparingSpeech {
+            return "Preparing reply audio..."
+        }
         if isSendingUtterance || model.isSending {
             return "Waiting for Skitter..."
         }
@@ -1448,6 +1447,9 @@ private struct VoiceScreen: View {
     private var statusTint: Color {
         if speaker.isSpeaking {
             return Color(red: 0.23, green: 0.73, blue: 0.99)
+        }
+        if speaker.isPreparingSpeech {
+            return Color(red: 0.80, green: 0.54, blue: 0.98)
         }
         if isSendingUtterance || model.isSending {
             return Color(red: 0.98, green: 0.70, blue: 0.24)
@@ -1515,9 +1517,9 @@ private struct VoiceScreen: View {
     private var voiceHero: some View {
         VStack(spacing: 18) {
             VoiceOrbView(
-                audioLevel: speechController.audioLevel,
+                audioLevel: speaker.isSpeaking ? speaker.audioLevel : speechController.audioLevel,
                 isListening: speechController.isListening,
-                isWaiting: isSendingUtterance || model.isSending || speechController.isPreparing,
+                isWaiting: isSendingUtterance || model.isSending || speechController.isPreparing || speaker.isPreparingSpeech,
                 isSpeaking: speaker.isSpeaking
             )
             .frame(width: 266, height: 266)
@@ -1552,7 +1554,7 @@ private struct VoiceScreen: View {
                     .disabled(isSendingUtterance || model.isSending)
                 }
 
-                if speaker.isSpeaking {
+                if speaker.isSpeaking || speaker.isPreparingSpeech {
                     Button("Stop Reply") {
                         speaker.stop()
                     }
@@ -1613,16 +1615,12 @@ private struct VoiceScreen: View {
                 .foregroundStyle(.white.opacity(0.86))
 
             HStack(spacing: 12) {
-                Button(speaker.isSpeaking ? "Stop Playback" : "Speak Reply") {
-                    if speaker.isSpeaking {
+                Button(speaker.isSpeaking || speaker.isPreparingSpeech ? "Stop Playback" : "Speak Reply") {
+                    if speaker.isSpeaking || speaker.isPreparingSpeech {
                         speaker.stop()
                     } else if let text = model.latestAssistantMessage?.shareText,
                               !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                        speaker.speak(
-                            text,
-                            preferredVoiceIdentifier: settings.effectiveSpeechSynthesisVoiceIdentifier,
-                            preferredLanguageIdentifier: settings.defaultSpeechSynthesisLanguageIdentifier
-                        )
+                        speakReply(text)
                     }
                 }
                 .buttonStyle(.borderedProminent)
@@ -1663,15 +1661,25 @@ private struct VoiceScreen: View {
             }
 
             VStack(alignment: .leading, spacing: 8) {
-                Text("Reply voice")
+                Text("Speech engine")
                     .font(.subheadline.weight(.medium))
                     .foregroundStyle(.white)
 
-                Button {
-                    showsSpeechVoicePicker = true
+                Menu {
+                    ForEach(SpeechSynthesisProvider.allCases) { provider in
+                        Button {
+                            settings.speechSynthesisProvider = provider
+                        } label: {
+                            if provider == settings.speechSynthesisProvider {
+                                Label(provider.title, systemImage: "checkmark")
+                            } else {
+                                Text(provider.title)
+                            }
+                        }
+                    }
                 } label: {
                     HStack {
-                        Text(selectedSpeechVoiceLabel)
+                        Text(settings.speechSynthesisProvider.title)
                             .lineLimit(1)
                             .truncationMode(.middle)
                         Spacer()
@@ -1684,9 +1692,83 @@ private struct VoiceScreen: View {
                 }
                 .buttonStyle(.plain)
 
-                Text("Siri voices are not exposed to third-party text-to-speech on iOS. Automatic prefers the best installed system voice for your device language.")
+                Text(settings.speechSynthesisProvider == .openAI ? "Uses the OpenAI-compatible speech endpoint configured below." : "Uses installed iOS voices on this device.")
                     .font(.footnote)
                     .foregroundStyle(.white.opacity(0.68))
+            }
+
+            if settings.speechSynthesisProvider == .system {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("Reply voice")
+                        .font(.subheadline.weight(.medium))
+                        .foregroundStyle(.white)
+
+                    Button {
+                        showsSpeechVoicePicker = true
+                    } label: {
+                        HStack {
+                            Text(selectedSpeechVoiceLabel)
+                                .lineLimit(1)
+                                .truncationMode(.middle)
+                            Spacer()
+                            Image(systemName: "chevron.up.chevron.down")
+                                .font(.caption.weight(.semibold))
+                        }
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 10)
+                        .background(Color.white.opacity(0.12), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+                    }
+                    .buttonStyle(.plain)
+
+                    Text("Siri voices are not exposed to third-party text-to-speech on iOS. Automatic prefers the best installed system voice for your device language.")
+                        .font(.footnote)
+                        .foregroundStyle(.white.opacity(0.68))
+                }
+            } else {
+                VStack(alignment: .leading, spacing: 10) {
+                    Text("OpenAI TTS")
+                        .font(.subheadline.weight(.medium))
+                        .foregroundStyle(.white)
+
+                    TextField("https://api.openai.com/v1", text: $settings.openAIBaseURL)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                        .keyboardType(.URL)
+                        .foregroundStyle(.white)
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 10)
+                        .background(Color.white.opacity(0.12), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+
+                    SecureField("OpenAI API key", text: $settings.openAIAPIKey)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                        .foregroundStyle(.white)
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 10)
+                        .background(Color.white.opacity(0.12), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+
+                    HStack(spacing: 10) {
+                        TextField("gpt-4o-mini-tts", text: $settings.openAITTSModel)
+                            .textInputAutocapitalization(.never)
+                            .autocorrectionDisabled()
+                            .foregroundStyle(.white)
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 10)
+                            .background(Color.white.opacity(0.12), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+
+                        TextField("alloy", text: $settings.openAITTSVoice)
+                            .textInputAutocapitalization(.never)
+                            .autocorrectionDisabled()
+                            .foregroundStyle(.white)
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 10)
+                            .background(Color.white.opacity(0.12), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+                    }
+
+                    Text("Base URL may include /v1; Skitter appends /audio/speech when needed.")
+                        .font(.footnote)
+                        .foregroundStyle(.white.opacity(0.68))
+                }
             }
 
             VStack(alignment: .leading, spacing: 8) {
@@ -1838,6 +1920,10 @@ private struct VoiceScreen: View {
         )
     }
 
+    private func speakReply(_ text: String) {
+        speakWithConfiguredProvider(text, speaker: speaker, settings: settings, model: model)
+    }
+
     private func handleAssistantReplyChange(_ newValue: String?) {
         guard didPrimeReplyID else {
             knownReplyID = newValue
@@ -1853,11 +1939,7 @@ private struct VoiceScreen: View {
               !reply.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             return
         }
-        speaker.speak(
-            reply,
-            preferredVoiceIdentifier: settings.effectiveSpeechSynthesisVoiceIdentifier,
-            preferredLanguageIdentifier: settings.defaultSpeechSynthesisLanguageIdentifier
-        )
+        speakReply(reply)
     }
 }
 
@@ -2062,12 +2144,41 @@ private struct SettingsScreen: View {
                     Text("Silence threshold: \(settings.conversationSilenceSeconds, specifier: "%.1f")s")
                 }
 
-                Button {
-                    showsSpeechVoicePicker = true
-                } label: {
-                    LabeledContent("Reply voice", value: selectedSpeechVoiceLabel)
+                Picker("Speech engine", selection: $settings.speechSynthesisProvider) {
+                    ForEach(SpeechSynthesisProvider.allCases) { provider in
+                        Text(provider.title).tag(provider)
+                    }
                 }
-                .buttonStyle(.plain)
+
+                if settings.speechSynthesisProvider == .system {
+                    Button {
+                        showsSpeechVoicePicker = true
+                    } label: {
+                        LabeledContent("Reply voice", value: selectedSpeechVoiceLabel)
+                    }
+                    .buttonStyle(.plain)
+                } else {
+                    TextField("OpenAI base URL", text: $settings.openAIBaseURL)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                        .keyboardType(.URL)
+
+                    SecureField("OpenAI API key", text: $settings.openAIAPIKey)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+
+                    TextField("TTS model", text: $settings.openAITTSModel)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+
+                    TextField("TTS voice", text: $settings.openAITTSVoice)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+
+                    Text("Base URL may include /v1. Skitter uses /audio/speech with PCM streaming, matching the macOS menubar app.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
 
                 Menu {
                     Button {
@@ -2127,9 +2238,11 @@ private struct SettingsScreen: View {
                     LabeledContent("Recognition language", value: selectedRecognitionLanguageLabel)
                 }
 
-                Text("Siri voices are not available to third-party text-to-speech on iOS. Automatic uses the best installed system voice for your device language.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                if settings.speechSynthesisProvider == .system {
+                    Text("Siri voices are not available to third-party text-to-speech on iOS. Automatic uses the best installed system voice for your device language.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
             }
 
             Section("About") {
@@ -2329,4 +2442,23 @@ private struct MarkdownText: View {
 
 private func copyToPasteboard(_ text: String) {
     UIPasteboard.general.string = text
+}
+
+private func speakWithConfiguredProvider(
+    _ text: String,
+    speaker: VoicePlaybackController,
+    settings: SettingsStore,
+    model: AppModel
+) {
+    Task {
+        do {
+            try await speaker.speak(text, settings: settings)
+        } catch is CancellationError {
+            return
+        } catch {
+            await MainActor.run {
+                model.errorText = "OpenAI TTS failed: \(error.localizedDescription)"
+            }
+        }
+    }
 }
