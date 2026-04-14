@@ -241,6 +241,7 @@ class Settings(BaseSettings):
     providers: list[ProviderConfig] = Field(default_factory=list)
     models: list[ModelConfig] = Field(default_factory=list)
     mcp_servers: list[MCPServerConfig] = Field(default_factory=list)
+    plugins_root: str = Field(default="plugins")
     main_model: list[str] = Field(default_factory=list)
     heartbeat_model: list[str] = Field(default_factory=list)
     generation_max_output_tokens: int = Field(default=32768)
@@ -258,6 +259,10 @@ class Settings(BaseSettings):
     embeddings_target_chunk_chars: int = Field(default=600)
     embeddings_max_chunk_chars: int = Field(default=800)
     memory_max_distance: float = Field(default=0.7)
+    memory_external_provider: str = Field(default="")
+    memory_context_timeout_seconds: float = Field(default=0.75)
+    memory_recall_timeout_seconds: float = Field(default=5.0)
+    memory_store_timeout_seconds: float = Field(default=5.0)
 
     brave_api_key: str = Field(default="")
     brave_api_base: str = Field(default="https://api.search.brave.com/res/v1/web/search")
@@ -297,6 +302,7 @@ class Settings(BaseSettings):
     sandbox_connect_retries: int = Field(default=5)
     sandbox_connect_backoff: float = Field(default=0.5)
     executors_auto_docker_default: bool = Field(default=True)
+    executors_request_timeout_seconds: float = Field(default=600.0)
 
     max_sub_agents: int = Field(default=4)
     subagent_timeout_seconds: int = Field(default=180)
@@ -307,7 +313,7 @@ class Settings(BaseSettings):
         default=(
             "read,write,edit,apply_patch,list,delete,download,transfer_file,attach_file,"
             "browser,browser_action,notify,screenshot,mouse_move,mouse_click,keyboard_type,keyboard_press,"
-            "sub_agent,sub_agent_batch,job_start,shell,create_secret,mcp_call"
+            "sub_agent,sub_agent_batch,job_start,shell,create_secret,mcp_call,memory_remember,memory_forget"
         )
     )
     approval_secrets_required: str = Field(default="always")
@@ -351,6 +357,11 @@ class Settings(BaseSettings):
     def _normalize_log_level(cls, value: Any) -> str:
         text = str(value or "INFO").strip().upper()
         return text or "INFO"
+
+    @field_validator("plugins_root", mode="before")
+    @classmethod
+    def _normalize_plugins_root(cls, value: Any) -> str:
+        return str(value or "plugins").strip() or "plugins"
 
     @field_validator("web_search_engine", mode="before")
     @classmethod
@@ -426,6 +437,21 @@ if _yaml_config:
         flat["main_model"] = _yaml_config.get("main_model")
     if "heartbeat_model" in _yaml_config:
         flat["heartbeat_model"] = _yaml_config.get("heartbeat_model")
+    plugins_cfg = _yaml_config.get("plugins")
+    if isinstance(plugins_cfg, dict) and "root" in plugins_cfg:
+        flat["plugins_root"] = plugins_cfg.get("root")
+    elif isinstance(_yaml_config.get("plugins_root"), str):
+        flat["plugins_root"] = _yaml_config.get("plugins_root")
+    memory_cfg = _yaml_config.get("memory")
+    if isinstance(memory_cfg, dict):
+        if "external_provider" in memory_cfg:
+            flat["memory_external_provider"] = memory_cfg.get("external_provider")
+        if "context_timeout_seconds" in memory_cfg:
+            flat["memory_context_timeout_seconds"] = memory_cfg.get("context_timeout_seconds")
+        if "recall_timeout_seconds" in memory_cfg:
+            flat["memory_recall_timeout_seconds"] = memory_cfg.get("recall_timeout_seconds")
+        if "store_timeout_seconds" in memory_cfg:
+            flat["memory_store_timeout_seconds"] = memory_cfg.get("store_timeout_seconds")
     mcp_cfg = _yaml_config.get("mcp")
     if isinstance(mcp_cfg, dict) and isinstance(mcp_cfg.get("servers"), list):
         flat["mcp_servers"] = mcp_cfg.get("servers")

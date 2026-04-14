@@ -159,6 +159,52 @@ async def test_resolve_executor_no_default_and_auto_docker_disabled_raises(
 
 
 @pytest.mark.asyncio
+async def test_execute_uses_configured_default_executor_timeout(
+    fake_repo: _FakeRepo,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _FakeNodeHub:
+        def __init__(self) -> None:
+            self.timeout_s: float | None = None
+
+        async def is_online(self, executor_id: str) -> bool:
+            _ = executor_id
+            return True
+
+        async def execute(
+            self,
+            *,
+            executor_id: str,
+            tool: str,
+            session_id: str,
+            payload: dict[str, Any],
+            timeout_s: float,
+        ) -> dict[str, Any]:
+            _ = executor_id, tool, session_id, payload
+            self.timeout_s = timeout_s
+            return {"status": "ok"}
+
+    hub = _FakeNodeHub()
+    router = ExecutorRouter(hub)  # type: ignore[arg-type]
+    row = _ExecutorRow(id="node-1", name="node-1", kind="node")
+    fake_repo.executors_by_id[row.id] = row
+    fake_repo.executors_by_name[row.name] = row
+    monkeypatch.setattr(settings, "executors_request_timeout_seconds", 600.0)
+
+    result, meta = await router.execute(
+        user_id="user-1",
+        session_id="session-1",
+        tool_name="shell",
+        payload={"cmd": "sleep 120"},
+        target_machine="node-1",
+    )
+
+    assert result == {"status": "ok"}
+    assert meta["executor_id"] == "node-1"
+    assert hub.timeout_s == 600.0
+
+
+@pytest.mark.asyncio
 async def test_execute_docker_requires_sandbox_manager(monkeypatch: pytest.MonkeyPatch) -> None:
     router = ExecutorRouter(NodeExecutorHub())
     monkeypatch.setattr(executors_module, "sandbox_manager", None)

@@ -1,5 +1,12 @@
 database:
   url: postgresql+asyncpg://postgres:postgres@postgres:5432/skitter
+plugins:
+  root: plugins
+memory:
+  external_provider: ""
+  context_timeout_seconds: 0.75
+  recall_timeout_seconds: 5
+  store_timeout_seconds: 5
 logging:
   level: INFO
   admin_event_buffer_size: 1000
@@ -165,6 +172,8 @@ sandbox:
 executors:
   # Automatically create Docker sandbox containers (one per user) instead of having to manually set up an executor.
   auto_docker_default: true
+  # Default timeout for executor tool requests such as shell commands.
+  request_timeout_seconds: 600
 cors:
   origins:
   - http://localhost:5173
@@ -191,6 +200,8 @@ tools:
   - shell
   - create_secret
   - mcp_call
+  - memory_remember
+  - memory_forget
   # Default keeps forced approvals for shell calls that use secret_refs.
   # Set this EXACT value to disable the forced secrets-approval override (very unsafe):
   # i_have_read_the_warnings_and_im_probably_doing_something_cursed

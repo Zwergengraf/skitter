@@ -217,6 +217,7 @@ Selection behavior:
 - User default executor is set manually with `/machine`.
 - If no default is set and `executors.auto_docker_default=true`, Skitter can auto-create and use the managed Docker executor.
 - If `executors.auto_docker_default=false`, execution requires an explicit/default non-disabled executor.
+- `executors.request_timeout_seconds` controls the default executor request timeout for tools such as `shell`.
 
 ### Onboard a node executor (recommended path)
 

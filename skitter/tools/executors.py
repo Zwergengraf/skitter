@@ -18,6 +18,12 @@ from .sandbox_manager import sandbox_manager
 
 
 _logger = logging.getLogger(__name__)
+_EXECUTOR_TIMEOUT_GRACE_SECONDS = 5.0
+
+
+def _executor_wait_timeout(timeout_s: float) -> float:
+    grace = min(_EXECUTOR_TIMEOUT_GRACE_SECONDS, max(0.1, float(timeout_s) * 0.05))
+    return max(1.0, float(timeout_s) + grace)
 
 
 @dataclass
@@ -112,7 +118,10 @@ class NodeExecutorHub:
         async with conn.send_lock:
             await conn.websocket.send_json(message)
         try:
-            result = await asyncio.wait_for(future, timeout=max(1.0, timeout_s))
+            result = await asyncio.wait_for(
+                future,
+                timeout=_executor_wait_timeout(timeout_s),
+            )
             if isinstance(result, dict):
                 return result
             return {"status": "ok", "result": result}
@@ -193,10 +202,10 @@ class ExecutorRouter:
         row = await self._resolve_executor(user_id=user_id, session_id=session_id, target_machine=target_machine)
         if row.disabled:
             raise RuntimeError(f"Executor '{row.name}' is disabled.")
-        timeout_s = float(timeout or 60.0)
+        timeout_s = float(timeout if timeout is not None else settings.executors_request_timeout_seconds)
 
         if row.kind == "docker":
-            result = await self._execute_docker(user_id=user_id, session_id=session_id, tool_name=tool_name, payload=payload, timeout=timeout)
+            result = await self._execute_docker(user_id=user_id, session_id=session_id, tool_name=tool_name, payload=payload, timeout=timeout_s)
             async with SessionLocal() as session:
                 repo = Repository(session)
                 await repo.update_executor(
@@ -298,12 +307,13 @@ class ExecutorRouter:
         headers = {"Authorization": f"Bearer {settings.sandbox_api_key}"} if settings.sandbox_api_key else {}
         retries = max(1, int(settings.sandbox_connect_retries))
         backoff = max(0.1, float(settings.sandbox_connect_backoff))
-        async with httpx.AsyncClient(timeout=timeout or 60) as client:
+        request_timeout = float(timeout if timeout is not None else settings.executors_request_timeout_seconds)
+        async with httpx.AsyncClient(timeout=_executor_wait_timeout(request_timeout)) as client:
             for attempt in range(retries):
                 try:
                     response = await client.post(
                         f"{base_url}/execute",
-                        json={"session_id": session_id, "tool": tool_name, "payload": payload},
+                        json={"session_id": session_id, "tool": tool_name, "payload": payload, "timeout_s": request_timeout},
                         headers=headers,
                     )
                     response.raise_for_status()

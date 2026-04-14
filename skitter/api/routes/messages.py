@@ -14,6 +14,7 @@ from ..authz import require_session_access, resolve_target_user_id
 from ..deps import get_repo
 from ..schemas import MessageAttachmentCreate, MessageCreate, MessageOut
 from ...core.models import Attachment, MessageEnvelope
+from ...core.memory_provider import ConversationTurn
 from ...core.workspace import user_workspace_root
 from ...data.repositories import Repository
 
@@ -263,6 +264,35 @@ async def send_message(
     assistant_msg = await repo.add_message(
         payload.session_id, role="assistant", content=response.text, metadata=assistant_meta
     )
+    memory_hub = getattr(request.app.state, "memory_hub", None)
+    if memory_hub is not None:
+        memory_ctx = memory_hub.context_for(
+            user_id=session.user_id,
+            agent_profile_id=getattr(session, "agent_profile_id", None),
+            agent_profile_slug=profile_slug,
+            session_id=payload.session_id,
+            run_id=response.run_id,
+            origin=envelope.origin,
+            transport_account_key=envelope.transport_account_key or None,
+            scope_type=scope_type,
+            scope_id=scope_id,
+        )
+        memory_hub.queue_observe_turn(
+            memory_ctx,
+            ConversationTurn(
+                user_message_id=user_message.id,
+                assistant_message_id=assistant_msg.id,
+                user_text=payload.text,
+                assistant_text=response.text,
+                attachments=serialized_attachments,
+                created_at=assistant_msg.created_at,
+                metadata={
+                    "origin": envelope.origin,
+                    "run_id": response.run_id,
+                    "response_to": envelope.message_id,
+                },
+            ),
+        )
     if session_memory_service is not None:
         await session_memory_service.maybe_schedule_update(
             payload.session_id,

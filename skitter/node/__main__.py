@@ -83,7 +83,7 @@ class NodeConfig:
     keyboard_enabled: bool = False
     heartbeat_seconds: int = 10
     reconnect_seconds: int = 3
-    request_timeout_seconds: int = 300
+    request_timeout_seconds: int = 600
 
 
 def _default_config_path() -> Path:
@@ -485,7 +485,7 @@ def _resolve_config(args: argparse.Namespace) -> tuple[NodeConfig, Path]:
 
     heartbeat_seconds = int(args.heartbeat_seconds or file_data.get("heartbeat_seconds") or 10)
     reconnect_seconds = int(args.reconnect_seconds or file_data.get("reconnect_seconds") or 3)
-    request_timeout_seconds = int(args.request_timeout_seconds or file_data.get("request_timeout_seconds") or 300)
+    request_timeout_seconds = int(args.request_timeout_seconds or file_data.get("request_timeout_seconds") or 600)
     raw_file_tools = None
     capabilities_raw = file_data.get("capabilities")
     if isinstance(capabilities_raw, dict):
@@ -674,8 +674,9 @@ class NodeClient:
                     "session_id": session_id,
                     "tool": tool,
                     "payload": payload,
+                    "timeout_s": timeout_s,
                 },
-                timeout=max(1.0, timeout_s),
+                timeout=max(1.0, timeout_s + min(5.0, max(0.1, timeout_s * 0.05))),
             )
             if response.status_code >= 400:
                 detail = _http_error_detail(response)

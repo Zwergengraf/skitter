@@ -83,6 +83,7 @@ def test_resolve_config_reads_capabilities_tools(tmp_path: Path) -> None:
     assert cfg.api_url == "http://localhost:8000"
     assert cfg.enabled_tools == ("read", "shell")
     assert cfg.notify_enabled is True
+    assert cfg.request_timeout_seconds == 600
 
 
 def test_resolve_config_reads_device_capabilities(tmp_path: Path) -> None:

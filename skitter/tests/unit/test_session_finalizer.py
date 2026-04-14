@@ -98,6 +98,28 @@ class _EventBusStub:
         _ = kwargs
 
 
+class _MemoryHubStub:
+    def __init__(self) -> None:
+        self.contexts = []
+        self.archiving = []
+        self.stores = []
+        self.archived = []
+
+    def context_for(self, **kwargs):
+        self.contexts.append(kwargs)
+        return kwargs
+
+    async def before_session_archive(self, ctx, session_id: str) -> None:
+        self.archiving.append((ctx, session_id))
+
+    async def store(self, ctx, request):
+        self.stores.append((ctx, request))
+        return type("StoreResult", (), {"stored": 1, "errors": {}})()
+
+    async def on_session_archived(self, ctx, event) -> None:
+        self.archived.append((ctx, event))
+
+
 def _patch_repo(monkeypatch: pytest.MonkeyPatch, repo: _FakeRepo) -> None:
     token = object()
     monkeypatch.setattr(finalizer_module, "SessionLocal", lambda: _SessionCtx(token))
@@ -146,6 +168,49 @@ async def test_session_finalizer_completes_summary_and_indexes(
     summary_file = tmp_path / "user-1" / "memory" / "session-summaries" / "2026-03-25.md"
     assert summary_file.read_text(encoding="utf-8") == "# Session Summary (session-1)\n\nsummary text\n"
     assert memory.calls == [("user-1", "session-1", summary_file, True)]
+
+
+@pytest.mark.asyncio
+async def test_session_finalizer_routes_archive_store_through_memory_hub(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    row = _SessionRow(
+        id="session-hub",
+        user_id="user-1",
+        created_at=datetime.now(UTC),
+        summary_status="pending",
+        summary_attempts=0,
+    )
+    repo = _FakeRepo(row)
+    _patch_repo(monkeypatch, repo)
+    monkeypatch.setattr(sessions_module, "user_workspace_root", lambda user_id: tmp_path / user_id)
+    monkeypatch.setattr(finalizer_module, "current_summary_date", lambda: date(2026, 3, 25))
+    memory_hub = _MemoryHubStub()
+
+    class _RuntimeStub:
+        event_bus = _EventBusStub()
+
+        async def summarize_session(self, session_id: str, model_name: str | None = None) -> str:
+            _ = session_id, model_name
+            return "summary through hub"
+
+    _RuntimeStub.memory_hub = memory_hub
+    memory = _MemoryStub(fail_once=True)
+    service = SessionFinalizerService(_RuntimeStub(), memory_service=memory)
+
+    handled = await service.run_once()
+
+    assert handled is True
+    assert row.summary_status == "completed"
+    assert memory.calls == []
+    assert memory_hub.archiving[0][1] == "session-hub"
+    assert len(memory_hub.stores) == 1
+    store_request = memory_hub.stores[0][1]
+    assert store_request.source == "archive"
+    assert store_request.items[0].metadata["index_file"] is True
+    assert store_request.items[0].metadata["source"] == "2026-03-25.md"
+    assert memory_hub.archived[0][1].archive_summary == "summary through hub"
 
 
 @pytest.mark.asyncio
