@@ -37,6 +37,14 @@ final class AppModel: ObservableObject {
     private var isSceneActive = true
     private var isChatVisible = true
 
+    private var isAssistantReplySurfaceVisible: Bool {
+        guard isSceneActive else { return false }
+        if selectedSection == .voice {
+            return true
+        }
+        return selectedSection == .chat && isChatVisible
+    }
+
     init(settings: SettingsStore, apiClient: APIClient, notificationManager: NotificationManager) {
         self.settings = settings
         self.apiClient = apiClient
@@ -644,7 +652,7 @@ final class AppModel: ObservableObject {
             let newAssistantMessages = newMessages.filter {
                 $0.role == .assistant && !previousAssistantIDs.contains($0.id)
             }
-            if isChatVisible && selectedSection == .chat && isSceneActive {
+            if isAssistantReplySurfaceVisible {
                 unreadCount = 0
             } else if !newAssistantMessages.isEmpty {
                 unreadCount += newAssistantMessages.count

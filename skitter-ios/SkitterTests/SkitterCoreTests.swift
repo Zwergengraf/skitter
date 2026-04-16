@@ -122,10 +122,18 @@ final class SkitterCoreTests: XCTestCase {
 
         let store = SettingsStore(defaults: defaults)
         store.speechSynthesisVoiceIdentifier = "com.apple.voice.compact.de-DE.Anna"
+        store.speechSynthesisProvider = .openAI
+        store.openAIBaseURL = "https://tts.example.com/v1"
+        store.openAITTSModel = "gpt-4o-mini-tts"
+        store.openAITTSVoice = "verse"
 
         let reloaded = SettingsStore(defaults: defaults)
         XCTAssertEqual(reloaded.speechSynthesisVoiceIdentifier, "com.apple.voice.compact.de-DE.Anna")
         XCTAssertEqual(reloaded.effectiveSpeechSynthesisVoiceIdentifier, "com.apple.voice.compact.de-DE.Anna")
+        XCTAssertEqual(reloaded.speechSynthesisProvider, .openAI)
+        XCTAssertEqual(reloaded.openAIBaseURL, "https://tts.example.com/v1")
+        XCTAssertEqual(reloaded.openAITTSModel, "gpt-4o-mini-tts")
+        XCTAssertEqual(reloaded.openAITTSVoice, "verse")
     }
 }
 

@@ -1,6 +1,22 @@
 import Foundation
 import Security
 
+enum SpeechSynthesisProvider: String, CaseIterable, Identifiable {
+    case system
+    case openAI
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .system:
+            return "System Voice"
+        case .openAI:
+            return "OpenAI TTS"
+        }
+    }
+}
+
 @MainActor
 final class SettingsStore: ObservableObject {
     @Published var apiURL: String {
@@ -45,6 +61,36 @@ final class SettingsStore: ObservableObject {
         }
     }
 
+    @Published var speechSynthesisProvider: SpeechSynthesisProvider {
+        didSet {
+            defaults.set(speechSynthesisProvider.rawValue, forKey: Keys.speechSynthesisProvider)
+        }
+    }
+
+    @Published var openAIBaseURL: String {
+        didSet {
+            defaults.set(openAIBaseURL, forKey: Keys.openAIBaseURL)
+        }
+    }
+
+    @Published var openAIAPIKey: String {
+        didSet {
+            persistOpenAIAPIKey(openAIAPIKey)
+        }
+    }
+
+    @Published var openAITTSModel: String {
+        didSet {
+            defaults.set(openAITTSModel, forKey: Keys.openAITTSModel)
+        }
+    }
+
+    @Published var openAITTSVoice: String {
+        didSet {
+            defaults.set(openAITTSVoice, forKey: Keys.openAITTSVoice)
+        }
+    }
+
     @Published var speaksReplies: Bool {
         didSet {
             defaults.set(speaksReplies, forKey: Keys.speaksReplies)
@@ -66,6 +112,10 @@ final class SettingsStore: ObservableObject {
         static let preferredVoiceModel = "ios.preferred_voice_model"
         static let speechRecognitionLocaleIdentifier = "ios.speech_recognition_locale_identifier"
         static let speechSynthesisVoiceIdentifier = "ios.speech_synthesis_voice_identifier"
+        static let speechSynthesisProvider = "ios.speech_synthesis_provider"
+        static let openAIBaseURL = "ios.openai_base_url"
+        static let openAITTSModel = "ios.openai_tts_model"
+        static let openAITTSVoice = "ios.openai_tts_voice"
         static let speaksReplies = "ios.speaks_replies"
         static let hasPromptedForNotifications = "ios.has_prompted_for_notifications"
     }
@@ -73,6 +123,7 @@ final class SettingsStore: ObservableObject {
     private enum KeychainKeys {
         static let service = "io.skitter.ios"
         static let account = "api-token"
+        static let openAIAPIKeyAccount = "openai-api-key"
     }
 
     init(defaults: UserDefaults = .standard) {
@@ -85,6 +136,13 @@ final class SettingsStore: ObservableObject {
         self.preferredVoiceModel = defaults.string(forKey: Keys.preferredVoiceModel) ?? ""
         self.speechRecognitionLocaleIdentifier = defaults.string(forKey: Keys.speechRecognitionLocaleIdentifier) ?? ""
         self.speechSynthesisVoiceIdentifier = defaults.string(forKey: Keys.speechSynthesisVoiceIdentifier) ?? ""
+        self.speechSynthesisProvider = SpeechSynthesisProvider(
+            rawValue: defaults.string(forKey: Keys.speechSynthesisProvider) ?? ""
+        ) ?? .system
+        self.openAIBaseURL = defaults.string(forKey: Keys.openAIBaseURL) ?? "https://api.openai.com/v1"
+        self.openAIAPIKey = Self.readToken(service: KeychainKeys.service, account: KeychainKeys.openAIAPIKeyAccount) ?? ""
+        self.openAITTSModel = defaults.string(forKey: Keys.openAITTSModel) ?? "gpt-4o-mini-tts"
+        self.openAITTSVoice = defaults.string(forKey: Keys.openAITTSVoice) ?? "alloy"
         self.speaksReplies = defaults.object(forKey: Keys.speaksReplies) as? Bool ?? true
         self.hasPromptedForNotifications = defaults.bool(forKey: Keys.hasPromptedForNotifications)
     }
@@ -121,6 +179,15 @@ final class SettingsStore: ObservableObject {
             Self.deleteToken(service: KeychainKeys.service, account: KeychainKeys.account)
         } else {
             Self.writeToken(cleaned, service: KeychainKeys.service, account: KeychainKeys.account)
+        }
+    }
+
+    private func persistOpenAIAPIKey(_ token: String) {
+        let cleaned = token.trimmingCharacters(in: .whitespacesAndNewlines)
+        if cleaned.isEmpty {
+            Self.deleteToken(service: KeychainKeys.service, account: KeychainKeys.openAIAPIKeyAccount)
+        } else {
+            Self.writeToken(cleaned, service: KeychainKeys.service, account: KeychainKeys.openAIAPIKeyAccount)
         }
     }
 
