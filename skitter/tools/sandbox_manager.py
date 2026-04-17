@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
 import os
 import shutil
@@ -19,6 +20,9 @@ from ..core.profile_context import current_agent_profile_slug
 from ..core.profiles import DEFAULT_AGENT_PROFILE_SLUG
 from ..core.workspace import ensure_profile_workspace, host_profile_workspace_root
 
+_MAX_DOCKER_DNS_LABEL_LENGTH = 63
+_DOCKER_NAME_HASH_LENGTH = 10
+
 
 @dataclass
 class SandboxInfo:
@@ -28,6 +32,20 @@ class SandboxInfo:
     name: str
     base_url: str
     last_activity: datetime
+
+
+def _docker_dns_label(value: str, *, max_length: int = _MAX_DOCKER_DNS_LABEL_LENGTH) -> str:
+    raw = str(value or "").strip()
+    label = "".join(ch.lower() if ch.isascii() and ch.isalnum() else "-" for ch in raw)
+    label = "-".join(part for part in label.split("-") if part)
+    if not label:
+        label = "sandbox"
+    if len(label) <= max_length:
+        return label
+    digest = hashlib.sha1(label.encode("utf-8")).hexdigest()[:_DOCKER_NAME_HASH_LENGTH]
+    prefix_length = max(1, max_length - len(digest) - 1)
+    prefix = label[:prefix_length].rstrip("-") or "sandbox"
+    return f"{prefix}-{digest}"
 
 
 class SandboxManager:
@@ -121,12 +139,8 @@ class SandboxManager:
         self._last_activity.pop(cache_key, None)
 
     def _container_name(self, user_id: str, profile_slug: str | None = None) -> str:
-        safe_id = "".join(ch if ch.isalnum() or ch in ("-", "_") else "-" for ch in user_id)
-        safe_slug = "".join(
-            ch if ch.isalnum() or ch in ("-", "_") else "-"
-            for ch in self._resolve_profile_slug(profile_slug)
-        )
-        return f"{settings.sandbox_container_prefix}-{safe_id}-{safe_slug}"
+        raw_name = f"{settings.sandbox_container_prefix}-{user_id}-{self._resolve_profile_slug(profile_slug)}"
+        return _docker_dns_label(raw_name)
 
     def _ensure_sync(self, user_id: str, profile_slug: str) -> SandboxInfo:
         if self._client is None:
