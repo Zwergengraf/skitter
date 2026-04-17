@@ -27,6 +27,7 @@ struct MarkdownMessageText: View {
 
     private enum Segment: Identifiable {
         case markdown(id: Int, text: AttributedString)
+        case heading(id: Int, level: Int, text: AttributedString)
         case code(id: Int, text: String)
         case table(id: Int, data: TableData)
         case list(id: Int, data: ListData)
@@ -35,6 +36,8 @@ struct MarkdownMessageText: View {
         var id: Int {
             switch self {
             case let .markdown(id, _):
+                return id
+            case let .heading(id, _, _):
                 return id
             case let .code(id, _):
                 return id
@@ -74,6 +77,12 @@ struct MarkdownMessageText: View {
                 case let .markdown(_, text):
                     Text(text)
                         .frame(maxWidth: .infinity, alignment: .leading)
+                case let .heading(_, level, text):
+                    Text(text)
+                        .font(headingFont(level: level))
+                        .fontWeight(.semibold)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.top, level <= 2 ? 4 : 2)
                 case let .code(_, text):
                     Text(text)
                         .font(.system(.body, design: .monospaced))
@@ -168,6 +177,14 @@ struct MarkdownMessageText: View {
                 continue
             }
 
+            if let heading = parseHeadingLine(line) {
+                flushMarkdown()
+                out.append(.heading(id: nextSegmentID, level: heading.level, text: parseInlineMarkdown(heading.text)))
+                nextSegmentID += 1
+                index += 1
+                continue
+            }
+
             if let table = parseTable(lines: lines, startIndex: index) {
                 flushMarkdown()
                 out.append(.table(id: nextSegmentID, data: table.data))
@@ -194,6 +211,48 @@ struct MarkdownMessageText: View {
             return [.markdown(id: 0, text: AttributedString(""))]
         }
         return out
+    }
+
+    private static func parseHeadingLine(_ line: String) -> (level: Int, text: String)? {
+        let leadingWhitespaceCount = line.prefix { $0 == " " || $0 == "\t" }.reduce(0) { partial, char in
+            partial + (char == "\t" ? 4 : 1)
+        }
+        guard leadingWhitespaceCount <= 3 else { return nil }
+
+        let trimmed = line.trimmingCharacters(in: .whitespaces)
+        guard trimmed.hasPrefix("#") else { return nil }
+
+        var level = 0
+        var index = trimmed.startIndex
+        while index < trimmed.endIndex, trimmed[index] == "#", level < 6 {
+            level += 1
+            index = trimmed.index(after: index)
+        }
+        guard level > 0 else { return nil }
+        guard index == trimmed.endIndex || trimmed[index].isWhitespace else { return nil }
+
+        var content = String(trimmed[index...]).trimmingCharacters(in: .whitespaces)
+        if content.hasSuffix("#") {
+            content = content.replacingOccurrences(
+                of: #"\s+#+\s*$"#,
+                with: "",
+                options: .regularExpression
+            )
+        }
+        return (level: level, text: content)
+    }
+
+    private static func parseInlineMarkdown(_ text: String) -> AttributedString {
+        if let parsed = try? AttributedString(
+            markdown: text,
+            options: AttributedString.MarkdownParsingOptions(
+                interpretedSyntax: .inlineOnlyPreservingWhitespace,
+                failurePolicy: .returnPartiallyParsedIfPossible
+            )
+        ) {
+            return parsed
+        }
+        return AttributedString(text)
     }
 
     private static func parseTable(lines: [String], startIndex: Int) -> (data: TableData, nextIndex: Int)? {
@@ -400,16 +459,22 @@ struct MarkdownMessageText: View {
     }
 
     private func inlineMarkdown(_ text: String) -> AttributedString {
-        if let parsed = try? AttributedString(
-            markdown: text,
-            options: AttributedString.MarkdownParsingOptions(
-                interpretedSyntax: .inlineOnlyPreservingWhitespace,
-                failurePolicy: .returnPartiallyParsedIfPossible
-            )
-        ) {
-            return parsed
+        Self.parseInlineMarkdown(text)
+    }
+
+    private func headingFont(level: Int) -> Font {
+        switch level {
+        case 1:
+            return .title3
+        case 2:
+            return .headline
+        case 3:
+            return .subheadline
+        case 4:
+            return .callout
+        default:
+            return .caption
         }
-        return AttributedString(text)
     }
 
     @ViewBuilder
