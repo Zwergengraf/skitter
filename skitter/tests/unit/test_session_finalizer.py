@@ -16,6 +16,7 @@ class _SessionRow:
     id: str
     user_id: str
     created_at: datetime
+    agent_profile_id: str | None = None
     last_model: str | None = None
     model: str | None = None
     summary_status: str | None = None
@@ -24,11 +25,20 @@ class _SessionRow:
     summary_last_error: str | None = None
     summary_path: str | None = None
     summary_completed_at: datetime | None = None
+    session_memory_path: str | None = None
+
+
+@dataclass
+class _ProfileRow:
+    id: str
+    user_id: str
+    slug: str
 
 
 class _FakeRepo:
-    def __init__(self, row: _SessionRow) -> None:
+    def __init__(self, row: _SessionRow, profiles: dict[str, _ProfileRow] | None = None) -> None:
         self.row = row
+        self.profiles = profiles or {}
 
     async def claim_next_session_summary(self) -> _SessionRow | None:
         now = datetime.now(UTC)
@@ -67,6 +77,9 @@ class _FakeRepo:
     async def get_session(self, session_id: str) -> _SessionRow | None:
         return self.row if session_id == self.row.id else None
 
+    async def get_agent_profile(self, profile_id: str) -> _ProfileRow | None:
+        return self.profiles.get(profile_id)
+
 
 class _SessionCtx:
     def __init__(self, token: object) -> None:
@@ -83,10 +96,18 @@ class _SessionCtx:
 class _MemoryStub:
     def __init__(self, *, fail_once: bool = False) -> None:
         self.fail_once = fail_once
-        self.calls: list[tuple[str, str, Path, bool]] = []
+        self.calls: list[tuple[str, str, Path, bool, str | None]] = []
 
-    async def index_file(self, user_id: str, session_id: str | None, path: Path, force: bool = False) -> bool:
-        self.calls.append((user_id, str(session_id), path, force))
+    async def index_file(
+        self,
+        user_id: str,
+        session_id: str | None,
+        path: Path,
+        force: bool = False,
+        *,
+        agent_profile_id: str | None = None,
+    ) -> bool:
+        self.calls.append((user_id, str(session_id), path, force, agent_profile_id))
         if self.fail_once:
             self.fail_once = False
             raise RuntimeError("embed failed")
@@ -167,7 +188,96 @@ async def test_session_finalizer_completes_summary_and_indexes(
     assert row.summary_path == "memory/session-summaries/2026-03-25.md"
     summary_file = tmp_path / "user-1" / "memory" / "session-summaries" / "2026-03-25.md"
     assert summary_file.read_text(encoding="utf-8") == "# Session Summary (session-1)\n\nsummary text\n"
-    assert memory.calls == [("user-1", "session-1", summary_file, True)]
+    assert memory.calls == [("user-1", "session-1", summary_file, True, None)]
+
+
+@pytest.mark.asyncio
+async def test_session_finalizer_uses_agent_profile_workspace_for_archive(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    row = _SessionRow(
+        id="session-profile",
+        user_id="user-1",
+        agent_profile_id="profile-2",
+        created_at=datetime.now(UTC),
+        summary_status="pending",
+        summary_attempts=0,
+    )
+    repo = _FakeRepo(row, {"profile-2": _ProfileRow(id="profile-2", user_id="user-1", slug="work")})
+    _patch_repo(monkeypatch, repo)
+    monkeypatch.setattr(
+        sessions_module,
+        "user_workspace_root",
+        lambda user_id, profile_slug=None: tmp_path / user_id / (profile_slug or "default"),
+    )
+    monkeypatch.setattr(finalizer_module, "current_summary_date", lambda: date(2026, 3, 25))
+
+    class _RuntimeStub:
+        event_bus = _EventBusStub()
+
+        async def summarize_session(self, session_id: str, model_name: str | None = None) -> str:
+            _ = session_id, model_name
+            return "profile summary"
+
+    memory = _MemoryStub()
+    service = SessionFinalizerService(_RuntimeStub(), memory_service=memory)
+
+    handled = await service.run_once()
+
+    assert handled is True
+    assert row.summary_status == "completed"
+    assert row.summary_path == "memory/session-summaries/2026-03-25.md"
+    profile_summary_file = tmp_path / "user-1" / "work" / "memory" / "session-summaries" / "2026-03-25.md"
+    default_summary_file = tmp_path / "user-1" / "default" / "memory" / "session-summaries" / "2026-03-25.md"
+    assert profile_summary_file.read_text(encoding="utf-8") == (
+        "# Session Summary (session-profile)\n\nprofile summary\n"
+    )
+    assert not default_summary_file.exists()
+    assert memory.calls == [("user-1", "session-profile", profile_summary_file, True, "profile-2")]
+
+
+@pytest.mark.asyncio
+async def test_session_finalizer_does_not_fall_back_to_default_when_profile_is_missing(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    row = _SessionRow(
+        id="session-missing-profile",
+        user_id="user-1",
+        agent_profile_id="missing-profile",
+        created_at=datetime.now(UTC),
+        summary_status="pending",
+        summary_attempts=0,
+    )
+    repo = _FakeRepo(row)
+    _patch_repo(monkeypatch, repo)
+    monkeypatch.setattr(
+        sessions_module,
+        "user_workspace_root",
+        lambda user_id, profile_slug=None: tmp_path / user_id / (profile_slug or "default"),
+    )
+    monkeypatch.setattr(finalizer_module, "current_summary_date", lambda: date(2026, 3, 25))
+
+    class _RuntimeStub:
+        event_bus = _EventBusStub()
+
+        async def summarize_session(self, session_id: str, model_name: str | None = None) -> str:
+            _ = session_id, model_name
+            raise AssertionError("summary should not run without a resolvable profile")
+
+    memory = _MemoryStub()
+    service = SessionFinalizerService(_RuntimeStub(), memory_service=memory)
+
+    handled = await service.run_once()
+
+    assert handled is True
+    assert row.summary_status == "pending"
+    assert row.summary_attempts == 1
+    assert row.summary_last_error == "agent profile for session session-missing-profile was not found"
+    default_summary_file = tmp_path / "user-1" / "default" / "memory" / "session-summaries" / "2026-03-25.md"
+    assert not default_summary_file.exists()
+    assert memory.calls == []
 
 
 @pytest.mark.asyncio
@@ -178,13 +288,18 @@ async def test_session_finalizer_routes_archive_store_through_memory_hub(
     row = _SessionRow(
         id="session-hub",
         user_id="user-1",
+        agent_profile_id="profile-hub",
         created_at=datetime.now(UTC),
         summary_status="pending",
         summary_attempts=0,
     )
-    repo = _FakeRepo(row)
+    repo = _FakeRepo(row, {"profile-hub": _ProfileRow(id="profile-hub", user_id="user-1", slug="research")})
     _patch_repo(monkeypatch, repo)
-    monkeypatch.setattr(sessions_module, "user_workspace_root", lambda user_id: tmp_path / user_id)
+    monkeypatch.setattr(
+        sessions_module,
+        "user_workspace_root",
+        lambda user_id, profile_slug=None: tmp_path / user_id / (profile_slug or "default"),
+    )
     monkeypatch.setattr(finalizer_module, "current_summary_date", lambda: date(2026, 3, 25))
     memory_hub = _MemoryHubStub()
 
@@ -204,6 +319,8 @@ async def test_session_finalizer_routes_archive_store_through_memory_hub(
     assert handled is True
     assert row.summary_status == "completed"
     assert memory.calls == []
+    assert memory_hub.contexts[0]["agent_profile_id"] == "profile-hub"
+    assert memory_hub.contexts[0]["agent_profile_slug"] == "research"
     assert memory_hub.archiving[0][1] == "session-hub"
     assert len(memory_hub.stores) == 1
     store_request = memory_hub.stores[0][1]
@@ -211,6 +328,103 @@ async def test_session_finalizer_routes_archive_store_through_memory_hub(
     assert store_request.items[0].metadata["index_file"] is True
     assert store_request.items[0].metadata["source"] == "2026-03-25.md"
     assert memory_hub.archived[0][1].archive_summary == "summary through hub"
+    assert memory_hub.archived[0][1].session_memory_path == "memory/session-state/session-hub.md"
+
+
+@pytest.mark.asyncio
+async def test_session_finalizer_deletes_session_memory_sidecar_after_success(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    row = _SessionRow(
+        id="session-sidecar",
+        user_id="user-1",
+        agent_profile_id="profile-sidecar",
+        created_at=datetime.now(UTC),
+        summary_status="pending",
+        summary_attempts=0,
+        session_memory_path="memory/session-state/session-sidecar.md",
+    )
+    repo = _FakeRepo(
+        row,
+        {"profile-sidecar": _ProfileRow(id="profile-sidecar", user_id="user-1", slug="sidecar-profile")},
+    )
+    _patch_repo(monkeypatch, repo)
+    monkeypatch.setattr(sessions_module, "user_workspace_root", lambda user_id: tmp_path / user_id)
+    monkeypatch.setattr(finalizer_module, "current_summary_date", lambda: date(2026, 3, 25))
+    sidecar_path = tmp_path / "user-1" / "memory" / "session-state" / "session-sidecar.md"
+    sidecar_path.parent.mkdir(parents=True, exist_ok=True)
+    sidecar_path.write_text("temporary session state", encoding="utf-8")
+    captured_profile_slugs: list[str | None] = []
+
+    def _current_session_memory_path(user_id: str, session_id: str, profile_slug: str | None = None) -> Path:
+        _ = user_id, session_id
+        captured_profile_slugs.append(profile_slug)
+        return sidecar_path
+
+    monkeypatch.setattr(
+        finalizer_module,
+        "current_session_memory_path",
+        _current_session_memory_path,
+    )
+
+    class _RuntimeStub:
+        event_bus = _EventBusStub()
+
+        async def summarize_session(self, session_id: str, model_name: str | None = None) -> str:
+            _ = session_id, model_name
+            return "summary text"
+
+    service = SessionFinalizerService(_RuntimeStub(), memory_service=_MemoryStub())
+
+    handled = await service.run_once()
+
+    assert handled is True
+    assert row.summary_status == "completed"
+    assert not sidecar_path.exists()
+    assert captured_profile_slugs == ["sidecar-profile"]
+
+
+@pytest.mark.asyncio
+async def test_session_finalizer_keeps_session_memory_sidecar_on_failure(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    row = _SessionRow(
+        id="session-sidecar-fail",
+        user_id="user-1",
+        created_at=datetime.now(UTC),
+        summary_status="pending",
+        summary_attempts=0,
+        session_memory_path="memory/session-state/session-sidecar-fail.md",
+    )
+    repo = _FakeRepo(row)
+    _patch_repo(monkeypatch, repo)
+    monkeypatch.setattr(sessions_module, "user_workspace_root", lambda user_id: tmp_path / user_id)
+    monkeypatch.setattr(finalizer_module, "current_summary_date", lambda: date(2026, 3, 25))
+    sidecar_path = tmp_path / "user-1" / "memory" / "session-state" / "session-sidecar-fail.md"
+    sidecar_path.parent.mkdir(parents=True, exist_ok=True)
+    sidecar_path.write_text("temporary session state", encoding="utf-8")
+    monkeypatch.setattr(
+        finalizer_module,
+        "current_session_memory_path",
+        lambda user_id, session_id, profile_slug=None: sidecar_path,
+    )
+
+    class _RuntimeStub:
+        event_bus = _EventBusStub()
+
+        async def summarize_session(self, session_id: str, model_name: str | None = None) -> str:
+            _ = session_id, model_name
+            return "summary text"
+
+    service = SessionFinalizerService(_RuntimeStub(), memory_service=_MemoryStub(fail_once=True))
+
+    handled = await service.run_once()
+
+    assert handled is True
+    assert row.summary_status == "pending"
+    assert sidecar_path.exists()
 
 
 @pytest.mark.asyncio
