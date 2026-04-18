@@ -10,6 +10,7 @@ from ..data.db import SessionLocal
 from ..data.repositories import Repository
 from .memory_provider import MemoryItem, MemoryStoreRequest, SessionArchived
 from .memory_service import MemoryService
+from .session_memory import current_session_memory_path, session_memory_relative_path
 from .sessions import current_summary_date, session_summary_relative_path, write_session_summary_file
 
 
@@ -74,6 +75,10 @@ class SessionFinalizerService:
             or str(getattr(session_row, "model", "") or "").strip()
             or None
         )
+        session_memory_relative = (
+            str(getattr(session_row, "session_memory_path", "") or "").strip()
+            or session_memory_relative_path(session_id).as_posix()
+        )
         await self.runtime.event_bus.emit_admin(
             kind="session.summary_started",
             level="info",
@@ -83,23 +88,31 @@ class SessionFinalizerService:
             user_id=user_id,
             data={"model": model_name},
         )
-        memory_hub = getattr(self.runtime, "memory_hub", None)
         agent_profile_id = str(getattr(session_row, "agent_profile_id", "") or "").strip()
-        memory_ctx = None
-        if memory_hub is not None:
-            memory_ctx = memory_hub.context_for(
-                user_id=user_id,
-                agent_profile_id=agent_profile_id or None,
-                session_id=session_id,
-                origin="archive",
-                scope_type=str(getattr(session_row, "scope_type", "private") or "private"),
-                scope_id=str(getattr(session_row, "scope_id", "") or ""),
-            )
-            await memory_hub.before_session_archive(memory_ctx, session_id)
         try:
+            agent_profile_slug = await self._resolve_agent_profile_slug(session_row)
+            memory_hub = getattr(self.runtime, "memory_hub", None)
+            memory_ctx = None
+            if memory_hub is not None:
+                memory_ctx = memory_hub.context_for(
+                    user_id=user_id,
+                    agent_profile_id=agent_profile_id or None,
+                    agent_profile_slug=agent_profile_slug,
+                    session_id=session_id,
+                    origin="archive",
+                    scope_type=str(getattr(session_row, "scope_type", "private") or "private"),
+                    scope_id=str(getattr(session_row, "scope_id", "") or ""),
+                )
+                await memory_hub.before_session_archive(memory_ctx, session_id)
             summary_date = current_summary_date()
             summary = await self.runtime.summarize_session(session_id, model_name=model_name)
-            summary_path, _ = write_session_summary_file(user_id, session_id, summary, target_date=summary_date)
+            summary_path, _ = write_session_summary_file(
+                user_id,
+                session_id,
+                summary,
+                profile_slug=agent_profile_slug,
+                target_date=summary_date,
+            )
             if memory_hub is not None and memory_ctx is not None:
                 store_result = await memory_hub.store(
                     memory_ctx,
@@ -122,7 +135,13 @@ class SessionFinalizerService:
                 )
                 indexed = store_result.stored > 0
             else:
-                indexed = await self.memory_service.index_file(user_id, session_id, summary_path, force=True)
+                indexed = await self.memory_service.index_file(
+                    user_id,
+                    session_id,
+                    summary_path,
+                    force=True,
+                    agent_profile_id=agent_profile_id or None,
+                )
             if not indexed:
                 raise RuntimeError("summary embedding/indexing did not produce any memory entries")
             if memory_hub is not None and memory_ctx is not None:
@@ -131,7 +150,7 @@ class SessionFinalizerService:
                     SessionArchived(
                         session_id=session_id,
                         archive_summary=str(summary),
-                        session_memory_path=None,
+                        session_memory_path=session_memory_relative,
                     ),
                 )
         except Exception as exc:  # pragma: no cover - covered via service tests
@@ -142,6 +161,7 @@ class SessionFinalizerService:
         async with SessionLocal() as session:
             repo = Repository(session)
             await repo.complete_session_summary(session_id, summary_path=relative_path)
+        deleted_session_memory_path = await self._delete_session_memory_file(session_row, agent_profile_slug)
         self._logger.info("Completed background session finalization for %s", session_id)
         await self.runtime.event_bus.emit_admin(
             kind="session.summary_completed",
@@ -150,8 +170,43 @@ class SessionFinalizerService:
             message="Background session summarization and embedding completed.",
             session_id=session_id,
             user_id=user_id,
-            data={"summary_path": relative_path},
+            data={"summary_path": relative_path, "deleted_session_memory_path": deleted_session_memory_path},
         )
+
+    async def _resolve_agent_profile_slug(self, session_row) -> str | None:
+        agent_profile_id = str(getattr(session_row, "agent_profile_id", "") or "").strip()
+        if not agent_profile_id:
+            return None
+
+        session_id = str(session_row.id)
+        user_id = str(session_row.user_id)
+        async with SessionLocal() as session:
+            repo = Repository(session)
+            profile = await repo.get_agent_profile(agent_profile_id)
+        if profile is None:
+            raise RuntimeError(f"agent profile for session {session_id} was not found")
+
+        profile_user_id = str(getattr(profile, "user_id", "") or "").strip()
+        if profile_user_id and profile_user_id != user_id:
+            raise RuntimeError(f"agent profile for session {session_id} belongs to a different user")
+
+        profile_slug = str(getattr(profile, "slug", "") or "").strip()
+        if not profile_slug:
+            raise RuntimeError(f"agent profile for session {session_id} has no slug")
+        return profile_slug
+
+    async def _delete_session_memory_file(self, session_row, profile_slug: str | None) -> str | None:
+        session_id = str(session_row.id)
+        user_id = str(session_row.user_id)
+        path = current_session_memory_path(user_id, session_id, profile_slug)
+        try:
+            path.unlink()
+        except FileNotFoundError:
+            return None
+        except OSError as exc:
+            self._logger.warning("Failed to delete session memory sidecar for %s: %s", session_id, exc)
+            return None
+        return str(path)
 
     async def _record_failure(self, session_id: str, exc: Exception) -> None:
         message = str(exc).strip() or exc.__class__.__name__
