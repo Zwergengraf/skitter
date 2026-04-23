@@ -64,8 +64,13 @@ async def test_approval_view_has_approve_and_deny_buttons() -> None:
 
 
 def test_build_model_menu_message_mentions_discord_limit_when_truncated() -> None:
-    message = _build_model_menu_message(total_models=40, shown_models=DISCORD_SELECT_OPTION_LIMIT)
+    message = _build_model_menu_message(
+        "provider/main",
+        total_models=40,
+        shown_models=DISCORD_SELECT_OPTION_LIMIT,
+    )
 
+    assert "Active model: `provider/main`" in message
     assert "dropdown below" in message
     assert "first 25 of 40 configured models" in message
 
@@ -94,23 +99,25 @@ async def test_model_select_view_selection_dispatches_model_command_and_disables
 
     class _Message:
         def __init__(self) -> None:
-            self.edits: list[dict[str, object]] = []
+            self.deleted = 0
 
-        async def edit(self, **kwargs) -> None:
-            self.edits.append(kwargs)
+        async def delete(self) -> None:
+            self.deleted += 1
 
     interaction = SimpleNamespace(user=SimpleNamespace(id=123))
+    message = _Message()
     view = ModelSelectView(
         owner_user_id="123",
         model_names=["provider/main", "provider/fast"],
         transport=_Transport(),
     )
-    view.message = _Message()
+    view.message = message
 
     await view.handle_selection(interaction, "provider/fast")
 
     assert calls == [("model", {"model_name": "provider/fast"}, False)]
-    assert view.message.edits == [{"view": None}]
+    assert view.message is None
+    assert message.deleted == 1
 
 
 @pytest.mark.asyncio
