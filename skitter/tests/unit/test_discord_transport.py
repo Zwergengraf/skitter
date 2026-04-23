@@ -7,12 +7,15 @@ import pytest
 from skitter.transports.discord import (
     ApprovalView,
     DISCORD_MESSAGE_CHAR_LIMIT,
+    DISCORD_SELECT_OPTION_LIMIT,
+    ModelSelectView,
     _lookup_outbound_message_metadata,
     _remember_internal_message,
     _remember_outbound_message_metadata,
     _should_ignore_inbound_message,
     _append_status_suffix,
     _build_approval_request_content,
+    _build_model_menu_message,
 )
 
 
@@ -58,6 +61,94 @@ async def test_approval_view_has_approve_and_deny_buttons() -> None:
 
     assert "Approve" in labels
     assert "Deny" in labels
+
+
+def test_build_model_menu_message_mentions_discord_limit_when_truncated() -> None:
+    message = _build_model_menu_message(total_models=40, shown_models=DISCORD_SELECT_OPTION_LIMIT)
+
+    assert "dropdown below" in message
+    assert "first 25 of 40 configured models" in message
+
+
+def test_model_select_view_limits_options_to_discord_max() -> None:
+    transport = SimpleNamespace()
+    models = [f"provider/model-{index}" for index in range(30)]
+
+    view = ModelSelectView(owner_user_id="123", model_names=models, transport=transport)
+    select = view.children[0]
+
+    assert len(view.model_names) == DISCORD_SELECT_OPTION_LIMIT
+    assert len(select.options) == DISCORD_SELECT_OPTION_LIMIT
+    assert select.options[0].value == "provider/model-0"
+    assert select.options[-1].value == "provider/model-24"
+
+
+@pytest.mark.asyncio
+async def test_model_select_view_selection_dispatches_model_command_and_disables_menu() -> None:
+    calls: list[tuple[str, dict | None, bool]] = []
+
+    class _Transport:
+        async def _handle_command(self, interaction, command: str, extra: dict | None = None, ephemeral: bool = False):
+            _ = interaction
+            calls.append((command, extra, ephemeral))
+
+    class _Message:
+        def __init__(self) -> None:
+            self.edits: list[dict[str, object]] = []
+
+        async def edit(self, **kwargs) -> None:
+            self.edits.append(kwargs)
+
+    interaction = SimpleNamespace(user=SimpleNamespace(id=123))
+    view = ModelSelectView(
+        owner_user_id="123",
+        model_names=["provider/main", "provider/fast"],
+        transport=_Transport(),
+    )
+    view.message = _Message()
+
+    await view.handle_selection(interaction, "provider/fast")
+
+    assert calls == [("model", {"model_name": "provider/fast"}, False)]
+    assert view.message.edits == [{"view": None}]
+
+
+@pytest.mark.asyncio
+async def test_model_select_view_rejects_other_users() -> None:
+    calls: list[tuple[str, dict | None, bool]] = []
+
+    class _Transport:
+        async def _handle_command(self, interaction, command: str, extra: dict | None = None, ephemeral: bool = False):
+            _ = interaction
+            calls.append((command, extra, ephemeral))
+
+    class _Response:
+        def __init__(self) -> None:
+            self.messages: list[tuple[str, bool]] = []
+
+        def is_done(self) -> bool:
+            return False
+
+        async def send_message(self, content: str, *, ephemeral: bool = False) -> None:
+            self.messages.append((content, ephemeral))
+
+    interaction = SimpleNamespace(
+        user=SimpleNamespace(id=999),
+        response=_Response(),
+        followup=SimpleNamespace(send=None),
+    )
+    view = ModelSelectView(
+        owner_user_id="123",
+        model_names=["provider/main", "provider/fast"],
+        transport=_Transport(),
+    )
+
+    await view.handle_selection(interaction, "provider/fast")
+
+    assert calls == []
+    assert interaction.response.messages == [
+        ("This model menu belongs to someone else. Run `/model` yourself.", True)
+    ]
 
 
 def test_should_ignore_inbound_message_for_same_bot_user() -> None:

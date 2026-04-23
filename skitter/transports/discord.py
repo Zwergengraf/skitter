@@ -13,6 +13,7 @@ import discord
 from discord import app_commands
 
 from ..core.config import settings
+from ..core.llm import list_models
 from ..data.db import SessionLocal
 from ..data.repositories import Repository
 from ..tools.approval_service import ToolApprovalService
@@ -20,6 +21,7 @@ from ..core.models import Attachment, MessageEnvelope
 from .base import EventHandler, TransportAdapter
 
 DISCORD_MESSAGE_CHAR_LIMIT = 2000
+DISCORD_SELECT_OPTION_LIMIT = 25
 LINK_WRAP_THRESHOLD = 3
 URL_PATTERN = re.compile(r"https?://[^\s<>]+")
 UNWRAPPED_URL_PATTERN = re.compile(r"(?<!<)(https?://[^\s<>]+)(?!>)")
@@ -416,6 +418,92 @@ class UserPromptView(discord.ui.View):
         return _handler
 
 
+def _build_model_menu_message(total_models: int, shown_models: int) -> str:
+    content = "Choose the active model from the dropdown below."
+    if total_models > shown_models:
+        content += (
+            f"\n\nShowing the first {shown_models} of {total_models} configured models "
+            "because Discord select menus support up to 25 options. "
+            "You can still type `/model model_name:<provider/model>` for any hidden model."
+        )
+    return content
+
+
+async def _send_interaction_notice(
+    interaction: discord.Interaction,
+    content: str,
+    *,
+    ephemeral: bool = True,
+) -> None:
+    try:
+        if interaction.response.is_done():
+            await interaction.followup.send(content, ephemeral=ephemeral)
+        else:
+            await interaction.response.send_message(content, ephemeral=ephemeral)
+    except discord.HTTPException:
+        return
+
+
+class ModelSelect(discord.ui.Select):
+    def __init__(self, model_names: list[str]) -> None:
+        options = [discord.SelectOption(label=name, value=name) for name in model_names[:DISCORD_SELECT_OPTION_LIMIT]]
+        super().__init__(
+            placeholder="Choose the active model",
+            min_values=1,
+            max_values=1,
+            options=options,
+        )
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        view = self.view
+        if not isinstance(view, ModelSelectView):
+            await _send_interaction_notice(interaction, "Model menu is no longer available.")
+            return
+        if not self.values:
+            await _send_interaction_notice(interaction, "No model was selected.")
+            return
+        await view.handle_selection(interaction, self.values[0])
+
+
+class ModelSelectView(discord.ui.View):
+    def __init__(
+        self,
+        *,
+        owner_user_id: str,
+        model_names: list[str],
+        transport: "DiscordTransport",
+    ) -> None:
+        super().__init__(timeout=300)
+        self.owner_user_id = str(owner_user_id or "").strip()
+        self.model_names = model_names[:DISCORD_SELECT_OPTION_LIMIT]
+        self.transport = transport
+        self.message: Optional[discord.Message] = None
+        self.add_item(ModelSelect(self.model_names))
+
+    async def on_timeout(self) -> None:
+        if self.message is not None:
+            with contextlib.suppress(discord.HTTPException):
+                await self.message.edit(view=None)
+
+    async def handle_selection(self, interaction: discord.Interaction, model_name: str) -> None:
+        if str(getattr(interaction.user, "id", "")) != self.owner_user_id:
+            await _send_interaction_notice(
+                interaction,
+                "This model menu belongs to someone else. Run `/model` yourself.",
+                ephemeral=True,
+            )
+            return
+        await self.transport._handle_command(
+            interaction,
+            "model",
+            extra={"model_name": model_name},
+            ephemeral=False,
+        )
+        if self.message is not None:
+            with contextlib.suppress(discord.HTTPException):
+                await self.message.edit(view=None)
+
+
 def _discord_sender_metadata(user: discord.abc.User, *, guild_member: object | None = None) -> dict[str, object]:
     display_name = str(getattr(user, "display_name", None) or getattr(user, "name", "") or "").strip()
     username = str(getattr(user, "name", "") or "").strip()
@@ -566,9 +654,12 @@ class DiscordTransport(TransportAdapter):
         async def tools(interaction: discord.Interaction) -> None:
             await self._handle_command(interaction, "tools")
 
-        @self.tree.command(name="model", description="List models or set active model (provider/model)")
+        @self.tree.command(name="model", description="Choose the active model from a dropdown or set it by name")
         async def model(interaction: discord.Interaction, model_name: Optional[str] = None) -> None:
-            await self._handle_command(interaction, "model", extra={"model_name": model_name} if model_name else None)
+            if model_name:
+                await self._handle_command(interaction, "model", extra={"model_name": model_name})
+                return
+            await self._show_model_menu(interaction)
 
         @self.tree.command(name="machine", description="List machines or set default machine")
         async def machine(interaction: discord.Interaction, target_machine: Optional[str] = None) -> None:
@@ -814,6 +905,29 @@ class DiscordTransport(TransportAdapter):
             suffix = "\n\nPlease reply in chat with your answer."
         message = await channel.send(content + suffix)
         _remember_internal_message(message)
+
+    async def _show_model_menu(self, interaction: discord.Interaction) -> None:
+        if self._handler is None:
+            await _send_interaction_notice(interaction, "Handler is not configured.", ephemeral=True)
+            return
+        await self._record_interaction(interaction)
+        models = list_models()
+        if not models:
+            await _send_interaction_notice(interaction, "No models are configured.", ephemeral=True)
+            return
+        model_names = [item.name for item in models]
+        view = ModelSelectView(
+            owner_user_id=str(getattr(interaction.user, "id", "") or ""),
+            model_names=model_names,
+            transport=self,
+        )
+        await interaction.response.send_message(
+            _build_model_menu_message(len(model_names), len(view.model_names)),
+            view=view,
+        )
+        with contextlib.suppress(discord.HTTPException):
+            view.message = await interaction.original_response()
+        _remember_internal_message(view.message)
 
     async def _handle_command(
         self,
