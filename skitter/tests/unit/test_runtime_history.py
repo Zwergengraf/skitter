@@ -366,6 +366,10 @@ class _SessionMemoryRefreshStub:
         return self.content
 
 
+def _history_chat_tokens(runtime: AgentRuntime, history: list[BaseMessage]) -> int:
+    return sum(runtime._chat_message_token_estimate(msg) for msg in history if runtime._is_chat_message(msg))
+
+
 @pytest.mark.asyncio
 async def test_summarize_session_uses_previous_summary_and_skips_tool_chatter(
     monkeypatch,
@@ -429,6 +433,15 @@ async def test_summarize_session_uses_previous_summary_and_skips_tool_chatter(
 @pytest.mark.asyncio
 async def test_compact_history_prefers_session_memory_and_preserves_recent_raw_tail(monkeypatch) -> None:
     runtime = _runtime()
+    history = [
+        SystemMessage(content="Main system", additional_kwargs={"system_prompt": True}),
+        HumanMessage(content="First request", additional_kwargs={"_db_message_id": "m1", "_db_created_at": datetime(2026, 3, 2, 9, 0, tzinfo=UTC).isoformat()}),
+        AIMessage(content="First reply", additional_kwargs={"_db_message_id": "m2", "_db_created_at": datetime(2026, 3, 2, 9, 1, tzinfo=UTC).isoformat()}),
+        HumanMessage(content="Second request", additional_kwargs={"_db_message_id": "m3", "_db_created_at": datetime(2026, 3, 2, 9, 2, tzinfo=UTC).isoformat()}),
+        AIMessage(content="Second reply", additional_kwargs={"_db_message_id": "m4", "_db_created_at": datetime(2026, 3, 2, 9, 3, tzinfo=UTC).isoformat()}),
+        HumanMessage(content="Third request", additional_kwargs={"_db_message_id": "m5", "_db_created_at": datetime(2026, 3, 2, 9, 4, tzinfo=UTC).isoformat()}),
+    ]
+    expected_tokens = _history_chat_tokens(runtime, history)
     row = _RuntimeSessionRow(
         session_memory_message_id="m5",
         session_memory_checkpoint=datetime(2026, 3, 2, 9, 4, tzinfo=UTC),
@@ -438,8 +451,8 @@ async def test_compact_history_prefers_session_memory_and_preserves_recent_raw_t
     token = object()
     monkeypatch.setattr("skitter.core.runtime.SessionLocal", lambda: _RuntimeSessionCtx(token))
     monkeypatch.setattr("skitter.core.runtime.Repository", lambda _session: repo)
-    monkeypatch.setattr(settings, "context_max_input_tokens", 10000)
-    monkeypatch.setattr(settings, "context_compact_every_tokens", 1000)
+    monkeypatch.setattr(settings, "context_max_input_tokens", max(1, expected_tokens - 1))
+    monkeypatch.setattr(settings, "context_compact_every_tokens", 1)
     monkeypatch.setattr(settings, "context_preserve_recent_messages", 2)
     monkeypatch.setattr(settings, "context_preserve_recent_tokens", 2)
     llm = _ContextSummaryLLM("## Current State\n- Waiting for the user's final confirmation.")
@@ -455,15 +468,6 @@ async def test_compact_history_prefers_session_memory_and_preserves_recent_raw_t
     )
     runtime.set_session_memory_service(memory)
 
-    history = [
-        SystemMessage(content="Main system", additional_kwargs={"system_prompt": True}),
-        HumanMessage(content="First request", additional_kwargs={"_db_message_id": "m1", "_db_created_at": datetime(2026, 3, 2, 9, 0, tzinfo=UTC).isoformat()}),
-        AIMessage(content="First reply", additional_kwargs={"_db_message_id": "m2", "_db_created_at": datetime(2026, 3, 2, 9, 1, tzinfo=UTC).isoformat()}),
-        HumanMessage(content="Second request", additional_kwargs={"_db_message_id": "m3", "_db_created_at": datetime(2026, 3, 2, 9, 2, tzinfo=UTC).isoformat()}),
-        AIMessage(content="Second reply", additional_kwargs={"_db_message_id": "m4", "_db_created_at": datetime(2026, 3, 2, 9, 3, tzinfo=UTC).isoformat()}),
-        HumanMessage(content="Third request", additional_kwargs={"_db_message_id": "m5", "_db_created_at": datetime(2026, 3, 2, 9, 4, tzinfo=UTC).isoformat()}),
-    ]
-
     await runtime._compact_history_for_context("session-compact", history, "provider/main")
 
     assert memory.calls == [("session-compact", "provider/main", True)]
@@ -478,7 +482,7 @@ async def test_compact_history_prefers_session_memory_and_preserves_recent_raw_t
     assert history[3].content == "Third request"
     assert repo.saved_summary == "## Current State\n- Waiting for the user's final confirmation."
     assert repo.saved_checkpoint == datetime(2026, 3, 2, 9, 4, tzinfo=UTC)
-    assert row.context_summary_input_tokens == 12000
+    assert row.context_summary_input_tokens == expected_tokens
     final_human = llm.prompts[0][1].content
     assert "Structured session memory:" in final_human
     assert "Waiting for the user's final confirmation." in final_human
@@ -487,6 +491,15 @@ async def test_compact_history_prefers_session_memory_and_preserves_recent_raw_t
 @pytest.mark.asyncio
 async def test_compact_history_falls_back_to_transcript_when_session_memory_boundary_is_missing(monkeypatch) -> None:
     runtime = _runtime()
+    history = [
+        SystemMessage(content="Main system", additional_kwargs={"system_prompt": True}),
+        HumanMessage(content="First request", additional_kwargs={"_db_message_id": "m1", "_db_created_at": datetime(2026, 3, 2, 9, 0, tzinfo=UTC).isoformat()}),
+        AIMessage(content="First reply", additional_kwargs={"_db_message_id": "m2", "_db_created_at": datetime(2026, 3, 2, 9, 1, tzinfo=UTC).isoformat()}),
+        HumanMessage(content="Second request", additional_kwargs={"_db_message_id": "m3", "_db_created_at": datetime(2026, 3, 2, 9, 2, tzinfo=UTC).isoformat()}),
+        AIMessage(content="Second reply", additional_kwargs={"_db_message_id": "m4", "_db_created_at": datetime(2026, 3, 2, 9, 3, tzinfo=UTC).isoformat()}),
+        HumanMessage(content="Third request", additional_kwargs={"_db_message_id": "m5", "_db_created_at": datetime(2026, 3, 2, 9, 4, tzinfo=UTC).isoformat()}),
+    ]
+    expected_tokens = _history_chat_tokens(runtime, history)
     row = _RuntimeSessionRow(
         session_memory_message_id=None,
         session_memory_checkpoint=datetime(2026, 3, 2, 9, 4, tzinfo=UTC),
@@ -496,8 +509,8 @@ async def test_compact_history_falls_back_to_transcript_when_session_memory_boun
     token = object()
     monkeypatch.setattr("skitter.core.runtime.SessionLocal", lambda: _RuntimeSessionCtx(token))
     monkeypatch.setattr("skitter.core.runtime.Repository", lambda _session: repo)
-    monkeypatch.setattr(settings, "context_max_input_tokens", 10000)
-    monkeypatch.setattr(settings, "context_compact_every_tokens", 1000)
+    monkeypatch.setattr(settings, "context_max_input_tokens", max(1, expected_tokens - 1))
+    monkeypatch.setattr(settings, "context_compact_every_tokens", 1)
     monkeypatch.setattr(settings, "context_preserve_recent_messages", 2)
     monkeypatch.setattr(settings, "context_preserve_recent_tokens", 2)
 
@@ -511,15 +524,6 @@ async def test_compact_history_falls_back_to_transcript_when_session_memory_boun
     memory = _SessionMemoryRefreshStub("# Current State\n_State_\n\nPossibly stale notes.")
     runtime.set_session_memory_service(memory)
 
-    history = [
-        SystemMessage(content="Main system", additional_kwargs={"system_prompt": True}),
-        HumanMessage(content="First request", additional_kwargs={"_db_message_id": "m1", "_db_created_at": datetime(2026, 3, 2, 9, 0, tzinfo=UTC).isoformat()}),
-        AIMessage(content="First reply", additional_kwargs={"_db_message_id": "m2", "_db_created_at": datetime(2026, 3, 2, 9, 1, tzinfo=UTC).isoformat()}),
-        HumanMessage(content="Second request", additional_kwargs={"_db_message_id": "m3", "_db_created_at": datetime(2026, 3, 2, 9, 2, tzinfo=UTC).isoformat()}),
-        AIMessage(content="Second reply", additional_kwargs={"_db_message_id": "m4", "_db_created_at": datetime(2026, 3, 2, 9, 3, tzinfo=UTC).isoformat()}),
-        HumanMessage(content="Third request", additional_kwargs={"_db_message_id": "m5", "_db_created_at": datetime(2026, 3, 2, 9, 4, tzinfo=UTC).isoformat()}),
-    ]
-
     await runtime._compact_history_for_context("session-compact", history, "provider/main")
 
     assert memory.calls == [("session-compact", "provider/main", True)]
@@ -531,23 +535,34 @@ async def test_compact_history_falls_back_to_transcript_when_session_memory_boun
 
 
 @pytest.mark.asyncio
-async def test_compact_history_skips_when_input_token_delta_is_below_threshold(monkeypatch) -> None:
+async def test_compact_history_does_not_compact_from_large_provider_prompt_usage_alone(monkeypatch) -> None:
     runtime = _runtime()
-    row = _RuntimeSessionRow(
-        context_summary="Existing compact summary",
-        context_summary_checkpoint=datetime(2026, 3, 2, 9, 2, tzinfo=UTC),
-        context_summary_input_tokens=11000,
-        last_input_tokens=11800,
-    )
+    row = _RuntimeSessionRow(last_input_tokens=12000)
     repo = _RuntimeRepo(row)
     token = object()
     monkeypatch.setattr("skitter.core.runtime.SessionLocal", lambda: _RuntimeSessionCtx(token))
     monkeypatch.setattr("skitter.core.runtime.Repository", lambda _session: repo)
-    monkeypatch.setattr(settings, "context_max_input_tokens", 10000)
-    monkeypatch.setattr(settings, "context_compact_every_tokens", 1000)
+    monkeypatch.setattr(settings, "context_max_input_tokens", 100)
+    monkeypatch.setattr(settings, "context_compact_every_tokens", 10)
     monkeypatch.setattr(settings, "context_preserve_recent_messages", 2)
     monkeypatch.setattr(settings, "context_preserve_recent_tokens", 2)
 
+    history = [
+        SystemMessage(content="Very large system prompt", additional_kwargs={"system_prompt": True}),
+        HumanMessage(content="Hi", additional_kwargs={"_db_message_id": "m1", "_db_created_at": datetime(2026, 3, 2, 9, 3, tzinfo=UTC).isoformat()}),
+        AIMessage(content="Hello", additional_kwargs={"_db_message_id": "m2", "_db_created_at": datetime(2026, 3, 2, 9, 4, tzinfo=UTC).isoformat()}),
+    ]
+
+    await runtime._compact_history_for_context("session-compact", history, "provider/main")
+
+    assert _history_chat_tokens(runtime, history) < 100
+    assert [type(msg).__name__ for msg in history] == ["SystemMessage", "HumanMessage", "AIMessage"]
+    assert repo.saved_summary is None
+
+
+@pytest.mark.asyncio
+async def test_compact_history_skips_when_session_token_delta_is_below_threshold(monkeypatch) -> None:
+    runtime = _runtime()
     history = [
         SystemMessage(content="Main system", additional_kwargs={"system_prompt": True}),
         SystemMessage(
@@ -560,6 +575,21 @@ async def test_compact_history_skips_when_input_token_delta_is_below_threshold(m
         HumanMessage(content="Recent request", additional_kwargs={"_db_message_id": "m1", "_db_created_at": datetime(2026, 3, 2, 9, 3, tzinfo=UTC).isoformat()}),
         AIMessage(content="Recent reply", additional_kwargs={"_db_message_id": "m2", "_db_created_at": datetime(2026, 3, 2, 9, 4, tzinfo=UTC).isoformat()}),
     ]
+    current_tokens = _history_chat_tokens(runtime, history)
+    row = _RuntimeSessionRow(
+        context_summary="Existing compact summary",
+        context_summary_checkpoint=datetime(2026, 3, 2, 9, 2, tzinfo=UTC),
+        context_summary_input_tokens=current_tokens,
+        last_input_tokens=11800,
+    )
+    repo = _RuntimeRepo(row)
+    token = object()
+    monkeypatch.setattr("skitter.core.runtime.SessionLocal", lambda: _RuntimeSessionCtx(token))
+    monkeypatch.setattr("skitter.core.runtime.Repository", lambda _session: repo)
+    monkeypatch.setattr(settings, "context_max_input_tokens", max(1, current_tokens - 1))
+    monkeypatch.setattr(settings, "context_compact_every_tokens", max(2, current_tokens))
+    monkeypatch.setattr(settings, "context_preserve_recent_messages", 2)
+    monkeypatch.setattr(settings, "context_preserve_recent_tokens", 2)
 
     await runtime._compact_history_for_context("session-compact", history, "provider/main")
 

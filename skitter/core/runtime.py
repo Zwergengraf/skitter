@@ -2033,20 +2033,20 @@ class AgentRuntime:
         async with SessionLocal() as session:
             repo = Repository(session)
             session_record = await repo.get_session(session_id)
-        current_context_tokens = max(0, int(getattr(session_record, "last_input_tokens", 0) or 0))
+        chat_indices = [idx for idx, msg in enumerate(history) if self._is_chat_message(msg)]
+        current_transcript_tokens = sum(self._chat_message_token_estimate(history[idx]) for idx in chat_indices)
         compact_threshold = max(1, int(settings.context_max_input_tokens))
-        if current_context_tokens < compact_threshold:
+        if current_transcript_tokens < compact_threshold:
             return
         compact_every = max(1, int(settings.context_compact_every_tokens))
         previous_compact_tokens = max(0, int(getattr(session_record, "context_summary_input_tokens", 0) or 0))
-        chat_indices = [idx for idx, msg in enumerate(history) if self._is_chat_message(msg)]
         summary_indices = [
             idx
             for idx, msg in enumerate(history)
             if isinstance(msg, SystemMessage) and msg.additional_kwargs.get("conversation_summary")
         ]
         has_previous_summary = bool(summary_indices) or bool(getattr(session_record, "context_summary", None))
-        if has_previous_summary and (current_context_tokens - previous_compact_tokens) < compact_every:
+        if has_previous_summary and (current_transcript_tokens - previous_compact_tokens) < compact_every:
             return
         preserve_recent_messages = max(1, int(settings.context_preserve_recent_messages))
         preserve_recent_tokens = max(1, int(settings.context_preserve_recent_tokens))
@@ -2156,7 +2156,7 @@ class AgentRuntime:
                 session_id,
                 new_summary,
                 checkpoint,
-                current_context_tokens,
+                current_transcript_tokens,
             )
 
     async def summarize_session(self, session_id: str, model_name: str | None = None) -> str:

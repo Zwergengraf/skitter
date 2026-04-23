@@ -336,27 +336,23 @@ class SessionMemoryService:
         checkpoint = getattr(session_row, "session_memory_checkpoint", None)
         current_path = current_session_memory_path(user_id, session_id, profile_slug)
         transcript_all = self._render_transcript(messages)
-        current_tokens = rough_token_estimate(transcript_all)
-        current_context_tokens = max(
-            0,
-            int(getattr(session_row, "last_input_tokens", 0) or 0),
-        )
-        previous_context_tokens = max(
+        current_session_tokens = rough_token_estimate(transcript_all)
+        previous_session_tokens = max(
             0,
             int(getattr(session_row, "session_memory_input_tokens", 0) or 0),
         )
         recent_messages = [message for message in messages if checkpoint is None or message.created_at > checkpoint]
         recent_transcript = self._render_transcript(recent_messages)
         recent_tokens = rough_token_estimate(recent_transcript)
-        context_delta_tokens = max(0, current_context_tokens - previous_context_tokens)
+        session_delta_tokens = max(0, current_session_tokens - previous_session_tokens)
 
         should_update = force
         if not should_update:
             if checkpoint is None and not current_path.exists():
                 threshold = max(1, int(settings.session_memory_init_tokens))
-                should_update = current_context_tokens >= threshold
+                should_update = current_session_tokens >= threshold
             else:
-                should_update = context_delta_tokens >= max(1, int(settings.session_memory_update_tokens))
+                should_update = session_delta_tokens >= max(1, int(settings.session_memory_update_tokens))
         if not should_update:
             if current_path.exists():
                 try:
@@ -400,7 +396,7 @@ class SessionMemoryService:
                     session_id,
                     path=relative_path,
                     checkpoint=new_checkpoint,
-                    input_tokens=current_context_tokens,
+                    input_tokens=current_session_tokens,
                     message_id=new_message_id,
                 )
             await self.event_bus.emit_admin(
@@ -413,11 +409,12 @@ class SessionMemoryService:
                 data={
                     "path": relative_path,
                     "force": force,
-                    "current_context_tokens": current_context_tokens,
-                    "previous_context_tokens": previous_context_tokens,
-                    "context_delta_tokens": context_delta_tokens,
+                    "current_session_tokens": current_session_tokens,
+                    "previous_session_tokens": previous_session_tokens,
+                    "session_delta_tokens": session_delta_tokens,
+                    "provider_last_input_tokens": max(0, int(getattr(session_row, "last_input_tokens", 0) or 0)),
                     "message_id": new_message_id,
-                    "current_tokens": current_tokens,
+                    "current_tokens": current_session_tokens,
                     "recent_tokens": recent_tokens,
                 },
             )

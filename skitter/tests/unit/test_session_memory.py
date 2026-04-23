@@ -163,6 +163,11 @@ class _SessionMemoryStub:
         return self.content
 
 
+def _session_tokens(messages: list[_MessageRow]) -> int:
+    transcript = SessionMemoryService._render_transcript(messages)
+    return session_memory_module.rough_token_estimate(transcript)
+
+
 VALID_UPDATED_NOTES = """
 # Session Title
 _A short, distinctive title for this session._
@@ -260,7 +265,7 @@ async def test_session_memory_creates_sidecar_after_init_threshold(
     assert row.session_memory_status == "completed"
     assert row.session_memory_path == "memory/session-state/session-1.md"
     assert row.session_memory_checkpoint == messages[-1].created_at
-    assert row.session_memory_input_tokens == 5000
+    assert row.session_memory_input_tokens == _session_tokens(messages)
     assert row.session_memory_message_id == "m2"
     prompt = llm.prompts[0][1].content
     assert "current file" in prompt.lower()
@@ -334,26 +339,63 @@ async def test_session_memory_skips_when_below_init_threshold(
 
 
 @pytest.mark.asyncio
-async def test_session_memory_updates_existing_sidecar_on_input_token_delta(
+async def test_session_memory_does_not_create_sidecar_from_large_provider_prompt_usage_alone(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    row = _SessionRow(id="session-system-prompt", user_id="user-1", last_input_tokens=12000)
+    now = datetime.now(UTC)
+    messages = [
+        _MessageRow(id="m1", role="user", content="Hi", created_at=now - timedelta(minutes=1)),
+        _MessageRow(id="m2", role="assistant", content="Hello", created_at=now, meta={"run_id": "run-2"}),
+    ]
+    repo = _FakeRepo(row, messages)
+    token = object()
+    monkeypatch.setattr(session_memory_module, "SessionLocal", lambda: _SessionCtx(token))
+    monkeypatch.setattr(session_memory_module, "Repository", lambda _session: repo)
+    monkeypatch.setattr(session_memory_module, "user_workspace_root", lambda user_id: tmp_path / user_id)
+    monkeypatch.setattr(
+        session_memory_module,
+        "ensure_user_workspace",
+        lambda user_id: (tmp_path / user_id / "memory").mkdir(parents=True, exist_ok=True) or (tmp_path / user_id),
+    )
+    monkeypatch.setattr(session_memory_module.settings, "session_memory_enabled", True)
+    monkeypatch.setattr(session_memory_module.settings, "session_memory_init_tokens", 100)
+    monkeypatch.setattr(session_memory_module.settings, "session_memory_update_tokens", 100)
+
+    service = SessionMemoryService(_EventBusStub())
+    updated = await service.refresh_session_memory("session-system-prompt", model_name="provider/main", force=False)
+
+    assert updated is None
+    assert _session_tokens(messages) < 100
+    assert row.session_memory_status is None
+    assert not (tmp_path / "user-1" / "memory" / "session-state" / "session-system-prompt.md").exists()
+
+
+@pytest.mark.asyncio
+async def test_session_memory_updates_existing_sidecar_on_session_token_delta(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
     now = datetime.now(UTC)
+    previous_messages = [
+        _MessageRow(id="m1", role="user", content="Earlier planning context that was already summarized.", created_at=now - timedelta(minutes=6)),
+        _MessageRow(id="m2", role="assistant", content="Earlier recommendation.", created_at=now - timedelta(minutes=5), meta={"run_id": "run-old"}),
+    ]
+    new_messages = [
+        _MessageRow(id="m3", role="user", content="Please narrow it down to Lisbon and tell me the best travel month.", created_at=now - timedelta(minutes=2)),
+        _MessageRow(id="m4", role="assistant", content="I narrowed it to Lisbon; next we should choose between May and September.", created_at=now - timedelta(minutes=1), meta={"run_id": "run-new"}),
+    ]
+    messages = previous_messages + new_messages
     row = _SessionRow(
         id="session-3",
         user_id="user-1",
         last_input_tokens=6000,
         session_memory_checkpoint=now - timedelta(minutes=5),
-        session_memory_input_tokens=4500,
+        session_memory_input_tokens=_session_tokens(previous_messages),
         session_memory_path="memory/session-state/session-3.md",
         session_memory_status="completed",
     )
-    messages = [
-        _MessageRow(id="m1", role="user", content="Earlier planning context that was already summarized.", created_at=now - timedelta(minutes=6)),
-        _MessageRow(id="m2", role="assistant", content="Earlier recommendation.", created_at=now - timedelta(minutes=5), meta={"run_id": "run-old"}),
-        _MessageRow(id="m3", role="user", content="Please narrow it down to Lisbon and tell me the best travel month.", created_at=now - timedelta(minutes=2)),
-        _MessageRow(id="m4", role="assistant", content="I narrowed it to Lisbon; next we should choose between May and September.", created_at=now - timedelta(minutes=1), meta={"run_id": "run-new"}),
-    ]
     repo = _FakeRepo(row, messages, tool_runs=[])
     token = object()
     monkeypatch.setattr(session_memory_module, "SessionLocal", lambda: _SessionCtx(token))
@@ -377,7 +419,7 @@ async def test_session_memory_updates_existing_sidecar_on_input_token_delta(
     assert updated == VALID_UPDATED_NOTES
     assert row.session_memory_status == "completed"
     assert row.session_memory_checkpoint == messages[-1].created_at
-    assert row.session_memory_input_tokens == 6000
+    assert row.session_memory_input_tokens == _session_tokens(messages)
     assert row.session_memory_message_id == "m4"
     prompt = llm.prompts[0][1].content
     assert "user: Please narrow it down to Lisbon" in prompt
@@ -385,26 +427,29 @@ async def test_session_memory_updates_existing_sidecar_on_input_token_delta(
 
 
 @pytest.mark.asyncio
-async def test_session_memory_skips_update_when_input_token_delta_is_below_threshold(
+async def test_session_memory_skips_update_when_session_token_delta_is_below_threshold(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
     now = datetime.now(UTC)
+    previous_messages = [
+        _MessageRow(id="m1", role="user", content="Earlier context.", created_at=now - timedelta(minutes=6)),
+        _MessageRow(id="m2", role="assistant", content="Earlier reply.", created_at=now - timedelta(minutes=5), meta={"run_id": "run-old"}),
+    ]
+    new_messages = [
+        _MessageRow(id="m3", role="user", content="A short follow-up.", created_at=now - timedelta(minutes=1)),
+        _MessageRow(id="m4", role="assistant", content="A short answer.", created_at=now, meta={"run_id": "run-new"}),
+    ]
+    messages = previous_messages + new_messages
     row = _SessionRow(
         id="session-4",
         user_id="user-1",
         last_input_tokens=5200,
         session_memory_checkpoint=now - timedelta(minutes=5),
-        session_memory_input_tokens=5000,
+        session_memory_input_tokens=_session_tokens(previous_messages),
         session_memory_path="memory/session-state/session-4.md",
         session_memory_status="completed",
     )
-    messages = [
-        _MessageRow(id="m1", role="user", content="Earlier context.", created_at=now - timedelta(minutes=6)),
-        _MessageRow(id="m2", role="assistant", content="Earlier reply.", created_at=now - timedelta(minutes=5), meta={"run_id": "run-old"}),
-        _MessageRow(id="m3", role="user", content="A short follow-up.", created_at=now - timedelta(minutes=1)),
-        _MessageRow(id="m4", role="assistant", content="A short answer.", created_at=now, meta={"run_id": "run-new"}),
-    ]
     repo = _FakeRepo(row, messages, tool_runs=[])
     token = object()
     monkeypatch.setattr(session_memory_module, "SessionLocal", lambda: _SessionCtx(token))
@@ -423,7 +468,7 @@ async def test_session_memory_skips_update_when_input_token_delta_is_below_thres
 
     assert updated == DEFAULT_SESSION_MEMORY_TEMPLATE
     assert row.session_memory_status == "completed"
-    assert row.session_memory_input_tokens == 5000
+    assert row.session_memory_input_tokens == _session_tokens(previous_messages)
 
 
 @pytest.mark.asyncio
