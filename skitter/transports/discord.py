@@ -13,7 +13,11 @@ import discord
 from discord import app_commands
 
 from ..core.config import settings
-from ..core.llm import list_models
+from ..core.conversation_scope import group_scope_id, private_scope_id
+from ..core.llm import list_models, resolve_model_name
+from ..core.profile_service import profile_service
+from ..core.transport_accounts import transport_account_service
+from ..core.transport_accounts import discord_surface_kind
 from ..data.db import SessionLocal
 from ..data.repositories import Repository
 from ..tools.approval_service import ToolApprovalService
@@ -418,8 +422,8 @@ class UserPromptView(discord.ui.View):
         return _handler
 
 
-def _build_model_menu_message(total_models: int, shown_models: int) -> str:
-    content = "Choose the active model from the dropdown below."
+def _build_model_menu_message(current_model: str, total_models: int, shown_models: int) -> str:
+    content = f"Active model: `{current_model}`\nChoose the active model from the dropdown below."
     if total_models > shown_models:
         content += (
             f"\n\nShowing the first {shown_models} of {total_models} configured models "
@@ -481,9 +485,14 @@ class ModelSelectView(discord.ui.View):
         self.add_item(ModelSelect(self.model_names))
 
     async def on_timeout(self) -> None:
-        if self.message is not None:
-            with contextlib.suppress(discord.HTTPException):
-                await self.message.edit(view=None)
+        await self._delete_message()
+
+    async def _delete_message(self) -> None:
+        if self.message is None:
+            return
+        with contextlib.suppress(discord.HTTPException):
+            await self.message.delete()
+        self.message = None
 
     async def handle_selection(self, interaction: discord.Interaction, model_name: str) -> None:
         if str(getattr(interaction.user, "id", "")) != self.owner_user_id:
@@ -499,9 +508,7 @@ class ModelSelectView(discord.ui.View):
             extra={"model_name": model_name},
             ephemeral=False,
         )
-        if self.message is not None:
-            with contextlib.suppress(discord.HTTPException):
-                await self.message.edit(view=None)
+        await self._delete_message()
 
 
 def _discord_sender_metadata(user: discord.abc.User, *, guild_member: object | None = None) -> dict[str, object]:
@@ -921,13 +928,101 @@ class DiscordTransport(TransportAdapter):
             model_names=model_names,
             transport=self,
         )
+        current_model = await self._current_model_for_interaction(interaction)
         await interaction.response.send_message(
-            _build_model_menu_message(len(model_names), len(view.model_names)),
+            _build_model_menu_message(current_model, len(model_names), len(view.model_names)),
             view=view,
         )
         with contextlib.suppress(discord.HTTPException):
             view.message = await interaction.original_response()
         _remember_internal_message(view.message)
+
+    async def _current_model_for_interaction(self, interaction: discord.Interaction) -> str:
+        default_model = resolve_model_name(None, purpose="main")
+        transport_channel_id = str(interaction.channel_id or "").strip()
+        transport_user_id = str(getattr(interaction.user, "id", "") or "").strip()
+        if not transport_channel_id:
+            return default_model
+
+        async with SessionLocal() as session:
+            repo = Repository(session)
+            is_private = isinstance(interaction.channel, discord.DMChannel)
+            profile = None
+            scope_type = "private"
+            scope_id = ""
+            owner_user_id = ""
+
+            if is_private:
+                if not transport_user_id:
+                    return default_model
+                user = await repo.get_user_by_transport_id(transport_user_id)
+                if user is None:
+                    return default_model
+                owner_user_id = str(user.id)
+                if self.pinned_profile_id:
+                    profile = await repo.get_agent_profile(self.pinned_profile_id)
+                    if (
+                        profile is None
+                        or str(getattr(profile, "user_id", "") or "").strip() != owner_user_id
+                        or str(getattr(profile, "status", "") or "").strip() == "archived"
+                    ):
+                        return default_model
+                else:
+                    profile, _notice = await transport_account_service.resolve_shared_default_dm_profile(
+                        repo,
+                        user_id=owner_user_id,
+                        channel_id=transport_channel_id,
+                        origin="discord",
+                        transport_account_key=self.account_key,
+                    )
+                    if profile is None:
+                        return default_model
+                scope_id = private_scope_id(profile.id)
+            else:
+                binding_surface_id = transport_channel_id
+                binding = await repo.get_transport_surface_binding_for_surface(
+                    origin="discord",
+                    transport_account_key=self.account_key,
+                    surface_kind=discord_surface_kind(),
+                    surface_id=transport_channel_id,
+                )
+                if binding is None:
+                    parent_channel_id = (
+                        str(interaction.channel.parent_id)
+                        if isinstance(interaction.channel, discord.Thread) and interaction.channel.parent_id is not None
+                        else ""
+                    )
+                    if parent_channel_id:
+                        binding = await repo.get_transport_surface_binding_for_surface(
+                            origin="discord",
+                            transport_account_key=self.account_key,
+                            surface_kind=discord_surface_kind(),
+                            surface_id=parent_channel_id,
+                        )
+                        if binding is not None:
+                            binding_surface_id = parent_channel_id
+                if binding is None:
+                    return default_model
+                profile = await repo.get_agent_profile(binding.agent_profile_id)
+                if profile is None or str(getattr(profile, "status", "") or "").strip() == "archived":
+                    return default_model
+                owner_user_id = str(getattr(profile, "user_id", "") or "").strip()
+                if not owner_user_id:
+                    return default_model
+                scope_type = "group"
+                scope_id = group_scope_id("discord", self.account_key, binding_surface_id)
+
+            profile = await profile_service.resolve_profile(
+                repo,
+                owner_user_id,
+                agent_profile_id=getattr(profile, "id", None),
+                origin="discord",
+                channel_id=transport_channel_id,
+                transport_account_key=self.account_key,
+            )
+            active = await repo.get_active_session_by_scope(scope_type, scope_id, agent_profile_id=profile.id)
+            current = active.model if active is not None and getattr(active, "model", None) else default_model
+            return resolve_model_name(current, purpose="main")
 
     async def _handle_command(
         self,
