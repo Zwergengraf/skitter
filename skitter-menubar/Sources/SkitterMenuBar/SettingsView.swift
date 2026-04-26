@@ -4,7 +4,6 @@ struct SettingsView: View {
     @ObservedObject var settings: SettingsStore
     @ObservedObject var state: AppState
     var onApply: () -> Void
-    var onDownloadWhisperModel: () -> Void
     var onClose: () -> Void
     @State private var bootstrapDisplayName: String = ""
     @State private var bootstrapCode: String = ""
@@ -119,35 +118,32 @@ struct SettingsView: View {
 
             VStack(alignment: .leading, spacing: 8) {
                 HStack {
-                    Text("Whisper Model Download")
+                    Text("Speech Recognition")
                         .font(.subheadline.weight(.semibold))
                     Spacer()
-                    Picker("Whisper Model", selection: $settings.whisperModel) {
-                        ForEach(SettingsStore.whisperModelOptions, id: \.self) { model in
-                            Text(model).tag(model)
+                }
+                Grid(alignment: .leading, horizontalSpacing: 14, verticalSpacing: 8) {
+                    GridRow {
+                        Text("Language")
+                            .frame(width: 130, alignment: .leading)
+                        Picker("Language", selection: $settings.speechRecognitionLocaleIdentifier) {
+                            ForEach(SettingsStore.speechRecognitionLocaleOptions) { option in
+                                Text(option.title).tag(option.id)
+                            }
                         }
+                        .pickerStyle(.menu)
+                        .frame(maxWidth: .infinity, alignment: .leading)
                     }
-                    .pickerStyle(.menu)
-                    .frame(width: 210, alignment: .trailing)
-                    Button(state.whisperDownloadInProgress ? "Downloading…" : "Download Model") {
-                        onDownloadWhisperModel()
+                    GridRow {
+                        Text("On-device only")
+                            .frame(width: 130, alignment: .leading)
+                        Toggle("", isOn: $settings.speechRecognitionRequiresOnDevice)
+                            .toggleStyle(.switch)
                     }
-                    .disabled(state.whisperDownloadInProgress)
                 }
-                if state.whisperDownloadInProgress || state.whisperDownloadProgress > 0 {
-                    ProgressView(value: state.whisperDownloadProgress)
-                        .progressViewStyle(.linear)
-                }
-                if !state.whisperDownloadStatusText.isEmpty {
-                    Text(state.whisperDownloadStatusText)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(2)
-                } else {
-                    Text("Download the selected model before using microphone transcription.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
+                Text("Uses Apple Speech for chat dictation and voice conversation. On-device-only mode may not be available for every language.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
 
             VStack(alignment: .leading, spacing: 8) {
@@ -213,8 +209,5 @@ struct SettingsView: View {
         }
         .padding(18)
         .frame(minWidth: 680, minHeight: 640)
-        .onChange(of: settings.whisperModel) { _, _ in
-            state.clearWhisperDownloadStateForModelChange()
-        }
     }
 }

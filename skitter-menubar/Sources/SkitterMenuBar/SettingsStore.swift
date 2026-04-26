@@ -1,5 +1,10 @@
 import Foundation
-import WhisperKit
+import Speech
+
+struct SpeechRecognitionLocaleOption: Identifiable, Hashable {
+    let id: String
+    let title: String
+}
 
 @MainActor
 final class SettingsStore: ObservableObject {
@@ -19,8 +24,12 @@ final class SettingsStore: ObservableObject {
         didSet { UserDefaults.standard.set(contextTokenTarget, forKey: Self.contextTargetKey) }
     }
 
-    @Published var whisperModel: String {
-        didSet { UserDefaults.standard.set(whisperModel, forKey: Self.whisperModelKey) }
+    @Published var speechRecognitionLocaleIdentifier: String {
+        didSet { UserDefaults.standard.set(speechRecognitionLocaleIdentifier, forKey: Self.speechRecognitionLocaleIdentifierKey) }
+    }
+
+    @Published var speechRecognitionRequiresOnDevice: Bool {
+        didSet { UserDefaults.standard.set(speechRecognitionRequiresOnDevice, forKey: Self.speechRecognitionRequiresOnDeviceKey) }
     }
 
     @Published var conversationSilenceSeconds: Double {
@@ -47,16 +56,12 @@ final class SettingsStore: ObservableObject {
         didSet { UserDefaults.standard.set(openAITTSVoice, forKey: Self.openAITTSVoiceKey) }
     }
 
-    @Published private(set) var whisperModelFolders: [String: String] {
-        didSet { persistWhisperModelFolders() }
-    }
-
     private static let apiURLKey = "menubar.api_url"
     private static let apiKeyKey = "menubar.api_key"
     private static let selectedProfileSlugKey = "menubar.selected_profile_slug"
     private static let contextTargetKey = "menubar.context_target"
-    private static let whisperModelKey = "menubar.whisper_model"
-    private static let whisperModelFoldersKey = "menubar.whisper_model_folders"
+    private static let speechRecognitionLocaleIdentifierKey = "menubar.speech_recognition_locale_identifier"
+    private static let speechRecognitionRequiresOnDeviceKey = "menubar.speech_recognition_requires_on_device"
     private static let conversationSilenceSecondsKey = "menubar.conversation_silence_seconds"
     private static let conversationModelNameKey = "menubar.conversation_model_name"
     private static let openAIBaseURLKey = "menubar.openai_base_url"
@@ -64,7 +69,37 @@ final class SettingsStore: ObservableObject {
     private static let openAITTSModelKey = "menubar.openai_tts_model"
     private static let openAITTSVoiceKey = "menubar.openai_tts_voice"
 
-    static let whisperModelOptions: [String] = ModelVariant.allCases.map(\.description)
+    static var speechRecognitionLocaleOptions: [SpeechRecognitionLocaleOption] {
+        let supported = SFSpeechRecognizer.supportedLocales()
+        let commonIdentifiers = [
+            "en-US",
+            "en-GB",
+            "ja-JP",
+            "de-DE",
+            "fr-FR",
+            "es-ES",
+            "it-IT",
+            "pt-BR",
+            "zh-CN",
+            "ko-KR",
+        ]
+        let common = commonIdentifiers.compactMap { identifier in
+            supported.contains { $0.identifier == identifier } ? localeOption(identifier: identifier) : nil
+        }
+        let commonIDs = Set(common.map(\.id))
+        let rest = supported
+            .map(\.identifier)
+            .filter { !commonIDs.contains($0) }
+            .sorted { localeDisplayName(for: $0) < localeDisplayName(for: $1) }
+            .map(localeOption(identifier:))
+
+        return [SpeechRecognitionLocaleOption(id: "", title: "System Default")] + common + rest
+    }
+
+    var effectiveSpeechRecognitionLocaleIdentifier: String {
+        let cleaned = speechRecognitionLocaleIdentifier.trimmingCharacters(in: .whitespacesAndNewlines)
+        return cleaned.isEmpty ? Locale.current.identifier : cleaned
+    }
 
     init() {
         let defaults = UserDefaults.standard
@@ -73,12 +108,8 @@ final class SettingsStore: ObservableObject {
         self.selectedProfileSlug = defaults.string(forKey: Self.selectedProfileSlugKey) ?? ""
         let savedTarget = defaults.integer(forKey: Self.contextTargetKey)
         self.contextTokenTarget = savedTarget > 0 ? savedTarget : 256_000
-        let savedWhisperModel = defaults.string(forKey: Self.whisperModelKey) ?? "medium"
-        if Self.whisperModelOptions.contains(savedWhisperModel) {
-            self.whisperModel = savedWhisperModel
-        } else {
-            self.whisperModel = "medium"
-        }
+        self.speechRecognitionLocaleIdentifier = defaults.string(forKey: Self.speechRecognitionLocaleIdentifierKey) ?? ""
+        self.speechRecognitionRequiresOnDevice = defaults.bool(forKey: Self.speechRecognitionRequiresOnDeviceKey)
         let savedSilenceSeconds = defaults.double(forKey: Self.conversationSilenceSecondsKey)
         self.conversationSilenceSeconds = savedSilenceSeconds > 0 ? savedSilenceSeconds : 1.2
         self.conversationModelName = defaults.string(forKey: Self.conversationModelNameKey)?
@@ -87,51 +118,17 @@ final class SettingsStore: ObservableObject {
         self.openAIAPIKey = defaults.string(forKey: Self.openAIAPIKeyKey) ?? ""
         self.openAITTSModel = defaults.string(forKey: Self.openAITTSModelKey) ?? "gpt-4o-mini-tts"
         self.openAITTSVoice = defaults.string(forKey: Self.openAITTSVoiceKey) ?? "alloy"
-        self.whisperModelFolders = Self.loadWhisperModelFolders(defaults: defaults)
     }
 
-    func whisperModelFolder(for model: String) -> String? {
-        let key = model.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !key.isEmpty else { return nil }
-        let raw = whisperModelFolders[key]?.trimmingCharacters(in: .whitespacesAndNewlines)
-        if let raw, !raw.isEmpty {
-            return raw
-        }
-        return nil
+    private static func localeOption(identifier: String) -> SpeechRecognitionLocaleOption {
+        SpeechRecognitionLocaleOption(id: identifier, title: localeDisplayName(for: identifier))
     }
 
-    func setWhisperModelFolder(_ path: String, for model: String) {
-        let modelKey = model.trimmingCharacters(in: .whitespacesAndNewlines)
-        let value = path.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !modelKey.isEmpty else { return }
-        var map = whisperModelFolders
-        if value.isEmpty {
-            map.removeValue(forKey: modelKey)
-        } else {
-            map[modelKey] = value
-        }
-        whisperModelFolders = map
-    }
-
-    private static func loadWhisperModelFolders(defaults: UserDefaults) -> [String: String] {
-        guard let raw = defaults.string(forKey: Self.whisperModelFoldersKey), !raw.isEmpty else {
-            return [:]
-        }
-        guard let data = raw.data(using: .utf8) else {
-            return [:]
-        }
-        guard let decoded = try? JSONDecoder().decode([String: String].self, from: data) else {
-            return [:]
-        }
-        return decoded
-    }
-
-    private func persistWhisperModelFolders() {
-        guard let data = try? JSONEncoder().encode(whisperModelFolders),
-              let raw = String(data: data, encoding: .utf8)
-        else {
-            return
-        }
-        UserDefaults.standard.set(raw, forKey: Self.whisperModelFoldersKey)
+    private static func localeDisplayName(for identifier: String) -> String {
+        let current = Locale.current
+        let name = current.localizedString(forIdentifier: identifier)
+            ?? Locale(identifier: identifier).localizedString(forIdentifier: identifier)
+            ?? identifier
+        return "\(name) (\(identifier))"
     }
 }

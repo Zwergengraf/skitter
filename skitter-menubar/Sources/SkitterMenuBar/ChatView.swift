@@ -806,10 +806,10 @@ struct ChatView: View {
 
     private var keyboardHintText: String {
         if state.isTranscriptionStarting {
-            return "Starting local Whisper… | Enter: send | Shift+Enter: newline"
+            return "Starting Apple Speech... | Enter: send | Shift+Enter: newline"
         }
         if state.isTranscribing {
-            return "Listening with local Whisper… Tap mic to stop | Enter: send | Shift+Enter: newline"
+            return "Listening with Apple Speech... Tap mic to stop | Enter: send | Shift+Enter: newline"
         }
         if !state.transcriptionStatusText.isEmpty {
             return "\(state.transcriptionStatusText) | Enter: send | Shift+Enter: newline"

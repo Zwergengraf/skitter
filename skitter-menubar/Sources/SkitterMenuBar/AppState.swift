@@ -2,7 +2,6 @@ import Foundation
 import AppKit
 import os
 import UniformTypeIdentifiers
-import WhisperKit
 
 private enum MIMETypeResolver {
     static func mimeType(for url: URL) -> String {
@@ -64,9 +63,6 @@ final class AppState: ObservableObject {
     @Published private(set) var conversationModelName: String = ""
     @Published private(set) var isConversationTTSPlaying: Bool = false
     @Published private(set) var conversationTTSLevel: Double = 0
-    @Published private(set) var whisperDownloadInProgress: Bool = false
-    @Published private(set) var whisperDownloadProgress: Double = 0
-    @Published private(set) var whisperDownloadStatusText: String = ""
     @Published private(set) var currentUserID: String = ""
     @Published private(set) var currentUserDisplayName: String = ""
     @Published private(set) var currentDefaultProfileSlug: String = ""
@@ -87,8 +83,6 @@ final class AppState: ObservableObject {
     private var conversationSilenceTask: Task<Void, Never>?
     private var conversationSubmitTask: Task<Void, Never>?
     private var conversationTTSTask: Task<Void, Never>?
-    private var whisperDownloadRequestID = UUID()
-
     static let commands: [LocalCommand] = [
         LocalCommand(id: "help", name: "/help", usage: "/help", description: "Show available commands"),
         LocalCommand(id: "new", name: "/new", usage: "/new", description: "Start a new session"),
@@ -363,50 +357,6 @@ final class AppState: ObservableObject {
         }
     }
 
-    func downloadSelectedWhisperModel() async {
-        if whisperDownloadInProgress {
-            return
-        }
-        let model = settings.whisperModel.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !model.isEmpty else {
-            whisperDownloadStatusText = "Select a Whisper model first."
-            return
-        }
-
-        let requestID = UUID()
-        whisperDownloadRequestID = requestID
-        whisperDownloadInProgress = true
-        whisperDownloadProgress = 0
-        whisperDownloadStatusText = "Downloading \(model)…"
-        errorBanner = nil
-
-        do {
-            let folderURL = try await WhisperKit.download(
-                variant: model,
-                progressCallback: { [weak self] progress in
-                    Task { @MainActor in
-                        guard let self else { return }
-                        guard self.whisperDownloadRequestID == requestID else { return }
-                        let fraction = min(1.0, max(0.0, progress.fractionCompleted))
-                        self.whisperDownloadProgress = fraction.isFinite ? fraction : 0
-                        let percent = Int((self.whisperDownloadProgress * 100).rounded())
-                        self.whisperDownloadStatusText = "Downloading \(model)… \(percent)%"
-                    }
-                }
-            )
-            settings.setWhisperModelFolder(folderURL.path, for: model)
-            guard whisperDownloadRequestID == requestID else { return }
-            whisperDownloadProgress = 1
-            whisperDownloadStatusText = "Model \(model) downloaded."
-        } catch {
-            guard whisperDownloadRequestID == requestID else { return }
-            whisperDownloadStatusText = "Download failed: \(error.localizedDescription)"
-            setError(error)
-        }
-        guard whisperDownloadRequestID == requestID else { return }
-        whisperDownloadInProgress = false
-    }
-
     func bootstrapAccount(setupCode: String, displayName: String) async {
         let trimmedCode = setupCode.trimmingCharacters(in: .whitespacesAndNewlines)
         let trimmedName = displayName.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -470,13 +420,6 @@ final class AppState: ObservableObject {
             setError(error)
             return false
         }
-    }
-
-    func clearWhisperDownloadStateForModelChange() {
-        whisperDownloadRequestID = UUID()
-        whisperDownloadInProgress = false
-        whisperDownloadProgress = 0
-        whisperDownloadStatusText = ""
     }
 
     func fetchAttachmentData(url: URL) async -> Data? {
@@ -717,7 +660,7 @@ final class AppState: ObservableObject {
 
         isConversationStarting = true
         isConversationAwaitingReply = false
-        conversationStatusText = "Starting local Whisper…"
+        conversationStatusText = "Starting Apple Speech..."
         conversationTranscriptText = ""
         conversationLatestTranscript = ""
         conversationSilenceTask?.cancel()
@@ -725,19 +668,9 @@ final class AppState: ObservableObject {
 
         do {
             try await conversationTranscriber.requestMicrophonePermission()
-            var folderPath = settings.whisperModelFolder(for: settings.whisperModel)
-            if folderPath == nil {
-                do {
-                    let discovered = try await WhisperKit.download(variant: settings.whisperModel)
-                    settings.setWhisperModelFolder(discovered.path, for: settings.whisperModel)
-                    folderPath = discovered.path
-                } catch {
-                    // Keep graceful failure path below; transcriber will report a clear "model not downloaded" message.
-                }
-            }
             try await conversationTranscriber.startStreaming(
-                modelName: settings.whisperModel,
-                modelFolderPath: folderPath,
+                localeIdentifier: settings.effectiveSpeechRecognitionLocaleIdentifier,
+                requiresOnDeviceRecognition: settings.speechRecognitionRequiresOnDevice,
                 failOnNoAudio: false,
                 onStatus: { [weak self] status in
                     guard let self else { return }
@@ -1260,20 +1193,10 @@ final class AppState: ObservableObject {
         do {
             try await speechTranscriber.requestMicrophonePermission()
             draftPrefixBeforeTranscription = draft
-            transcriptionStatusText = "Starting local Whisper…"
-            var folderPath = settings.whisperModelFolder(for: settings.whisperModel)
-            if folderPath == nil {
-                do {
-                    let discovered = try await WhisperKit.download(variant: settings.whisperModel)
-                    settings.setWhisperModelFolder(discovered.path, for: settings.whisperModel)
-                    folderPath = discovered.path
-                } catch {
-                    // Keep graceful failure path below; transcriber will report a clear "model not downloaded" message.
-                }
-            }
+            transcriptionStatusText = "Starting Apple Speech..."
             try await speechTranscriber.startStreaming(
-                modelName: settings.whisperModel,
-                modelFolderPath: folderPath,
+                localeIdentifier: settings.effectiveSpeechRecognitionLocaleIdentifier,
+                requiresOnDeviceRecognition: settings.speechRecognitionRequiresOnDevice,
                 onStatus: { [weak self] status in
                     self?.transcriptionStatusText = status
                 },
@@ -1639,10 +1562,6 @@ final class AppState: ObservableObject {
         health = .error(text)
         if lower.contains("not yet approved") || lower.contains("admin has to approve it first") {
             errorBanner = "Your account is not yet approved. An admin has to approve it first."
-            return
-        }
-        if lower.contains("whisper model") && lower.contains("not downloaded") {
-            errorBanner = text
             return
         }
         if text.contains("HTTP 401") || lower.contains("invalid authentication token") || text.localizedCaseInsensitiveContains("Invalid API key") {

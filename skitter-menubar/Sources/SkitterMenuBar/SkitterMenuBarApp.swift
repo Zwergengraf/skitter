@@ -76,11 +76,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     await self?.state.reconnect()
                 }
             },
-            onDownloadWhisperModel: { [weak self] in
-                Task { @MainActor in
-                    await self?.state.downloadSelectedWhisperModel()
-                }
-            },
             onClose: { [weak self] in
                 self?.settingsWindowController?.close()
             }

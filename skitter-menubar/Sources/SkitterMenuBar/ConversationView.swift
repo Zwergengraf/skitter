@@ -9,7 +9,7 @@ struct ConversationView: View {
             return state.conversationStatusText
         }
         if state.isConversationStarting {
-            return "Starting local Whisper…"
+            return "Starting Apple Speech..."
         }
         if state.isConversationListening {
             return "Listening…"

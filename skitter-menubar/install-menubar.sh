@@ -104,6 +104,7 @@ install_app_bundle() {
   <key>CFBundleVersion</key><string>1</string>
   <key>LSUIElement</key><true/>
   <key>NSMicrophoneUsageDescription</key><string>Skitter uses the microphone to transcribe your voice into chat text.</string>
+  <key>NSSpeechRecognitionUsageDescription</key><string>Skitter uses Apple Speech to transcribe your voice into chat text.</string>
 </dict>
 </plist>
 EOF
