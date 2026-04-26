@@ -738,6 +738,7 @@ async def main() -> None:
                     persist_surface_profile=bool(scope.is_private),
                     transport_account_key=envelope.transport_account_key,
                     surface_is_private=scope.is_private,
+                    session_run_queue=session_run_queue,
                 )
             except (LookupError, RuntimeError, ValueError) as exc:
                 if envelope.metadata.get("interaction_response"):
@@ -796,6 +797,9 @@ async def main() -> None:
                 "user_prompt_choices": list(response.pending_prompt.choices),
                 "user_prompt_allow_free_text": bool(response.pending_prompt.allow_free_text),
             }
+        assistant_metadata = dict(getattr(response, "metadata", {}) or {})
+        if prompt_metadata:
+            assistant_metadata.update(prompt_metadata)
         if response.pending_prompt is None and (response.text or response.attachments):
             await transport.send_message(
                 envelope.channel_id,
@@ -817,7 +821,7 @@ async def main() -> None:
                 run_id=response.run_id,
                 reasoning=response.reasoning,
                 attachments=response.attachments,
-                extra_metadata=prompt_metadata,
+                extra_metadata=assistant_metadata,
             )
         return {
             "pending_prompt": bool(response.pending_prompt is not None),

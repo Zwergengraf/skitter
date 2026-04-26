@@ -1170,6 +1170,34 @@ class Repository:
             return None
         return await self.answer_user_prompt(prompt.id, answer=answer, answered_by=answered_by)
 
+    async def cancel_pending_user_prompt_for_session(
+        self,
+        session_id: str,
+        *,
+        cancelled_by: str | None = None,
+        reason: str = "cancelled",
+    ) -> UserPrompt | None:
+        prompt = await self.get_pending_user_prompt_for_session(session_id)
+        if prompt is None:
+            return None
+        prompt.status = "cancelled"
+        prompt.answer = reason
+        prompt.answered_by = cancelled_by
+        prompt.answered_at = self._utcnow()
+        await self.session.commit()
+        if prompt.run_id:
+            await self.append_run_trace_event(
+                run_id=prompt.run_id,
+                session_id=prompt.session_id,
+                event_type="user_prompt_cancelled",
+                payload={
+                    "prompt_id": prompt.id,
+                    "cancelled_by": cancelled_by,
+                    "reason": reason,
+                },
+            )
+        return prompt
+
     async def list_recent_sessions(self, limit: int = 10, status: str | None = "active") -> List[tuple]:
         last_active_subq = (
             select(Message.session_id, func.max(Message.created_at).label("last_active_at"))

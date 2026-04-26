@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
@@ -645,6 +646,16 @@ class _RecordingGraph:
         return {"messages": messages + [AIMessage(content="Original response.")]}
 
 
+class _SlowGraph:
+    def __init__(self) -> None:
+        self.started = asyncio.Event()
+
+    async def ainvoke(self, payload, **_kwargs):
+        self.started.set()
+        await asyncio.Event().wait()
+        return {"messages": list(payload["messages"]) + [AIMessage(content="Should not finish.")]}
+
+
 class _MemoryHubStub:
     def __init__(self) -> None:
         self.requests = []
@@ -743,6 +754,75 @@ async def test_handle_message_returns_pending_prompt_when_ask_user_is_triggered(
         "- docker\n"
         "- macbook\n"
         "Custom free-text replies were allowed."
+    )
+
+
+@pytest.mark.asyncio
+async def test_handle_message_user_cancel_returns_tombstone(monkeypatch) -> None:
+    graph = _SlowGraph()
+    runtime = AgentRuntime(event_bus=EventBus(), graph=graph)
+
+    async def _fake_ensure_history(session_id: str) -> None:
+        runtime._history.setdefault(session_id, [SystemMessage(content="system")])
+
+    async def _noop_async(*_args, **_kwargs) -> None:
+        return None
+
+    async def _fake_get_session_model(_session_id: str, _envelope) -> str:
+        return "provider/main"
+
+    monkeypatch.setattr("skitter.core.runtime.list_models", lambda: [object()])
+    monkeypatch.setattr("skitter.core.runtime.resolve_model_name", lambda _value=None, purpose="main": "provider/main")
+    monkeypatch.setattr("skitter.core.runtime.resolve_model_candidates", lambda _value, purpose="main": ["provider/main"])
+    monkeypatch.setattr(
+        "skitter.core.runtime.resolve_model",
+        lambda _value, purpose="main": type(
+            "Resolved",
+            (),
+            {
+                "input_cost_per_1m": 0.0,
+                "output_cost_per_1m": 0.0,
+                "provider_api_type": "openai",
+            },
+        )(),
+    )
+    monkeypatch.setattr(runtime, "_ensure_history", _fake_ensure_history)
+    monkeypatch.setattr(runtime, "_get_session_model", _fake_get_session_model)
+    monkeypatch.setattr(runtime, "_ensure_system_prompt", lambda history, _user_id: None)
+    monkeypatch.setattr(runtime, "_compact_history_for_context", _noop_async)
+    monkeypatch.setattr(runtime, "_trace_create", _noop_async)
+    monkeypatch.setattr(runtime, "_trace_update", _noop_async)
+    monkeypatch.setattr(runtime, "_trace_event", _noop_async)
+
+    envelope = MessageEnvelope(
+        message_id="msg-cancel",
+        channel_id="chan-1",
+        user_id="user-1",
+        timestamp=datetime.now(UTC),
+        text="Please do a long task.",
+        origin="tui",
+        metadata={"internal_user_id": "user-1"},
+    )
+
+    task = asyncio.create_task(runtime.handle_message("session-cancel", envelope))
+    await graph.started.wait()
+
+    assert runtime.cancel_session_run(
+        "session-cancel",
+        requested_by="user-1",
+        reason="User requested stop.",
+        discarded_pending=2,
+    )
+    response = await task
+
+    assert response.status == "cancelled"
+    assert response.text == "This turn was stopped by the user."
+    assert response.metadata["cancelled"] is True
+    assert response.metadata["cancelled_by"] == "user-1"
+    assert response.metadata["discarded_pending_messages"] == 2
+    assert all(
+        not (isinstance(message, AIMessage) and message.content == "Should not finish.")
+        for message in runtime._history["session-cancel"]
     )
 
 

@@ -15,6 +15,8 @@ Skitter can connect to Discord through:
 
 Public channels are opt-in through bindings. They are not active by default.
 
+`/stop` is available as both a text command and a slash command. It stops the active turn for the current DM or bound channel and discards queued backlog for that session.
+
 ## Shared Default vs Dedicated Bots
 
 ### Shared default bot

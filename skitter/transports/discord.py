@@ -628,6 +628,10 @@ class DiscordTransport(TransportAdapter):
         async def new_session(interaction: discord.Interaction) -> None:
             await self._handle_command(interaction, "new")
 
+        @self.tree.command(name="stop", description="Stop the currently running turn")
+        async def stop_session(interaction: discord.Interaction) -> None:
+            await self._handle_command(interaction, "stop")
+
         @self.tree.command(name="memory_reindex", description="Rebuild memory embeddings from memory/*.md")
         async def memory_reindex(interaction: discord.Interaction) -> None:
             await self._handle_command(interaction, "memory_reindex")

@@ -7,6 +7,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from ..authz import require_admin, require_session_access, resolve_target_user_id
 from ..deps import get_repo
 from ..schemas import (
+    CommandExecuteOut,
     SessionCreate,
     SessionDetailOut,
     SessionListItem,
@@ -279,6 +280,60 @@ async def get_session_detail(session_id: str, request: Request, repo: Repository
             )
             for prompt in pending_user_prompts
         ],
+    )
+
+
+@router.post("/{session_id}/stop", response_model=CommandExecuteOut)
+async def stop_session_run(
+    session_id: str,
+    request: Request,
+    repo: Repository = Depends(get_repo),
+) -> CommandExecuteOut:
+    session = await require_session_access(request, repo, session_id)
+    principal = getattr(request.state, "auth_principal", None)
+    requested_by = getattr(principal, "user_id", None) or session.user_id
+    discarded_pending = 0
+    queue = getattr(request.app.state, "session_run_queue", None)
+    if queue is not None and hasattr(queue, "cancel_session"):
+        queue_result = await queue.cancel_session(session_id, cancel_active=False)
+        discarded_pending = int(queue_result.get("discarded_pending") or 0)
+    runtime = getattr(request.app.state, "runtime", None)
+    stopped_active = False
+    if runtime is not None and hasattr(runtime, "cancel_session_run"):
+        stopped_active = bool(
+            runtime.cancel_session_run(
+                session_id,
+                requested_by=requested_by,
+                reason="User requested stop.",
+                discarded_pending=discarded_pending,
+            )
+        )
+    if not stopped_active and queue is not None and hasattr(queue, "cancel_session"):
+        queue_result = await queue.cancel_session(session_id, cancel_active=True)
+        discarded_pending = max(discarded_pending, int(queue_result.get("discarded_pending") or 0))
+        stopped_active = bool(queue_result.get("active"))
+    cancelled_prompt = await repo.cancel_pending_user_prompt_for_session(
+        session_id,
+        cancelled_by=requested_by,
+        reason="Stopped by user.",
+    )
+    if stopped_active:
+        message = "Stopping the current turn."
+    elif discarded_pending:
+        message = f"Stopped {discarded_pending} pending queued turn{'s' if discarded_pending != 1 else ''}."
+    elif cancelled_prompt is not None:
+        message = "Cancelled the pending user prompt."
+    else:
+        message = "No active turn is running for this session."
+    return CommandExecuteOut(
+        ok=bool(stopped_active or discarded_pending or cancelled_prompt is not None),
+        message=message,
+        data={
+            "stopped": bool(stopped_active),
+            "discarded_pending": discarded_pending,
+            "cancelled_prompt_id": getattr(cancelled_prompt, "id", None),
+            "session_id": session_id,
+        },
     )
 
 

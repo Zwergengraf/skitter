@@ -139,6 +139,7 @@ class CommandService:
         persist_surface_profile: bool = False,
         transport_account_key: str | None = None,
         surface_is_private: bool | None = None,
+        session_run_queue=None,
     ) -> CommandExecutionResult:
         normalized_command = (command or "").strip().lower()
         if not normalized_command:
@@ -214,6 +215,63 @@ class CommandService:
                 message="Started a new session.",
                 data={
                     "session_id": new_session_id,
+                    "agent_profile_id": profile.id,
+                    "agent_profile_slug": profile.slug,
+                },
+            )
+
+        if normalized_command == "stop":
+            active = await repo.get_active_session_by_scope(
+                resolved_scope_type,
+                resolved_scope_id,
+                agent_profile_id=profile.id,
+            )
+            if active is None:
+                return CommandExecutionResult(
+                    ok=False,
+                    message="No active session found.",
+                    data={"stopped": False, "reason": "no_active_session"},
+                )
+            discarded_pending = 0
+            if session_run_queue is not None and hasattr(session_run_queue, "cancel_session"):
+                queue_result = await session_run_queue.cancel_session(active.id, cancel_active=False)
+                discarded_pending = int(queue_result.get("discarded_pending") or 0)
+            cancel_method = getattr(runtime, "cancel_session_run", None)
+            stopped_active = bool(
+                cancel_method(
+                    active.id,
+                    requested_by=user.id,
+                    reason="User requested stop.",
+                    discarded_pending=discarded_pending,
+                )
+                if cancel_method is not None
+                else False
+            )
+            if not stopped_active and session_run_queue is not None and hasattr(session_run_queue, "cancel_session"):
+                queue_result = await session_run_queue.cancel_session(active.id, cancel_active=True)
+                discarded_pending = max(discarded_pending, int(queue_result.get("discarded_pending") or 0))
+                stopped_active = bool(queue_result.get("active"))
+            cancelled_prompt = await repo.cancel_pending_user_prompt_for_session(
+                active.id,
+                cancelled_by=user.id,
+                reason="Stopped by user.",
+            )
+            if stopped_active:
+                message = "Stopping the current turn."
+            elif discarded_pending:
+                message = f"Stopped {discarded_pending} pending queued turn{'s' if discarded_pending != 1 else ''}."
+            elif cancelled_prompt is not None:
+                message = "Cancelled the pending user prompt."
+            else:
+                message = "No active turn is running for this session."
+            return CommandExecutionResult(
+                ok=bool(stopped_active or discarded_pending or cancelled_prompt is not None),
+                message=message,
+                data={
+                    "stopped": bool(stopped_active),
+                    "discarded_pending": discarded_pending,
+                    "cancelled_prompt_id": getattr(cancelled_prompt, "id", None),
+                    "session_id": active.id,
                     "agent_profile_id": profile.id,
                     "agent_profile_slug": profile.slug,
                 },

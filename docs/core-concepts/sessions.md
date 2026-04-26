@@ -58,6 +58,18 @@ If several plain public-channel messages arrive while the session is already bus
 
 Commands, explicit interactions, private chats, and attachment-bearing messages are not coalesced.
 
+## `/stop`
+
+`/stop` interrupts the active turn for the current session.
+
+It cancels the running model/tool task, drops queued backlog for that session, and records a short assistant tombstone:
+
+```text
+This turn was stopped by the user.
+```
+
+Partial model/tool chatter is not kept in chat history. Run traces and tool-run records remain available for debugging and are marked as cancelled where possible.
+
 ## `/new`
 
 `/new` ends the active session for the current scope and starts a new one.

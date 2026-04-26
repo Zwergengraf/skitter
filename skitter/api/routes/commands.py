@@ -44,6 +44,7 @@ async def execute_command(
             agent_profile_id=payload.agent_profile_id,
             agent_profile_slug=payload.agent_profile_slug,
             transport_account_key=payload.transport_account_key,
+            session_run_queue=getattr(request.app.state, "session_run_queue", None),
         )
     except LookupError as exc:
         raise HTTPException(status_code=404, detail=str(exc) or "Not found") from exc

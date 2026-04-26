@@ -46,7 +46,7 @@ class StreamEvent:
     session_id: str
     type: str
     data: Dict[str, Any]
-    created_at: datetime = field(default_factory=datetime.utcnow)
+    created_at: datetime = field(default_factory=lambda: datetime.now(UTC))
 
 
 @dataclass
@@ -82,3 +82,5 @@ class AgentResponse:
     run_id: str | None = None
     reasoning: List[str] = field(default_factory=list)
     pending_prompt: PendingUserPrompt | None = None
+    status: str | None = None
+    metadata: Dict[str, Any] = field(default_factory=dict)

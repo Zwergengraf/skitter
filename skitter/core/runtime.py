@@ -9,6 +9,7 @@ import re
 import asyncio
 import uuid
 from collections import defaultdict
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Optional
@@ -84,6 +85,14 @@ _REASONING_TAG_RE = re.compile(r"<reasoning>.*?</reasoning>", re.IGNORECASE | re
 _logger = logging.getLogger(__name__)
 
 
+@dataclass(slots=True)
+class _SessionCancelRequest:
+    requested_by: str | None
+    reason: str
+    requested_at: datetime
+    discarded_pending: int = 0
+
+
 class AgentRuntime:
     def __init__(
         self,
@@ -112,6 +121,8 @@ class AgentRuntime:
         self._history: dict[str, list[BaseMessage]] = defaultdict(list)
         self._session_models: dict[str, str] = {}
         self._session_locks: dict[str, asyncio.Lock] = {}
+        self._active_run_tasks: dict[str, asyncio.Task] = {}
+        self._cancel_requests: dict[str, _SessionCancelRequest] = {}
 
     def set_scheduler_service(self, scheduler_service) -> None:
         self._scheduler_service = scheduler_service
@@ -507,7 +518,34 @@ class AgentRuntime:
     async def handle_message(self, session_id: str, envelope: MessageEnvelope) -> AgentResponse:
         lock = self._session_locks.setdefault(session_id, asyncio.Lock())
         async with lock:
-            return await self._handle_message_locked(session_id, envelope)
+            task = asyncio.current_task()
+            if task is not None:
+                self._active_run_tasks[session_id] = task
+            try:
+                return await self._handle_message_locked(session_id, envelope)
+            finally:
+                if task is not None and self._active_run_tasks.get(session_id) is task:
+                    self._active_run_tasks.pop(session_id, None)
+
+    def cancel_session_run(
+        self,
+        session_id: str,
+        *,
+        requested_by: str | None = None,
+        reason: str = "User requested stop.",
+        discarded_pending: int = 0,
+    ) -> bool:
+        task = self._active_run_tasks.get(session_id)
+        if task is None or task.done():
+            return False
+        self._cancel_requests[session_id] = _SessionCancelRequest(
+            requested_by=requested_by,
+            reason=reason,
+            requested_at=datetime.now(UTC),
+            discarded_pending=max(0, int(discarded_pending or 0)),
+        )
+        task.cancel()
+        return True
 
     async def _handle_message_locked(self, session_id: str, envelope: MessageEnvelope) -> AgentResponse:
         if not envelope.text and not envelope.command and not envelope.attachments:
@@ -529,6 +567,7 @@ class AgentRuntime:
         run_cost = 0.0
         run_reasoning: list[str] = []
         pending_prompt: PendingUserPrompt | None = None
+        cancellation_metadata: dict[str, object] = {}
         history_len_before_invoke = 0
         await self._publish_stream_event(
             session_id,
@@ -891,6 +930,34 @@ class AgentRuntime:
                         "model": model_name,
                     },
                 )
+        except asyncio.CancelledError:
+            cancel_request = self._cancel_requests.pop(session_id, None)
+            if cancel_request is None:
+                raise
+            self.clear_history(session_id)
+            await self._ensure_history(session_id)
+            messages = self._history.get(session_id, [])
+            run_status = "cancelled"
+            run_error = cancel_request.reason
+            response = "This turn was stopped by the user."
+            cancellation_metadata = {
+                "cancelled": True,
+                "cancelled_by": cancel_request.requested_by,
+                "cancelled_at": cancel_request.requested_at.isoformat(),
+                "cancel_reason": cancel_request.reason,
+                "discarded_pending_messages": cancel_request.discarded_pending,
+            }
+            await self._trace_event(
+                run_id=run_id,
+                session_id=session_id,
+                event_type="cancelled",
+                payload={
+                    "reason": cancel_request.reason,
+                    "requested_by": cancel_request.requested_by,
+                    "requested_at": cancel_request.requested_at.isoformat(),
+                    "discarded_pending": cancel_request.discarded_pending,
+                },
+            )
         except UserPromptRequired as exc:
             messages = list(self._history.get(session_id, []))
             prompt_display = self._render_user_prompt_display_content(
@@ -976,6 +1043,8 @@ class AgentRuntime:
         finally:
             if limit_token is not None:
                 reset_current_run_limits(limit_token)
+            if run_status != "cancelled":
+                self._cancel_requests.pop(session_id, None)
             self._pop_request_context(context_tokens)
         await self._publish_stream_event(
             session_id,
@@ -1086,6 +1155,8 @@ class AgentRuntime:
             run_id=run_id,
             reasoning=run_reasoning,
             pending_prompt=pending_prompt,
+            status=run_status,
+            metadata=cancellation_metadata,
         )
 
     def clear_history(self, session_id: str) -> None:

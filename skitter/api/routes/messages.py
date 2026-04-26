@@ -232,6 +232,7 @@ async def send_message(
             "user_prompt_choices": list(response.pending_prompt.choices),
             "user_prompt_allow_free_text": bool(response.pending_prompt.allow_free_text),
         }
+        assistant_meta.update(getattr(response, "metadata", {}) or {})
         if response.run_id:
             assistant_meta["run_id"] = response.run_id
         assistant_msg = await repo.add_message(
@@ -255,6 +256,7 @@ async def send_message(
         )
     serialized_attachments = _serialize_runtime_attachments(response.attachments)
     assistant_meta = {"response_to": envelope.message_id}
+    assistant_meta.update(getattr(response, "metadata", {}) or {})
     if response.run_id:
         assistant_meta["run_id"] = response.run_id
     if response.reasoning:

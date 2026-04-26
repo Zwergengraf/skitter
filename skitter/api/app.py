@@ -155,6 +155,7 @@ def create_app() -> FastAPI:
     app.state.runtime.set_session_memory_service(app.state.session_memory_service)
     app.state.scheduler_service = SchedulerService(app.state.runtime)
     app.state.runtime.set_scheduler_service(app.state.scheduler_service)
+    app.state.session_run_queue = None
     app.state.job_service = None
     app.state.session_finalizer_service = None
     app.state.user_notifier = None

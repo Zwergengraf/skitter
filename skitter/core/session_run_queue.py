@@ -31,6 +31,7 @@ class _QueuedWork:
 class _Lane:
     pending: list[_QueuedWork] = field(default_factory=list)
     task: asyncio.Task[None] | None = None
+    active: list[_QueuedWork] = field(default_factory=list)
 
 
 class SessionRunQueue:
@@ -65,8 +66,30 @@ class SessionRunQueue:
                 return
             work = batch[0].work
             envelope = work.envelope if len(batch) == 1 else self._coalesce_batch(session_id, batch)
+            async with self._lock:
+                lane = self._lanes.get(session_id)
+                if lane is not None and lane.task is asyncio.current_task():
+                    lane.active = batch
             try:
                 result = await work.process(envelope)
+            except asyncio.CancelledError:
+                payload = {
+                    "session_id": session_id,
+                    "cancelled": True,
+                    "coalesced": len(batch) > 1,
+                    "count": len(batch),
+                    "message_id": envelope.message_id,
+                }
+                for item in batch:
+                    if not item.future.done():
+                        item.future.set_result(payload)
+                async with self._lock:
+                    lane = self._lanes.get(session_id)
+                    if lane is not None and lane.task is asyncio.current_task():
+                        lane.active = []
+                        if not lane.pending:
+                            self._lanes.pop(session_id, None)
+                return
             except Exception as exc:
                 _logger.exception("Session run processing failed for session %s", session_id)
                 for item in batch:
@@ -84,6 +107,29 @@ class SessionRunQueue:
                 for item in batch:
                     if not item.future.done():
                         item.future.set_result(payload)
+            finally:
+                async with self._lock:
+                    lane = self._lanes.get(session_id)
+                    if lane is not None and lane.task is asyncio.current_task():
+                        lane.active = []
+
+    async def cancel_session(self, session_id: str, *, cancel_active: bool = True) -> dict[str, object]:
+        async with self._lock:
+            lane = self._lanes.get(session_id)
+            if lane is None:
+                return {"session_id": session_id, "active": False, "discarded_pending": 0}
+            pending = list(lane.pending)
+            lane.pending.clear()
+            active = bool(lane.task is not None and not lane.task.done())
+            if active and cancel_active and lane.task is not None:
+                lane.task.cancel()
+            elif not active:
+                self._lanes.pop(session_id, None)
+        payload = {"session_id": session_id, "cancelled": True, "discarded_by_stop": True}
+        for item in pending:
+            if not item.future.done():
+                item.future.set_result(payload | {"message_id": item.work.envelope.message_id})
+        return {"session_id": session_id, "active": active, "discarded_pending": len(pending)}
 
     async def _pop_next_batch(self, session_id: str) -> list[_QueuedWork]:
         async with self._lock:

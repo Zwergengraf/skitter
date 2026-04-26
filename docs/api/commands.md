@@ -107,3 +107,28 @@ On Discord, `/profile use` depends on the surface:
 ## Transport Parity
 
 The goal is that the same command family works across clients, but transports may impose stricter routing rules than local paired clients.
+
+## Stop Command
+
+Use `/stop` to stop the active turn for the current session or channel scope.
+
+Behavior:
+
+- cancels the currently running LLM/tool turn
+- drops queued/coalesced backlog for that session
+- keeps the user's triggering message in history
+- adds a hard-coded assistant message: `This turn was stopped by the user.`
+- marks the run trace as `cancelled`
+- cancels a pending `ask_user` prompt if one is waiting
+
+Examples:
+
+```text
+/stop
+```
+
+API clients can also call:
+
+```text
+POST /v1/sessions/{session_id}/stop
+```

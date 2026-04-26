@@ -388,7 +388,7 @@ Current app capabilities:
 - Active-session chat with markdown rendering
 - Inline tool approval cards inside chat
 - File and image attachments with in-app preview/download
-- Slash commands such as `/new`, `/model`, `/machine`, and `/info`
+- Slash commands such as `/new`, `/stop`, `/model`, `/machine`, and `/info`
 - Dedicated voice mode, chat dictation, and reply TTS
 - iPhone and iPad layouts from the same app target
 - Local notification prompts, badge updates, and app-side APNs token capture
